@@ -1,8 +1,20 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { mockTasks, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
+import { mockTasks, mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { 
+  useSharedValue, 
+  useAnimatedStyle, 
+  withTiming, 
+  Easing, 
+  FadeInDown, 
+  FadeOutUp, 
+  Layout, 
+  withRepeat,
+  withSequence
+} from 'react-native-reanimated';
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function DashboardScreen() {
   const [tasks, setTasks] = useState<Task[]>(mockTasks);
@@ -12,12 +24,29 @@ export default function DashboardScreen() {
   const weekDates = getCurrentWeek();
 
   const toggleTask = (id: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed } : t));
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed, status: !t.completed ? 'completed' : 'todo' } : t));
   };
 
   const completed = tasks.filter(t => t.completed).length;
   const total = tasks.length;
   const progress = calculateProgress(completed, total);
+
+  // Progress bar animated width
+  const progressSV = useSharedValue(0);
+  useEffect(() => {
+    progressSV.value = withTiming(progress, { duration: 600, easing: Easing.out(Easing.cubic) });
+  }, [progress]);
+  const progressStyle = useAnimatedStyle(() => ({ width: `${progressSV.value}%` }));
+
+  // FAB pulse
+  const fabScale = useSharedValue(1);
+  useEffect(() => {
+    fabScale.value = withRepeat(withSequence(
+      withTiming(1.06, { duration: 900 }),
+      withTiming(1.0, { duration: 900 })
+    ), -1, false);
+  }, []);
+  const fabStyle = useAnimatedStyle(()=>({ transform:[{ scale: fabScale.value }] }));
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
@@ -46,7 +75,7 @@ export default function DashboardScreen() {
               <Text style={styles.progressCounter}>{completed}/{total}</Text>
             </View>
             <View style={styles.progressBarBg}>
-              <View style={[styles.progressBarFill,{ width: `${progress}%` }]} />
+              <Animated.View style={[styles.progressBarFill, progressStyle]} />
             </View>
             <Text style={styles.progressHint}>
               {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} task`}
@@ -62,11 +91,19 @@ export default function DashboardScreen() {
           </View>
 
           <View style={styles.weekRow}>
-            {weekDates.map((d,i) => (
-              <Pressable key={i} onPress={() => setSelectedDate(d)} style={[styles.dayBtn, selectedDate === d && styles.dayActive]}>
-                <Text style={[styles.dayText, selectedDate === d && styles.dayTextActive]}>{d}</Text>
-              </Pressable>
-            ))}
+            {weekDates.map((d,i) => {
+              const active = selectedDate === d;
+              return (
+                <Pressable key={i} onPress={() => setSelectedDate(d)}>
+                  <Animated.View
+                    entering={FadeInDown.delay(i*30)}
+                    style={[styles.dayBtn, active && styles.dayActive]}
+                  >
+                    <Text style={[styles.dayText, active && styles.dayTextActive]}>{d}</Text>
+                  </Animated.View>
+                </Pressable>
+              );
+            })}
           </View>
 
           <View style={styles.sectionHeader}>            
@@ -75,26 +112,86 @@ export default function DashboardScreen() {
           </View>
         </View>
       }
-      renderItem={({ item }) => (
-        <Pressable onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone]}>          
-          <View style={[styles.checkCircle, item.completed && styles.checkCircleDone]}>
-            {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
-          </View>
-          <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
-          <View style={{ flex:1 }}>
-            <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
-            <View style={styles.metaRow}>
-              <Ionicons name="time" size={12} color="#2f6690" />
-              <Text style={styles.metaText}>{item.time}</Text>
-              {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
+      renderItem={({ item, index }) => (
+        <Animated.View
+          entering={FadeInDown.delay(index*60).springify()}
+          exiting={FadeOutUp}
+          layout={Layout.springify()}
+        >
+          <Pressable onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone]}>          
+            <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
+              {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
+            </Animated.View>
+            <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
+            <View style={{ flex:1 }}>
+              <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
+              <View style={styles.metaRow}>
+                <Ionicons name="time" size={12} color="#2f6690" />
+                <Text style={styles.metaText}>{item.time}</Text>
+                {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
+              </View>
+            </View>
+          </Pressable>
+        </Animated.View>
+      )}
+      ListFooterComponent={
+        <View style={{ marginTop: 16 }}>
+          {/* Projects (show leader projects) */}
+          {mockProjects.some(p=>p.role==='leader') && (
+            <View style={{ marginTop: 8 }}>
+              <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+              {mockProjects.filter(p=>p.role==='leader').map(p => (
+                <View key={p.id} style={styles.projectCard}>
+                  <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                    <Text style={styles.projectName}>{p.name}</Text>
+                    <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
+                  </View>
+                  <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                    <Text style={styles.projectMeta}>{p.members} thành viên</Text>
+                    <Text style={styles.projectMeta}>{p.progress}% hoàn thành</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {/* Quick Actions */}
+          <View style={{ marginTop: 24 }}>
+            <Text style={styles.quickTitle}>Thao tác nhanh</Text>
+            <View style={styles.quickGrid}>
+              <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' />
+              <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' />
+              <QuickAction iconName='flag' label='AI Gợi ý' bg='rgba(47,102,144,0.12)' color='#2f6690' />
+              <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
             </View>
           </View>
-        </Pressable>
-      )}
+        </View>
+      }
     />
+    {/* Floating Action Button with pulse */}
+    <AnimatedPressable style={[styles.fab, fabStyle]} onPress={()=>{}}>
+      <Ionicons name='add' size={28} color='#fff' />
+    </AnimatedPressable>
     </SafeAreaView>
   );
 }
+
+interface QuickActionProps { iconName: any; label: string; bg: string; color: string; onPress?: () => void; }
+const QuickAction = ({ iconName, label, bg, color, onPress }: QuickActionProps) => {
+  const scale = useSharedValue(1);
+  const aStyle = useAnimatedStyle(()=>({ transform:[{ scale: scale.value }] }));
+  return (
+    <AnimatedPressable
+      onPress={onPress}
+      onPressIn={() => { scale.value = withTiming(0.93, { duration:120 }); }}
+      onPressOut={() => { scale.value = withTiming(1, { duration:160 }); }}
+      style={[styles.quickBtn, { backgroundColor: bg }, aStyle]}
+    >
+      <Ionicons name={iconName} size={22} color={color} />
+      <Text style={[styles.quickLabel,{ color, marginTop:6 }]}>{label}</Text>
+    </AnimatedPressable>
+  );
+};
 
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
@@ -132,4 +229,14 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection:'row', alignItems:'center', gap:6 },
   metaText: { fontSize:12, color:'#2f6690', marginLeft:4, marginRight:8 },
   groupBadge: { fontSize:11, backgroundColor:'#81c3d7', color:'#fff', paddingHorizontal:8, paddingVertical:2, borderRadius:12 },
+  projectsTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
+  projectCard: { backgroundColor:'rgba(58,124,165,0.08)', borderRadius:18, padding:14, marginBottom:12 },
+  projectName: { fontSize:14, fontWeight:'600', color:'#16425b' },
+  leaderBadge: { fontSize:10, backgroundColor:'#3a7ca5', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12 },
+  projectMeta: { fontSize:12, color:'#2f6690' },
+  quickTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:14 },
+  quickGrid: { flexDirection:'row', flexWrap:'wrap', justifyContent:'space-between' },
+  quickBtn: { width:'48%', borderRadius:18, paddingVertical:18, alignItems:'center', marginBottom:12 },
+  quickLabel: { fontSize:12, fontWeight:'500', color:'#3a7ca5' },
+  fab: { position:'absolute', bottom:28, right:24, width:64, height:64, borderRadius:32, backgroundColor:'#3a7ca5', alignItems:'center', justifyContent:'center', shadowColor:'#000', shadowOpacity:0.2, shadowRadius:6, elevation:6 },
 });
