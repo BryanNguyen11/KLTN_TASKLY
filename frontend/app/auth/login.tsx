@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Link } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +16,11 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const goDashboard = () => {
+    // replace để không quay lại màn hình login khi back
+    router.replace('/(tabs)/dashboard');
+  };
+
   const handleLogin = async () => {
     if (!email || !password) {
       setError('Vui lòng nhập đầy đủ thông tin');
@@ -24,6 +30,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await login(email, password);
+      goDashboard();
     } catch (e: any) {
       setError(e.message || 'Đăng nhập thất bại');
     } finally {
@@ -36,13 +43,15 @@ export default function LoginScreen() {
     setError(null);
     try {
       await login('demo@student.edu', '123456');
+      goDashboard();
     } catch (e: any) {
       setError(e.message || 'Demo login lỗi');
     } finally { setLoading(false); }
   };
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+  <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
+  <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.card}>        
         <View style={styles.logoWrapper}>
           <View style={styles.logoCircle}>
@@ -114,7 +123,8 @@ export default function LoginScreen() {
         <Text style={styles.footerText}>Chưa có tài khoản? <Text style={styles.link} onPress={() => router.push('/auth/register')}>Đăng ký ngay</Text></Text>
         <Text style={styles.policy}>Bằng cách đăng nhập, bạn đồng ý với điều khoản sử dụng và chính sách bảo mật</Text>
       </View>
-    </KeyboardAvoidingView>
+  </KeyboardAvoidingView>
+  </SafeAreaView>
   );
 }
 

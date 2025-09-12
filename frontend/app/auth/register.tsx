@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,7 +35,8 @@ export default function RegisterScreen() {
   };
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+  <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
+  <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.card}>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color="#1f2937" />
@@ -59,7 +61,8 @@ export default function RegisterScreen() {
 
         <Text style={styles.footerText}>Đã có tài khoản? <Text style={styles.link} onPress={() => router.push('/auth/login' as any)}>Đăng nhập</Text></Text>
       </View>
-    </KeyboardAvoidingView>
+  </KeyboardAvoidingView>
+  </SafeAreaView>
   );
 }
 
