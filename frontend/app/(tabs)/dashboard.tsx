@@ -10,6 +10,8 @@ import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function DashboardScreen() {
+  // NEW: date filtering enhancement plan
+  // We'll introduce selectedDateISO, and dynamic generators for week and month views.
   const { user, token } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -62,8 +64,71 @@ export default function DashboardScreen() {
   };
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
+  const todayISO = new Date().toISOString().split('T')[0];
+  const [selectedDateISO, setSelectedDateISO] = useState<string>(todayISO);
+  const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const days = getDaysOfWeek();
   const weekDates = getCurrentWeek();
+
+  // Build a map date -> tasks[] for fast counts
+  const taskMap = React.useMemo(()=> {
+    const map: Record<string, number> = {};
+    tasks.forEach(t => { if(t.date){ const d = t.date; map[d] = (map[d]||0)+1; } });
+    return map;
+  }, [tasks]);
+
+  // Week dates (ISO) based on selectedDateISO anchor
+  const buildWeek = (anchorISO: string) => {
+    const anchor = new Date(anchorISO + 'T00:00:00');
+    const day = anchor.getDay(); // 0 Sun
+    const mondayOffset = (day === 0 ? -6 : 1 - day); // make Monday first
+    const start = new Date(anchor);
+    start.setDate(anchor.getDate() + mondayOffset);
+    const arr: string[] = [];
+    for(let i=0;i<7;i++){
+      const d = new Date(start);
+      d.setDate(start.getDate()+i);
+      arr.push(d.toISOString().split('T')[0]);
+    }
+    return arr;
+  };
+  const weekISO = buildWeek(selectedDateISO);
+
+  // Month matrix (6 rows x 7 cols) storing ISO or '' for padding
+  const monthMatrix = React.useMemo(()=> {
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth();
+    const first = new Date(year, month, 1);
+    const firstDay = (first.getDay() + 6) % 7; // convert Sun=0 to Sun=6, Mon=0
+    const daysInMonth = new Date(year, month+1, 0).getDate();
+    const cells: string[] = [];
+    for(let i=0;i<firstDay;i++) cells.push('');
+    for(let d=1; d<=daysInMonth; d++){
+      const iso = new Date(year, month, d).toISOString().split('T')[0];
+      cells.push(iso);
+    }
+    while(cells.length % 7 !== 0) cells.push('');
+    if(cells.length < 42){ while(cells.length < 42) cells.push(''); }
+    const rows: string[][] = [];
+    for(let r=0;r<cells.length;r+=7) rows.push(cells.slice(r,r+7));
+    return rows;
+  }, [currentMonth]);
+
+  // Filter tasks based on tab + selected date
+  const filteredTasks = React.useMemo(()=>{
+    if(selectedTab === 'Hôm nay') return tasks.filter(t=> t.date === todayISO && !t.completed);
+    if(selectedTab === 'Tuần') return tasks.filter(t=> weekISO.includes(t.date) && !t.completed);
+    if(selectedTab === 'Tháng') return tasks.filter(t=> t.date.startsWith(currentMonth.toISOString().slice(0,7)) && !t.completed);
+    return tasks.filter(t=>!t.completed);
+  }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth]);
+
+  // Completed tasks (still show below) - you could scope per view if wanted
+  const completedTasks = React.useMemo(()=> tasks.filter(t=> t.completed), [tasks]);
+
+  // Handlers
+  const selectDay = (iso:string) => { if(!iso) return; setSelectedDateISO(iso); if(selectedTab==='Hôm nay') {/* no-op */} };
+  const goPrevMonth = () => { const d = new Date(currentMonth); d.setMonth(d.getMonth()-1); setCurrentMonth(d); };
+  const goNextMonth = () => { const d = new Date(currentMonth); d.setMonth(d.getMonth()+1); setCurrentMonth(d); };
 
   const toggleTask = (id: string) => {
     const nowISO = new Date().toISOString();
@@ -231,119 +296,152 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
-  <FlatList
-  data={tasks.filter(t=>!t.completed)}
-      keyExtractor={item => item.id}
-      contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
-      ListHeaderComponent={
-        <View>
-          <View style={styles.headerRow}>            
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Pressable onPress={()=> router.push('/profile')} style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></Pressable>
-              <View>
-                <Text style={styles.greet}>Xin chào{user?.name ? `, ${user.name}` : ''}</Text>
-                <Text style={styles.role}>
-                  {(user?.role === 'admin' && 'Quản trị') || (user?.role === 'leader' && 'Trưởng nhóm') || 'Sinh viên'} • Sẵn sàng học tập?
-                </Text>
+      <FlatList
+        data={filteredTasks}
+        keyExtractor={item => item.id}
+        contentContainerStyle={{ padding:20, paddingBottom:120 }}
+        ListHeaderComponent={
+          <View>
+            <View style={styles.headerRow}>            
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Pressable onPress={()=> router.push('/profile')} style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></Pressable>
+                <View>
+                  <Text style={styles.greet}>Xin chào{user?.name ? `, ${user.name}` : ''}</Text>
+                  <Text style={styles.role}>
+                    {(user?.role === 'admin' && 'Quản trị') || (user?.role === 'leader' && 'Trưởng nhóm') || 'Sinh viên'} • Sẵn sàng học tập?
+                  </Text>
+                </View>
               </View>
-            </View>
-            <Pressable style={styles.targetBtn}>
-              <Ionicons name="flag" size={18} color="#fff" />
-            </Pressable>
-          </View>
-
-          <View style={styles.progressCard}>
-            <View style={styles.progressRow}>
-              <Text style={styles.progressTitle}>Tiến độ hôm nay</Text>
-              <Text style={styles.progressCounter}>{completed}/{total}</Text>
-            </View>
-            <View style={styles.progressBarBg}>
-              <Animated.View style={[styles.progressBarFill, progressStyle]} />
-            </View>
-            <Text style={styles.progressHint}>
-              {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} task`}
-            </Text>
-          </View>
-
-          <View style={styles.tabs}>
-            {(['Hôm nay','Tuần','Tháng'] as const).map(tab => (
-              <Pressable key={tab} onPress={() => setSelectedTab(tab)} style={[styles.tabBtn, selectedTab === tab && styles.tabBtnActive]}>
-                <Text style={[styles.tabText, selectedTab === tab && styles.tabTextActive]}>{tab}</Text>
+              <Pressable style={styles.targetBtn}>
+                <Ionicons name="flag" size={18} color="#fff" />
               </Pressable>
-            ))}
-          </View>
-
-          <View style={styles.weekRow}>
-            {weekDates.map((d,i) => {
-              const active = selectedDate === d;
-              return (
-                <Pressable key={i} onPress={() => setSelectedDate(d)}>
-                  <Animated.View
-                    entering={FadeInDown.delay(i*30)}
-                    style={[styles.dayBtn, active && styles.dayActive]}
-                  >
-                    <Text style={[styles.dayText, active && styles.dayTextActive]}>{d}</Text>
-                  </Animated.View>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <View style={styles.sectionHeader}>            
-            <Text style={styles.sectionTitle}>Công việc hôm nay</Text>
-            <Text style={styles.sectionSub}>{tasks.filter(t=>!t.completed).length} còn lại</Text>
-          </View>
-          {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
-          {error && <Text style={{ color:'#ef4444', marginBottom:12 }}>{error}</Text>}
-          {!loading && !error && tasks.length===0 && <Text style={{ color:'#2f6690', marginBottom:12 }}>Chưa có tác vụ nào. Hãy tạo mới.</Text>}
-        </View>
-      }
-      renderItem={({ item, index }) => (
-        <Animated.View
-          entering={FadeInDown.delay(index*60).springify()}
-          exiting={FadeOutUp}
-          layout={Layout.springify()}
-        >
-          {(() => {
-            // deadline color logic
-            let deadlineStyle: any = null;
-            if(item.endDate){
-              const todayISO = new Date().toISOString().split('T')[0];
-              // Attempt to parse end time from item.time (pattern HH:MM-HH:MM)
-              let endTime: string | undefined;
-              if(item.time && item.time.includes('-')) endTime = item.time.split('-')[1];
-              const endDeadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
-              const now = new Date();
-              const isEndToday = item.endDate === todayISO;
-              const isOverdue = now > endDeadline;
-              if(isOverdue) deadlineStyle = styles.deadlineOverdueCard;
-              else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
-            }
-            return (
-              <Pressable onLongPress={()=>{ setActionTask(item); setShowActions(true); }} delayLongPress={350} onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
-            <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
-              {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
-            </Animated.View>
-            <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
-            <View style={{ flex:1 }}>
-              <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
-              <View style={styles.metaRow}>
-                {!!item.time && (<>
-                  <Ionicons name="time" size={12} color="#2f6690" />
-                  <Text style={styles.metaText}>{item.time}</Text>
-                </>)}
-                {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
-                {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
-              </View>
-              {/* Subtask progress removed as requested */}
             </View>
-          </Pressable>
-            );
-          })()}
-        </Animated.View>
-      )}
-      ListFooterComponent={
-        <View style={{ marginTop: 16 }}>
+
+            <View style={styles.progressCard}>
+              <View style={styles.progressRow}>
+                <Text style={styles.progressTitle}>Tiến độ hôm nay</Text>
+                <Text style={styles.progressCounter}>{completed}/{total}</Text>
+              </View>
+              <View style={styles.progressBarBg}>
+                <Animated.View style={[styles.progressBarFill, progressStyle]} />
+              </View>
+              <Text style={styles.progressHint}>
+                {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} task`}
+              </Text>
+            </View>
+
+            <View style={styles.tabs}>
+              {(['Hôm nay','Tuần','Tháng'] as const).map(tab => (
+                <Pressable key={tab} onPress={() => setSelectedTab(tab)} style={[styles.tabBtn, selectedTab === tab && styles.tabBtnActive]}>
+                  <Text style={[styles.tabText, selectedTab === tab && styles.tabTextActive]}>{tab}</Text>
+                </Pressable>
+              ))}
+            </View>
+            {/* Dynamic date pickers */}
+            {selectedTab === 'Hôm nay' && (
+              <View style={{ marginBottom:16 }}> 
+                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({todayISO})</Text>
+              </View>
+            )}
+            {selectedTab === 'Tuần' && (
+              <View style={styles.weekRow}>
+                {weekISO.map((iso,i)=> {
+                  const active = iso === selectedDateISO;
+                  const dayNum = parseInt(iso.split('-')[2],10);
+                  return (
+                    <Pressable key={iso} onPress={()=> selectDay(iso)}>
+                      <Animated.View entering={FadeInDown.delay(i*25)} style={[styles.dayBtn, active && styles.dayActive]}>
+                        <Text style={[styles.dayText, active && styles.dayTextActive]}>{dayNum}</Text>
+                        {taskMap[iso] && <View style={[styles.dot, active && styles.dotActive]} />}
+                      </Animated.View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
+            {selectedTab === 'Tháng' && (
+              <View style={{ marginBottom:18 }}>
+                <View style={styles.monthHeader}>
+                  <Pressable onPress={goPrevMonth} style={styles.monthNav}><Ionicons name='chevron-back' size={18} color='#16425b' /></Pressable>
+                  <Text style={styles.monthTitle}>{currentMonth.getFullYear()} - {String(currentMonth.getMonth()+1).padStart(2,'0')}</Text>
+                  <Pressable onPress={goNextMonth} style={styles.monthNav}><Ionicons name='chevron-forward' size={18} color='#16425b' /></Pressable>
+                </View>
+                <View style={styles.weekLabels}>
+                  {['T2','T3','T4','T5','T6','T7','CN'].map(l=> <Text key={l} style={styles.weekLabel}>{l}</Text>)}
+                </View>
+                {monthMatrix.map((row,r)=>(
+                  <View key={r} style={styles.monthRow}>
+                    {row.map((iso,c)=>{
+                      if(!iso) return <View key={c} style={styles.monthCellEmpty} />;
+                      const active = iso === selectedDateISO;
+                      const dayNum = parseInt(iso.split('-')[2],10);
+                      const count = taskMap[iso] || 0;
+                      return (
+                        <Pressable key={iso} onPress={()=> selectDay(iso)} style={[styles.monthCell, active && styles.monthCellActive]}>
+                          <Text style={[styles.monthCellText, active && styles.monthCellTextActive]}>{dayNum}</Text>
+                          {count>0 && <View style={styles.dotSmallWrapper}><View style={[styles.dotSmall, active && styles.dotSmallActive]} /></View>}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+            )}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Tác vụ</Text>
+              <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
+            </View>
+            {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
+            {error && <Text style={{ color:'#ef4444', marginBottom:12 }}>{error}</Text>}
+            {!loading && !error && filteredTasks.length===0 && <Text style={{ color:'#2f6690', marginBottom:12 }}>Không có tác vụ.</Text>}
+          </View>
+        }
+        renderItem={({ item, index }) => (
+          <Animated.View
+            entering={FadeInDown.delay(index*60).springify()}
+            exiting={FadeOutUp}
+            layout={Layout.springify()}
+          >
+            {(() => {
+              // deadline color logic
+              let deadlineStyle: any = null;
+              if(item.endDate){
+                const todayISO = new Date().toISOString().split('T')[0];
+                // Attempt to parse end time from item.time (pattern HH:MM-HH:MM)
+                let endTime: string | undefined;
+                if(item.time && item.time.includes('-')) endTime = item.time.split('-')[1];
+                const endDeadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
+                const now = new Date();
+                const isEndToday = item.endDate === todayISO;
+                const isOverdue = now > endDeadline;
+                if(isOverdue) deadlineStyle = styles.deadlineOverdueCard;
+                else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
+              }
+              return (
+                <Pressable onLongPress={()=>{ setActionTask(item); setShowActions(true); }} delayLongPress={350} onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
+              <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
+                {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
+              </Animated.View>
+              <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
+              <View style={{ flex:1 }}>
+                <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
+                <View style={styles.metaRow}>
+                  {!!item.time && (<>
+                    <Ionicons name="time" size={12} color="#2f6690" />
+                    <Text style={styles.metaText}>{item.time}</Text>
+                  </>)}
+                  {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
+                  {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
+                </View>
+                {/* Subtask progress removed as requested */}
+              </View>
+            </Pressable>
+              );
+            })()}
+          </Animated.View>
+        )}
+        ListFooterComponent={
+          <View style={{ marginTop: 16 }}>
           {/* Completed tasks section */}
           {tasks.some(t=>t.completed) && (
             <View style={{ marginBottom:24 }}>
@@ -560,4 +658,21 @@ const styles = StyleSheet.create({
   emptySub:{ fontSize:12, color:'#2f6690', paddingVertical:8 },
   closeSubBtn:{ marginTop:12, backgroundColor:'#3a7ca5', paddingVertical:12, borderRadius:16, alignItems:'center' },
   closeSubText:{ color:'#fff', fontWeight:'600' },
+  // Extend styles for calendar & dots
+  monthHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8 },
+  monthTitle: { fontSize:16, fontWeight:'600', color:'#16425b' },
+  monthNav: { padding:6, borderRadius:10, backgroundColor:'#d9dcd6' },
+  weekLabels: { flexDirection:'row', justifyContent:'space-between', marginBottom:4 },
+  weekLabel: { width:40, textAlign:'center', fontSize:11, fontWeight:'600', color:'#2f6690' },
+  monthRow: { flexDirection:'row', justifyContent:'space-between', marginBottom:6 },
+  monthCell: { width:40, height:46, borderRadius:12, backgroundColor:'rgba(217,220,214,0.35)', alignItems:'center', justifyContent:'center', position:'relative' },
+  monthCellActive: { backgroundColor:'#3a7ca5' },
+  monthCellText: { fontSize:13, fontWeight:'500', color:'#16425b' },
+  monthCellTextActive: { color:'#fff' },
+  monthCellEmpty: { width:40, height:46 },
+  dotSmallWrapper: { position:'absolute', bottom:4 },
+  dotSmall: { width:6, height:6, borderRadius:3, backgroundColor:'#3a7ca5' },
+  dotSmallActive: { backgroundColor:'#fff' },
+  dot:{ position:'absolute', bottom:4, width:6, height:6, borderRadius:3, backgroundColor:'#3a7ca5' },
+  dotActive:{ backgroundColor:'#fff' },
 });
