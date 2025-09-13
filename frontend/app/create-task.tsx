@@ -22,6 +22,7 @@ interface FormState {
   type: TaskType;
   estimatedHours: string;
   tags: string[];
+  subTasks: { id: string; title: string; completed: boolean }[]; // local id
 }
 
 type Tag = { _id: string; name: string; slug: string };
@@ -47,13 +48,14 @@ export default function CreateTaskScreen() {
     importance: 'medium',
     type: 'personal',
     estimatedHours: '1',
-    tags: []
+    tags: [],
+    subTasks: []
   });
   const [tags, setTags] = useState<Tag[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
   const [creatingTag, setCreatingTag] = useState(false);
   const [newTag, setNewTag] = useState('');
-  const [errors, setErrors] = useState<{start?:string; end?:string}>({});
+  const [errors, setErrors] = useState<{start?:string; end?:string; sub?:string}>({});
 
   const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
 
@@ -109,6 +111,7 @@ export default function CreateTaskScreen() {
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
     if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
     if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    if(form.subTasks.some(st=>!st.title.trim())) { Alert.alert('Lỗi','Vui lòng nhập tên cho tất cả tác vụ con'); return; }
     setSaving(true);
     const payload = {
       title: form.title.trim(),
@@ -122,6 +125,7 @@ export default function CreateTaskScreen() {
       type: form.type,
       estimatedHours: parseFloat(form.estimatedHours)||1,
       tags: form.tags,
+      subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed }))
     };
     try {
       if(editId){
@@ -158,7 +162,8 @@ export default function CreateTaskScreen() {
           importance: t.importance || 'medium',
           type: t.type || 'personal',
           estimatedHours: String(t.estimatedHours||1),
-          tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id)
+          tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id),
+          subTasks: (t.subTasks||[]).map((st:any)=> ({ id: st._id || Math.random().toString(36).slice(2), title: st.title, completed: !!st.completed }))
         }));
       } catch(e){
         Alert.alert('Lỗi','Không tải được tác vụ để sửa');
@@ -234,13 +239,24 @@ export default function CreateTaskScreen() {
   };
 
   useEffect(()=>{
-    const newErr: typeof errors = {};
+    const newErr: typeof errors = {} as any;
     if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
     if(form.date === form.endDate && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) newErr.start = 'Ngày bắt đầu sai định dạng';
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
+    if(form.subTasks.some(st=>!st.title.trim())) newErr.sub = 'Có tác vụ con chưa nhập tên';
     setErrors(newErr);
-  },[form.date, form.endDate, form.startTime, form.endTime]);
+  },[form.date, form.endDate, form.startTime, form.endTime, form.subTasks]);
+
+  const addSubTask = () => {
+    setForm(prev => ({ ...prev, subTasks:[...prev.subTasks, { id: Math.random().toString(36).slice(2), title:'', completed:false }] }));
+  };
+  const updateSubTaskTitle = (id:string, title:string) => {
+    setForm(prev => ({ ...prev, subTasks: prev.subTasks.map(st => st.id===id? { ...st, title } : st) }));
+  };
+  const removeSubTask = (id:string) => {
+    setForm(prev => ({ ...prev, subTasks: prev.subTasks.filter(st=>st.id!==id) }));
+  };
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>      
@@ -296,14 +312,6 @@ export default function CreateTaskScreen() {
               <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
                 <Pressable onPress={()=>openDate('endDate')} style={[styles.pickerBtn,{ flex:1 }, errors.end && styles.pickerBtnError]}> 
                   <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endDate}</Text>
-                </Pressable>
-                <Pressable onPress={()=>{
-                  try {
-                    const base = new Date(form.endDate + 'T00:00:00');
-                    if(!isNaN(base.getTime())){ base.setDate(base.getDate()+1); update('endDate', base.toISOString().split('T')[0]); }
-                  } catch{}
-                }} style={styles.plusDayBtn}>
-                  <Text style={styles.plusDayText}>+1d</Text>
                 </Pressable>
               </View>
             </View>
@@ -391,6 +399,28 @@ export default function CreateTaskScreen() {
           {form.tags.length>0 && (
             <Text style={styles.chosenTags}>Đã chọn: {form.tags.length}</Text>
           )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Tác vụ con (Subtasks)</Text>
+          {form.subTasks.map(st => (
+            <View key={st.id} style={styles.subTaskRow}>
+              <TextInput
+                style={[styles.input, styles.subTaskInput, errors.sub && !st.title.trim() && { borderColor:'#dc2626', backgroundColor:'#fef2f2' }]
+                }
+                placeholder='Tên tác vụ con'
+                value={st.title}
+                onChangeText={(t)=>updateSubTaskTitle(st.id, t)}
+              />
+              <Pressable onPress={()=>removeSubTask(st.id)} style={styles.removeSubBtn}>
+                <Text style={styles.removeSubText}>✕</Text>
+              </Pressable>
+            </View>
+          ))}
+          {!!errors.sub && <Text style={styles.errorText}>{errors.sub}</Text>}
+          <Pressable onPress={addSubTask} style={styles.addSubBtn}>
+            <Text style={styles.addSubText}>+ Thêm tác vụ con</Text>
+          </Pressable>
         </View>
 
         {showAI && (
@@ -528,7 +558,11 @@ const styles = StyleSheet.create({
   pickerCancel:{ backgroundColor:'#e2e8f0' },
   pickerOk:{ backgroundColor:'#3a7ca5' },
   pickerActionText:{ fontSize:15, fontWeight:'600', color:'#16425b' },
-  plusDayBtn:{ backgroundColor:'#3a7ca5', paddingHorizontal:10, paddingVertical:10, borderRadius:12 },
-  plusDayText:{ color:'#fff', fontSize:12, fontWeight:'600' },
   errorText:{ fontSize:11, color:'#dc2626', marginTop:2, fontWeight:'500' },
+  subTaskRow:{ flexDirection:'row', alignItems:'center', marginBottom:10 },
+  subTaskInput:{ flex:1, marginRight:8, paddingVertical:10 },
+  removeSubBtn:{ width:40, height:48, borderRadius:14, backgroundColor:'#fee2e2', alignItems:'center', justifyContent:'center' },
+  removeSubText:{ color:'#b91c1c', fontWeight:'700' },
+  addSubBtn:{ marginTop:4, backgroundColor:'rgba(58,124,165,0.1)', paddingVertical:12, borderRadius:14, alignItems:'center' },
+  addSubText:{ color:'#2f6690', fontWeight:'600', fontSize:13 },
 });

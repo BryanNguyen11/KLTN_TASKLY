@@ -14,6 +14,8 @@ export interface Task {
   type: TaskType;
   status: TaskStatus;
   completedAt?: string; // ISO timestamp when completed
+  subTasks?: { title: string; completed: boolean }[]; // added
+  completionPercent?: number; // added
 }
 
 export const mockTasks: Task[] = [

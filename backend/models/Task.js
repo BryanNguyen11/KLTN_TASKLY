@@ -15,7 +15,21 @@ const taskSchema = new mongoose.Schema({
   estimatedHours: { type: Number, default: 1 },
   status: { type: String, enum: ['todo','in-progress','completed'], default: 'todo' },
   completedAt: { type: Date },
-  tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tag' }]
+  tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tag' }],
+  subTasks: [{
+    title: { type: String, required: true, trim: true },
+    completed: { type: Boolean, default: false }
+  }]
 },{ timestamps:true });
+
+// Virtual completionPercent based on subTasks
+taskSchema.virtual('completionPercent').get(function(){
+  if(!this.subTasks || this.subTasks.length===0) return this.status === 'completed' ? 100 : 0;
+  const done = this.subTasks.filter(st => st.completed).length;
+  return Math.round((done / this.subTasks.length) * 100);
+});
+
+taskSchema.set('toJSON', { virtuals:true });
+taskSchema.set('toObject', { virtuals:true });
 
 module.exports = mongoose.model('Task', taskSchema);

@@ -29,6 +29,8 @@ export default function DashboardScreen() {
   const [showActions, setShowActions] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [showSubModal, setShowSubModal] = useState(false);
+  const [subModalTask, setSubModalTask] = useState<Task | null>(null);
   useEffect(()=>{
     if(toast){
       const t = setTimeout(()=> setToast(null), 1800);
@@ -116,7 +118,9 @@ export default function DashboardScreen() {
         completed: t.status === 'completed',
         type: t.type || 'personal',
         status: t.status || 'todo',
-        completedAt: t.completedAt
+        completedAt: t.completedAt,
+        subTasks: t.subTasks,
+        completionPercent: t.completionPercent
       }));
       setTasks(mapped);
     } catch(e:any){
@@ -140,7 +144,9 @@ export default function DashboardScreen() {
         importance: newTask.importance,
         completed: newTask.status === 'completed',
         type: newTask.type,
-        status: newTask.status
+        status: newTask.status,
+        subTasks: newTask.subTasks,
+        completionPercent: newTask.completionPercent
       };
       setTasks(prev => [adapted, ...prev]);
     });
@@ -156,7 +162,9 @@ export default function DashboardScreen() {
         completed: uTask.status === 'completed',
         type: uTask.type,
         status: uTask.status,
-        completedAt: uTask.completedAt
+        completedAt: uTask.completedAt,
+        subTasks: uTask.subTasks,
+        completionPercent: uTask.completionPercent
       };
       setTasks(prev => prev.map(t=> t.id===adapted.id ? { ...t, ...adapted } : t));
     });
@@ -184,6 +192,53 @@ export default function DashboardScreen() {
     ), -1, false);
   }, []);
   const fabStyle = useAnimatedStyle(()=>({ transform:[{ scale: fabScale.value }] }));
+
+  const openSubModal = (task:Task) => { setSubModalTask(task); setShowSubModal(true); };
+  const closeSubModal = () => { setShowSubModal(false); setSubModalTask(null); };
+  const toggleSubTask = (tId:string, index:number) => {
+    // optimistic local update for immediate feedback
+    let snapshot: Task | null = null;
+    setTasks(prev => prev.map(t => {
+      if(t.id!==tId) return t;
+      snapshot = { ...t }; // keep snapshot for potential rollback
+      const updatedSubs = (t.subTasks||[]).map((st,i)=> i===index? { ...st, completed: !st.completed }: st);
+      const done = updatedSubs.filter(s=>s.completed).length;
+      const percent = updatedSubs.length? Math.round(done/updatedSubs.length*100):0;
+      const newStatus = percent===100? 'completed' : (t.status==='completed' && percent<100 ? 'in-progress' : t.status);
+      return { ...t, subTasks: updatedSubs, completionPercent: percent, status:newStatus, completed: newStatus==='completed', completedAt: newStatus==='completed'? (t.completedAt || new Date().toISOString()): undefined };
+    }));
+    if(subModalTask && subModalTask.id===tId){
+      setSubModalTask(prev => {
+        if(!prev) return prev;
+        const updatedSubs = (prev.subTasks||[]).map((st,i)=> i===index? { ...st, completed: !st.completed }: st);
+        const done = updatedSubs.filter(s=>s.completed).length;
+        const percent = updatedSubs.length? Math.round(done/updatedSubs.length*100):0;
+        const newStatus = percent===100? 'completed' : (prev.status==='completed' && percent<100 ? 'in-progress' : prev.status);
+        return { ...prev, subTasks: updatedSubs, completionPercent: percent, status:newStatus, completed: newStatus==='completed', completedAt: newStatus==='completed'? (prev.completedAt || new Date().toISOString()): undefined };
+      });
+    }
+    // API call
+    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+    axios.patch(`${API_BASE}/api/tasks/${tId}/subtasks/${index}`)
+      .then(res => {
+        const data = res.data;
+        DeviceEventEmitter.emit('taskUpdated', data);
+        // ensure subModalTask sync
+        if(subModalTask && subModalTask.id===tId){
+          setSubModalTask(prev => prev ? { ...prev, subTasks: data.subTasks, completionPercent: data.completionPercent, status: data.status, completed: data.status==='completed', completedAt: data.completedAt } : prev);
+        }
+      })
+      .catch(()=> {
+        setToast('Lỗi cập nhật subtask');
+        // rollback
+        if(snapshot){
+          setTasks(prev => prev.map(t=> t.id===tId? snapshot!: t));
+          if(subModalTask && subModalTask.id===tId){
+            setSubModalTask(snapshot as any);
+          }
+        }
+      });
+  };
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
@@ -291,6 +346,14 @@ export default function DashboardScreen() {
                 {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
                 {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
               </View>
+              {item.subTasks && item.subTasks.length>0 && (
+                <View style={styles.subProgressWrap}>
+                  <View style={styles.subProgressBarBg}>
+                    <View style={[styles.subProgressBarFill,{ width: `${item.completionPercent||0}%` }]} />
+                  </View>
+                  <Text style={styles.subProgressText}>{item.completionPercent||0}% {(item.subTasks&&item.subTasks.length)? `${item.subTasks.filter(s=>s.completed).length}/${item.subTasks.length}`:''}</Text>
+                </View>
+              )}
             </View>
           </Pressable>
             );
@@ -373,9 +436,29 @@ export default function DashboardScreen() {
             <Ionicons name='trash-outline' size={18} color='#b91c1c' />
             <Text style={[styles.sheetBtnText,{ color:'#b91c1c' }]}>{deleting? 'Đang xóa...' : 'Xóa'}</Text>
           </Pressable>
+          <Pressable style={styles.sheetBtn} onPress={() => { if(actionTask){ setShowActions(false); openSubModal(actionTask);} }}>
+            <Ionicons name='list-outline' size={18} color='#16425b' />
+            <Text style={styles.sheetBtnText}>Subtasks</Text>
+          </Pressable>
           <Pressable style={styles.cancelAction} onPress={()=>setShowActions(false)}>
             <Text style={styles.cancelActionText}>Đóng</Text>
           </Pressable>
+        </View>
+      </View>
+    </Modal>
+    <Modal visible={showSubModal} transparent animationType='fade' onRequestClose={closeSubModal}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.subModalBox}>
+          <Text style={styles.subModalTitle}>{subModalTask?.title}</Text>
+          <View style={styles.subList}>
+            {subModalTask?.subTasks?.length ? subModalTask.subTasks.map((st,i)=>(
+              <Pressable key={i} style={styles.subItem} onPress={()=>{ toggleSubTask(subModalTask.id, i); }}>
+                <View style={[styles.subCheck, st.completed && styles.subCheckDone]}>{st.completed && <Ionicons name='checkmark' size={14} color='#fff' />}</View>
+                <Text style={[styles.subItemText, st.completed && styles.subItemTextDone]}>{st.title}</Text>
+              </Pressable>
+            )): <Text style={styles.emptySub}>Chưa có subtask</Text>}
+          </View>
+          <Pressable style={styles.closeSubBtn} onPress={closeSubModal}><Text style={styles.closeSubText}>Đóng</Text></Pressable>
         </View>
       </View>
     </Modal>
@@ -451,6 +534,10 @@ const styles = StyleSheet.create({
   importanceBadge:{ fontSize:11, backgroundColor:'rgba(58,124,165,0.15)', color:'#2f6690', paddingHorizontal:8, paddingVertical:2, borderRadius:12, marginRight:8 },
   importanceHigh:{ backgroundColor:'#ef4444', color:'#fff' },
   importanceMed:{ backgroundColor:'#f59e0b', color:'#fff' },
+  subProgressWrap:{ marginTop:6, flexDirection:'row', alignItems:'center', gap:8 },
+  subProgressBarBg:{ flex:1, height:6, borderRadius:3, backgroundColor:'rgba(0,0,0,0.08)', overflow:'hidden' },
+  subProgressBarFill:{ height:6, backgroundColor:'#3a7ca5' },
+  subProgressText:{ fontSize:10, color:'#2f6690', fontWeight:'600', width:42, textAlign:'right' },
   projectsTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
   projectCard: { backgroundColor:'rgba(58,124,165,0.08)', borderRadius:18, padding:14, marginBottom:12 },
   projectName: { fontSize:14, fontWeight:'600', color:'#16425b' },
@@ -479,4 +566,15 @@ const styles = StyleSheet.create({
   toastText:{ color:'#fff', fontWeight:'500', fontSize:13 },
   undoInline:{ marginLeft:12, paddingHorizontal:10, paddingVertical:6, backgroundColor:'#3a7ca5', borderRadius:16 },
   undoInlineText:{ color:'#fff', fontSize:12, fontWeight:'600' },
+  subModalBox:{ backgroundColor:'#fff', margin:20, borderRadius:24, padding:20 },
+  subModalTitle:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
+  subList:{ maxHeight:300 },
+  subItem:{ flexDirection:'row', alignItems:'center', paddingVertical:10 },
+  subCheck:{ width:24, height:24, borderRadius:12, borderWidth:2, borderColor:'#3a7ca5', marginRight:12, alignItems:'center', justifyContent:'center' },
+  subCheckDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  subItemText:{ fontSize:14, color:'#16425b', flex:1 },
+  subItemTextDone:{ textDecorationLine:'line-through', color:'#2f6690' },
+  emptySub:{ fontSize:12, color:'#2f6690', paddingVertical:8 },
+  closeSubBtn:{ marginTop:12, backgroundColor:'#3a7ca5', paddingVertical:12, borderRadius:16, alignItems:'center' },
+  closeSubText:{ color:'#fff', fontWeight:'600' },
 });
