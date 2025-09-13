@@ -17,6 +17,7 @@ interface User {
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  token: string | null; // added
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
@@ -27,8 +28,9 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
 
-  const API_URL = 'http://192.168.3.18:5000/api/auth'; // IP máy tính
+  const API_URL = 'http://192.168.1.26:5000/api/auth'; // IP máy tính
 
   const login = async (email: string, password: string) => {
     setLoading(true);
@@ -36,6 +38,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const res = await axios.post(`${API_URL}/login`, { email, password });
       const { token, user } = res.data;
       setUser(user);
+      setToken(token);
+  axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       // Nếu muốn lưu token:
       // await AsyncStorage.setItem('token', token);
     } catch (err: any) {
@@ -55,6 +59,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       });
       const { token, user } = res.data;
       setUser(user);
+      setToken(token);
+  axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       // await AsyncStorage.setItem('token', token);
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng ký thất bại');
@@ -65,15 +71,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = () => {
     setUser(null);
+    setToken(null);
+  delete axios.defaults.headers.common['Authorization'];
     // await AsyncStorage.removeItem('token');
   };
 
   useEffect(() => {
     // TODO: load token từ AsyncStorage nếu cần
+    if(token){
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+    }
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, token, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

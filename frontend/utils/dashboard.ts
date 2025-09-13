@@ -7,17 +7,20 @@ export interface Task {
   title: string;
   time: string; // HH:mm
   date: string; // YYYY-MM-DD
+  endDate?: string; // YYYY-MM-DD optional
   priority: TaskPriority;
+  importance?: TaskPriority; // new field
   completed: boolean;
   type: TaskType;
   status: TaskStatus;
+  completedAt?: string; // ISO timestamp when completed
 }
 
 export const mockTasks: Task[] = [
-  { id: '1', title: 'Hoàn thành bài tập Toán', time: '09:00', date: todayISO(), priority: 'high', completed: false, type: 'personal', status: 'todo' },
-  { id: '2', title: 'Ôn thi Tiếng Anh', time: '14:00', date: todayISO(), priority: 'medium', completed: true, type: 'personal', status: 'completed' },
-  { id: '3', title: 'Chuẩn bị thuyết trình nhóm', time: '16:30', date: todayISO(), priority: 'high', completed: false, type: 'group', status: 'in-progress' },
-  { id: '4', title: 'Kiểm tra tiến độ dự án', time: '18:00', date: todayISO(), priority: 'medium', completed: false, type: 'group', status: 'todo' },
+  { id: '1', title: 'Hoàn thành bài tập Toán', time: '09:00', date: todayISO(), priority: 'high', importance:'high', completed: false, type: 'personal', status: 'todo' },
+  { id: '2', title: 'Ôn thi Tiếng Anh', time: '14:00', date: todayISO(), priority: 'medium', importance:'medium', completed: true, type: 'personal', status: 'completed' },
+  { id: '3', title: 'Chuẩn bị thuyết trình nhóm', time: '16:30', date: todayISO(), priority: 'high', importance:'medium', completed: false, type: 'group', status: 'in-progress' },
+  { id: '4', title: 'Kiểm tra tiến độ dự án', time: '18:00', date: todayISO(), priority: 'medium', importance:'low', completed: false, type: 'group', status: 'todo' },
 ];
 
 export interface ProjectMock { id: number; name: string; members: number; progress: number; role: 'leader' | 'member'; }

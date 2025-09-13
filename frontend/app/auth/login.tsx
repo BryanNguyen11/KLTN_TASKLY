@@ -1,15 +1,5 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  StyleSheet,
-  Pressable,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Alert
-} from 'react-native';
+import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -39,9 +29,7 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       await login(email, password);
-      Alert.alert('Đăng nhập thành công', `Chào mừng ${email}`, [
-        { text: 'Tiếp tục', onPress: goDashboard }
-      ]);
+      goDashboard();
     } catch (e: any) {
       setError(e.message || 'Đăng nhập thất bại');
     } finally {

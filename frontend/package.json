@@ -39,7 +39,8 @@
     "react-native-web": "~0.21.0",
     "react-native-worklets": "0.5.1",
     "react-navigation": "^4.4.4",
-    "react-navigation-stack": "^2.10.4"
+  "react-navigation-stack": "^2.10.4",
+  "@react-native-community/datetimepicker": "^8.2.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.0",

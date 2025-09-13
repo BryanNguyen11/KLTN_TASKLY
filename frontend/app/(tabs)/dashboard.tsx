@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { mockTasks, mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
+import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
+import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { 
   useSharedValue, 
@@ -19,24 +20,148 @@ import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function DashboardScreen() {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const router = useRouter();
-  const [tasks, setTasks] = useState<Task[]>(mockTasks);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [actionTask, setActionTask] = useState<Task | null>(null);
+  const [showActions, setShowActions] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  useEffect(()=>{
+    if(toast){
+      const t = setTimeout(()=> setToast(null), 1800);
+      return () => clearTimeout(t);
+    }
+  },[toast]);
+
+  const pendingDeletes = React.useRef<{[k:string]:ReturnType<typeof setTimeout>}>({});
+  const cacheDeleted = React.useRef<{[k:string]:Task}>({});
+  const handleDelete = async (id: string) => {
+    if(!token) return;
+    setShowActions(false);
+    const target = tasks.find(t=>t.id===id);
+    if(!target) return;
+    // remove optimistically
+    setTasks(prev => prev.filter(t=>t.id!==id));
+    cacheDeleted.current[id] = target;
+    setToast('Đã xóa. Hoàn tác?');
+    // schedule real delete
+    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+    const timeout = setTimeout(async () => {
+      try { await axios.delete(`${API_BASE}/api/tasks/${id}`); }
+      catch { /* ignore, maybe show error toast */ }
+      finally { delete cacheDeleted.current[id]; delete pendingDeletes.current[id]; }
+    }, 2500);
+    pendingDeletes.current[id] = timeout;
+  };
+
+  const undoLastDelete = () => {
+    // restore most recent
+    const ids = Object.keys(cacheDeleted.current);
+    if(!ids.length) return;
+    const lastId = ids[ids.length-1];
+    const task = cacheDeleted.current[lastId];
+    if(pendingDeletes.current[lastId]){ clearTimeout(pendingDeletes.current[lastId]); delete pendingDeletes.current[lastId]; }
+    delete cacheDeleted.current[lastId];
+    setTasks(prev => [task, ...prev]);
+    setToast('Đã hoàn tác');
+  };
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
   const days = getDaysOfWeek();
   const weekDates = getCurrentWeek();
 
   const toggleTask = (id: string) => {
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed, status: !t.completed ? 'completed' : 'todo' } : t));
+    const nowISO = new Date().toISOString();
+    setTasks(prev => prev.map(t => {
+      if(t.id !== id) return t;
+      const willComplete = !t.completed;
+      return { ...t, completed: willComplete, status: willComplete? 'completed':'todo', completedAt: willComplete? nowISO: undefined };
+    }));
+    // optimistic API
+    const target = tasks.find(t=>t.id===id);
+    if(!target) return;
+    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+    const desiredStatus = target.completed ? 'todo' : 'completed'; // because we toggled state locally already
+    axios.put(`${API_BASE}/api/tasks/${id}`, { status: desiredStatus })
+      .then(res => {
+        const u = res.data;
+        DeviceEventEmitter.emit('taskUpdated', u);
+      })
+      .catch(()=>{
+        // rollback on error
+        setTasks(prev => prev.map(t => t.id===id ? target : t));
+        setToast('Lỗi cập nhật');
+      });
   };
 
-  // Listen for new task created from create-task screen
+  // Fetch tasks from API
+  const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const fetchTasks = async () => {
+    if(!token) return;
+    setLoading(true); setError(null);
+    try {
+      const res = await axios.get(`${API_BASE}/api/tasks`);
+      // Map API tasks to local Task interface
+      const mapped: Task[] = res.data.map((t: any) => ({
+        id: t._id,
+        title: t.title,
+        time: t.startTime && t.endTime ? `${t.startTime}-${t.endTime}` : (t.time || ''),
+        date: t.date?.split('T')[0] || '',
+  endDate: t.endDate || undefined,
+        priority: t.priority || 'medium',
+        importance: t.importance,
+        completed: t.status === 'completed',
+        type: t.type || 'personal',
+        status: t.status || 'todo',
+        completedAt: t.completedAt
+      }));
+      setTasks(mapped);
+    } catch(e:any){
+      setError(e?.response?.data?.message || 'Không tải được tasks');
+    } finally { setLoading(false); }
+  };
+
+  useEffect(()=>{ fetchTasks(); },[token]);
+
+  // Listen for new task created from create-task screen (append without refetch)
   useEffect(() => {
-    const sub = DeviceEventEmitter.addListener('taskCreated', (newTask: Task) => {
-      setTasks(prev => [newTask, ...prev]);
+    const sub = DeviceEventEmitter.addListener('taskCreated', (newTask: any) => {
+      // adapt if newTask already has start/end times
+      const adapted: Task = {
+        id: newTask._id || newTask.id,
+        title: newTask.title,
+        time: newTask.startTime && newTask.endTime ? `${newTask.startTime}-${newTask.endTime}` : (newTask.time || ''),
+        date: newTask.date?.split('T')[0] || newTask.date,
+  endDate: newTask.endDate,
+        priority: newTask.priority,
+        importance: newTask.importance,
+        completed: newTask.status === 'completed',
+        type: newTask.type,
+        status: newTask.status
+      };
+      setTasks(prev => [adapted, ...prev]);
     });
-    return () => sub.remove();
+    const upd = DeviceEventEmitter.addListener('taskUpdated', (uTask: any) => {
+      const adapted: Task = {
+        id: uTask._id || uTask.id,
+        title: uTask.title,
+        time: uTask.startTime && uTask.endTime ? `${uTask.startTime}-${uTask.endTime}` : (uTask.time || ''),
+        date: uTask.date?.split('T')[0] || uTask.date,
+  endDate: uTask.endDate,
+        priority: uTask.priority,
+        importance: uTask.importance,
+        completed: uTask.status === 'completed',
+        type: uTask.type,
+        status: uTask.status,
+        completedAt: uTask.completedAt
+      };
+      setTasks(prev => prev.map(t=> t.id===adapted.id ? { ...t, ...adapted } : t));
+    });
+  const toastListener = DeviceEventEmitter.addListener('toast', (msg:string)=> setToast(msg));
+  return () => { sub.remove(); upd.remove(); toastListener.remove(); };
   }, []);
 
   const completed = tasks.filter(t => t.completed).length;
@@ -62,8 +187,8 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
-      <FlatList
-      data={tasks}
+  <FlatList
+  data={tasks.filter(t=>!t.completed)}
       keyExtractor={item => item.id}
       contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
       ListHeaderComponent={
@@ -124,6 +249,9 @@ export default function DashboardScreen() {
             <Text style={styles.sectionTitle}>Công việc hôm nay</Text>
             <Text style={styles.sectionSub}>{tasks.filter(t=>!t.completed).length} còn lại</Text>
           </View>
+          {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
+          {error && <Text style={{ color:'#ef4444', marginBottom:12 }}>{error}</Text>}
+          {!loading && !error && tasks.length===0 && <Text style={{ color:'#2f6690', marginBottom:12 }}>Chưa có tác vụ nào. Hãy tạo mới.</Text>}
         </View>
       }
       renderItem={({ item, index }) => (
@@ -132,7 +260,23 @@ export default function DashboardScreen() {
           exiting={FadeOutUp}
           layout={Layout.springify()}
         >
-          <Pressable onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone]}>          
+          {(() => {
+            // deadline color logic
+            let deadlineStyle: any = null;
+            if(item.endDate){
+              const todayISO = new Date().toISOString().split('T')[0];
+              // Attempt to parse end time from item.time (pattern HH:MM-HH:MM)
+              let endTime: string | undefined;
+              if(item.time && item.time.includes('-')) endTime = item.time.split('-')[1];
+              const endDeadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
+              const now = new Date();
+              const isEndToday = item.endDate === todayISO;
+              const isOverdue = now > endDeadline;
+              if(isOverdue) deadlineStyle = styles.deadlineOverdueCard;
+              else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
+            }
+            return (
+              <Pressable onLongPress={()=>{ setActionTask(item); setShowActions(true); }} delayLongPress={350} onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
             <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
               {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
             </Animated.View>
@@ -140,16 +284,40 @@ export default function DashboardScreen() {
             <View style={{ flex:1 }}>
               <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
               <View style={styles.metaRow}>
-                <Ionicons name="time" size={12} color="#2f6690" />
-                <Text style={styles.metaText}>{item.time}</Text>
+                {!!item.time && (<>
+                  <Ionicons name="time" size={12} color="#2f6690" />
+                  <Text style={styles.metaText}>{item.time}</Text>
+                </>)}
+                {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
                 {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
               </View>
             </View>
           </Pressable>
+            );
+          })()}
         </Animated.View>
       )}
       ListFooterComponent={
         <View style={{ marginTop: 16 }}>
+          {/* Completed tasks section */}
+          {tasks.some(t=>t.completed) && (
+            <View style={{ marginBottom:24 }}>
+              <Text style={styles.completedHeader}>Đã hoàn thành</Text>
+              {tasks.filter(t=>t.completed).map(t => (
+                <View key={t.id} style={styles.completedItem}>
+                  <View style={{ flex:1 }}>
+                    <Text style={styles.completedTitle}>{t.title}</Text>
+                    {t.completedAt && (
+                      <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'})}</Text>
+                    )}
+                  </View>
+                  <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>
+                    <Text style={styles.undoText}>↺</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          )}
           {/* Projects (show leader projects) */}
           {mockProjects.some(p=>p.role==='leader') && (
             <View style={{ marginTop: 8 }}>
@@ -186,6 +354,41 @@ export default function DashboardScreen() {
   <AnimatedPressable style={[styles.fab, fabStyle]} onPress={()=> router.push('/create-task')}>
       <Ionicons name='add' size={28} color='#fff' />
     </AnimatedPressable>
+
+    <Modal visible={showActions} transparent animationType='fade' onRequestClose={()=>setShowActions(false)}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.actionSheet}>
+          <Text style={styles.sheetTitle} numberOfLines={2}>{actionTask?.title}</Text>
+          <Pressable style={styles.sheetBtn} onPress={() => { if(actionTask){ setShowActions(false); router.push({ pathname:'/create-task', params:{ editId: actionTask.id }} as any); } }}>
+            <Ionicons name='create-outline' size={18} color='#16425b' />
+            <Text style={styles.sheetBtnText}>Chỉnh sửa</Text>
+          </Pressable>
+          <Pressable style={[styles.sheetBtn, styles.deleteBtn]} onPress={() => {
+            if(!actionTask) return;
+            Alert.alert('Xóa tác vụ','Bạn chắc chắn muốn xóa?',[
+              { text:'Hủy', style:'cancel' },
+              { text:'Xóa', style:'destructive', onPress: ()=> handleDelete(actionTask.id) }
+            ]);
+          }}>
+            <Ionicons name='trash-outline' size={18} color='#b91c1c' />
+            <Text style={[styles.sheetBtnText,{ color:'#b91c1c' }]}>{deleting? 'Đang xóa...' : 'Xóa'}</Text>
+          </Pressable>
+          <Pressable style={styles.cancelAction} onPress={()=>setShowActions(false)}>
+            <Text style={styles.cancelActionText}>Đóng</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+    {toast && (
+      <View style={styles.toast}>
+        <Text style={styles.toastText}>{toast}</Text>
+        {toast.includes('Hoàn tác?') && (
+          <Pressable onPress={undoLastDelete} style={styles.undoInline}>          
+            <Text style={styles.undoInlineText}>Hoàn tác</Text>
+          </Pressable>
+        )}
+      </View>
+    )}
     </SafeAreaView>
   );
 }
@@ -235,6 +438,8 @@ const styles = StyleSheet.create({
   sectionSub: { fontSize: 12, color: '#2f6690' },
   taskCard: { flexDirection:'row', alignItems:'center', padding:14, borderRadius: 18, backgroundColor: 'rgba(217,220,214,0.3)', marginBottom: 12 },
   taskDone: { backgroundColor: 'rgba(217,220,214,0.15)', opacity: 0.75 },
+  deadlineTodayCard:{ borderWidth:1, borderColor:'#6d28d9' },
+  deadlineOverdueCard:{ borderWidth:1, borderColor:'#dc2626' },
   checkCircle: { width:28, height:28, borderRadius:14, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center', marginRight: 12 },
   checkCircleDone: { backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
   priorityDot: { width:10, height:10, borderRadius:5, marginRight: 12 },
@@ -243,6 +448,9 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection:'row', alignItems:'center', gap:6 },
   metaText: { fontSize:12, color:'#2f6690', marginLeft:4, marginRight:8 },
   groupBadge: { fontSize:11, backgroundColor:'#81c3d7', color:'#fff', paddingHorizontal:8, paddingVertical:2, borderRadius:12 },
+  importanceBadge:{ fontSize:11, backgroundColor:'rgba(58,124,165,0.15)', color:'#2f6690', paddingHorizontal:8, paddingVertical:2, borderRadius:12, marginRight:8 },
+  importanceHigh:{ backgroundColor:'#ef4444', color:'#fff' },
+  importanceMed:{ backgroundColor:'#f59e0b', color:'#fff' },
   projectsTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
   projectCard: { backgroundColor:'rgba(58,124,165,0.08)', borderRadius:18, padding:14, marginBottom:12 },
   projectName: { fontSize:14, fontWeight:'600', color:'#16425b' },
@@ -253,4 +461,22 @@ const styles = StyleSheet.create({
   quickBtn: { width:'48%', borderRadius:18, paddingVertical:18, alignItems:'center', marginBottom:12 },
   quickLabel: { fontSize:12, fontWeight:'500', color:'#3a7ca5' },
   fab: { position:'absolute', bottom:28, right:24, width:64, height:64, borderRadius:32, backgroundColor:'#3a7ca5', alignItems:'center', justifyContent:'center', shadowColor:'#000', shadowOpacity:0.2, shadowRadius:6, elevation:6 },
+  modalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.28)', justifyContent:'flex-end' },
+  actionSheet:{ backgroundColor:'#fff', padding:20, borderTopLeftRadius:28, borderTopRightRadius:28 },
+  sheetTitle:{ fontSize:15, fontWeight:'600', color:'#16425b', marginBottom:10 },
+  sheetBtn:{ flexDirection:'row', alignItems:'center', paddingVertical:12, gap:10 },
+  deleteBtn:{ },
+  sheetBtnText:{ fontSize:14, fontWeight:'500', color:'#16425b' },
+  cancelAction:{ marginTop:8, backgroundColor:'#f1f5f9', paddingVertical:12, borderRadius:14, alignItems:'center' },
+  cancelActionText:{ color:'#2f6690', fontWeight:'600' },
+  completedHeader:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
+  completedItem:{ flexDirection:'row', alignItems:'center', backgroundColor:'rgba(217,220,214,0.22)', padding:12, borderRadius:16, marginBottom:10 },
+  completedTitle:{ fontSize:14, fontWeight:'500', color:'#16425b' },
+  completedMeta:{ fontSize:11, color:'#2f6690', marginTop:2 },
+  undoBtn:{ width:34, height:34, borderRadius:17, backgroundColor:'#3a7ca5', alignItems:'center', justifyContent:'center', marginLeft:12 },
+  undoText:{ color:'#fff', fontSize:16, fontWeight:'600' },
+  toast:{ position:'absolute', bottom:110, alignSelf:'center', backgroundColor:'#16425b', paddingHorizontal:20, paddingVertical:12, borderRadius:24, shadowColor:'#000', shadowOpacity:0.2, shadowRadius:6 },
+  toastText:{ color:'#fff', fontWeight:'500', fontSize:13 },
+  undoInline:{ marginLeft:12, paddingHorizontal:10, paddingVertical:6, backgroundColor:'#3a7ca5', borderRadius:16 },
+  undoInlineText:{ color:'#fff', fontSize:12, fontWeight:'600' },
 });
