@@ -364,7 +364,13 @@ export default function DashboardScreen() {
           <View>
             <View style={styles.headerRow}>            
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <Pressable onPress={()=> router.push('/profile')} style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></Pressable>
+                <Pressable onPress={()=> router.push('/profile')} style={styles.avatar}>
+                  {user?.avatar ? (
+                    <Animated.Image source={{ uri: user.avatar }} style={{ width:'100%', height:'100%', borderRadius:24 }} entering={FadeInDown} />
+                  ) : (
+                    <Ionicons name="person" size={22} color="#fff" />
+                  )}
+                </Pressable>
                 <View>
                   <Text style={styles.greet}>Xin chào{user?.name ? `, ${user.name}` : ''}</Text>
                   <Text style={styles.role}>
@@ -649,6 +655,44 @@ export default function DashboardScreen() {
         )}
       </View>
     )}
+    {/* Subtasks Modal */}
+    <Modal
+      visible={showSubModal}
+      transparent
+      animationType='fade'
+      onRequestClose={closeSubModal}
+    >
+      <Pressable style={styles.modalBackdrop} onPress={closeSubModal}>
+        <View style={styles.subModalBox}>
+          <Text style={styles.subModalTitle}>{subModalTask?.title}</Text>
+          <ScrollView style={styles.subList} nestedScrollEnabled>
+            {subModalTask?.subTasks && subModalTask.subTasks.length>0 ? (
+              subModalTask.subTasks.map((st, i) => (
+                <Pressable key={i} style={styles.subItem} onPress={() => subModalTask && toggleSubTask(subModalTask.id, i)}>
+                  <View style={[styles.subCheck, st.completed && styles.subCheckDone]}>
+                    {st.completed && <Ionicons name='checkmark' size={14} color='#fff' />}
+                  </View>
+                  <Text style={[styles.subItemText, st.completed && styles.subItemTextDone]} numberOfLines={2}>{st.title}</Text>
+                </Pressable>
+              ))
+            ) : (
+              <Text style={styles.emptySub}>Chưa có subtask.</Text>
+            )}
+          </ScrollView>
+          {subModalTask && (
+            <Pressable
+              style={[styles.closeSubBtn,{ backgroundColor:'#2f6690', marginTop:18 }]}
+              onPress={() => { closeSubModal(); router.push({ pathname:'/create-task', params:{ editId: subModalTask.id } }); }}
+            >
+              <Text style={styles.closeSubText}>Chỉnh sửa</Text>
+            </Pressable>
+          )}
+          <Pressable style={styles.closeSubBtn} onPress={closeSubModal}>
+            <Text style={styles.closeSubText}>Đóng</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
     </SafeAreaView>
   );
 }

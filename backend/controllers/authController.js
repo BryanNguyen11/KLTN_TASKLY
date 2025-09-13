@@ -39,7 +39,8 @@ exports.register = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        role: user.role
+        role: user.role,
+        avatar: user.avatar || ''
       }
     });
   } catch (err) {
@@ -62,7 +63,7 @@ exports.login = async (req, res) => {
     res.json({
       message: 'Đăng nhập thành công',
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role }
+      user: { id: user._id, name: user.name, email: user.email, role: user.role, avatar: user.avatar || '' }
     });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi máy chủ', error: err.message });

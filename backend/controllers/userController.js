@@ -4,14 +4,15 @@ const Task = require('../models/Task');
 // GET /api/users/me
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('_id name email role createdAt');
+  const user = await User.findById(req.user.userId).select('_id name email role createdAt avatar');
     if (!user) return res.status(404).json({ message: 'Không tìm thấy user' });
     res.json({
       id: user._id,
       name: user.name,
       email: user.email,
       role: user.role,
-      createdAt: user.createdAt
+  createdAt: user.createdAt,
+  avatar: user.avatar || ''
     });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi lấy thông tin', error: err.message });
@@ -28,7 +29,7 @@ exports.updateMe = async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user.userId,
       { name: name.trim() },
-      { new: true, runValidators: true, select: '_id name email role createdAt' }
+      { new: true, runValidators: true, select: '_id name email role createdAt avatar' }
     );
     if (!user) return res.status(404).json({ message: 'Không tìm thấy user' });
     res.json({
@@ -36,10 +37,37 @@ exports.updateMe = async (req, res) => {
       name: user.name,
       email: user.email,
       role: user.role,
-      createdAt: user.createdAt
+      createdAt: user.createdAt,
+      avatar: user.avatar || ''
     });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi cập nhật', error: err.message });
+  }
+};
+
+// PATCH /api/users/me/avatar { avatar }
+exports.updateAvatar = async (req, res) => {
+  try {
+    const { avatar } = req.body;
+    if (typeof avatar !== 'string' || avatar.length > 500) {
+      return res.status(400).json({ message: 'Avatar không hợp lệ' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { avatar },
+      { new: true, select: '_id name email role createdAt avatar' }
+    );
+    if (!user) return res.status(404).json({ message: 'Không tìm thấy user' });
+    res.json({
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt,
+      avatar: user.avatar || ''
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Lỗi cập nhật avatar', error: err.message });
   }
 };
 

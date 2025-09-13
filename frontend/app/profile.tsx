@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, ActivityIndicator, Alert, Modal, FlatList, Image } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +15,7 @@ interface Stats {
 }
 
 export default function ProfileScreen(){
-  const { user, updateName, refreshProfile, logout } = useAuth();
+  const { user, updateName, refreshProfile, logout, updateAvatar } = useAuth();
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user?.name || '');
@@ -23,6 +23,14 @@ export default function ProfileScreen(){
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
+  const [avatarModal, setAvatarModal] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+
+  // Predefined avatar list (DiceBear + other generators). Using static URLs (no external fetch here).
+  const avatarSet = React.useMemo(()=> {
+    const seeds = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','india','juliet'];
+    return seeds.map(s => `https://api.dicebear.com/7.x/thumbs/png?seed=${s}&backgroundColor=b6e3f4,c0aede,d1d4f9`);
+  }, []);
 
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
@@ -52,7 +60,14 @@ export default function ProfileScreen(){
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>        
-        <View style={styles.avatar}><Ionicons name='person' size={34} color='#fff' /></View>
+        <Pressable onPress={()=> setAvatarModal(true)} style={styles.avatar}>
+          {user?.avatar ? (
+            <Image source={{ uri: user.avatar }} style={{ width:'100%', height:'100%', borderRadius:36 }} />
+          ) : (
+            <Ionicons name='person' size={34} color='#fff' />
+          )}
+          <View style={styles.avatarEditBadge}><Ionicons name='camera' size={14} color='#fff' /></View>
+        </Pressable>
         <View style={{ flex:1 }}>
           {editing ? (
             <View style={{ flexDirection:'row', alignItems:'center' }}>
@@ -77,6 +92,38 @@ export default function ProfileScreen(){
         </View>
       </View>
       {error && <Text style={styles.error}>{error}</Text>}
+      <Modal visible={avatarModal} transparent animationType='fade' onRequestClose={()=> setAvatarModal(false)}>
+        <Pressable style={styles.modalBackdrop} onPress={()=> setAvatarModal(false)}>
+          <View style={styles.avatarSheet}>
+            <Text style={styles.sheetTitle}>Chọn avatar</Text>
+            <FlatList
+              data={avatarSet}
+              keyExtractor={i=>i}
+              numColumns={5}
+              contentContainerStyle={{ gap:12 }}
+              columnWrapperStyle={{ justifyContent:'space-between', marginBottom:12 }}
+              renderItem={({ item }) => {
+                const active = item === user?.avatar;
+                return (
+                  <Pressable disabled={savingAvatar} onPress={async ()=> {
+                    try {
+                      setSavingAvatar(true);
+                      await updateAvatar(item);
+                      setAvatarModal(false);
+                    } catch(e:any){ Alert.alert('Lỗi', e.message || 'Không cập nhật được'); }
+                    finally { setSavingAvatar(false); }
+                  }} style={[styles.avatarOption, active && styles.avatarOptionActive]}>
+                    <Image source={{ uri: item }} style={{ width:50, height:50, borderRadius:25 }} />
+                  </Pressable>
+                );
+              }}
+            />
+            <Pressable style={styles.closeSheetBtn} onPress={()=> setAvatarModal(false)}>
+              <Text style={styles.closeSheetText}>Đóng</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Hiệu suất</Text>
@@ -110,6 +157,7 @@ const styles = StyleSheet.create({
   container:{ flex:1, backgroundColor:'#f1f5f9', padding:20 },
   header:{ flexDirection:'row', alignItems:'center', marginBottom:28 },
   avatar:{ width:72, height:72, borderRadius:36, backgroundColor:'#3a7ca5', alignItems:'center', justifyContent:'center', marginRight:18 },
+  avatarEditBadge:{ position:'absolute', bottom:0, right:0, backgroundColor:'rgba(0,0,0,0.55)', padding:4, borderRadius:10 },
   name:{ fontSize:22, fontWeight:'700', color:'#16425b', marginRight:8 },
   nameInput:{ flex:1, backgroundColor:'#fff', borderRadius:12, paddingHorizontal:14, paddingVertical:10, fontSize:16, borderWidth:1, borderColor:'#d9dcd6', marginRight:10 },
   email:{ fontSize:14, color:'#2f6690', marginTop:4 },
@@ -128,4 +176,11 @@ const styles = StyleSheet.create({
   error:{ color:'#dc2626', marginBottom:12 },
   logoutBtn:{ flexDirection:'row', alignItems:'center', justifyContent:'center', marginTop:24, backgroundColor:'#dc2626', paddingVertical:14, borderRadius:18, gap:8 },
   logoutText:{ color:'#fff', fontWeight:'600', fontSize:14 },
+  modalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.4)', justifyContent:'flex-end' },
+  avatarSheet:{ backgroundColor:'#fff', padding:20, borderTopLeftRadius:28, borderTopRightRadius:28, maxHeight:'70%' },
+  sheetTitle:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:14 },
+  avatarOption:{ width:50, height:50, borderRadius:25, overflow:'hidden', borderWidth:2, borderColor:'transparent' },
+  avatarOptionActive:{ borderColor:'#3a7ca5' },
+  closeSheetBtn:{ marginTop:8, backgroundColor:'#16425b', paddingVertical:12, borderRadius:16, alignItems:'center' },
+  closeSheetText:{ color:'#fff', fontWeight:'600' },
 });

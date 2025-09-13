@@ -12,6 +12,7 @@ interface User {
   name: string;
   email: string;
   role: string;
+  avatar?: string;
 }
 
 interface AuthContextValue {
@@ -23,6 +24,7 @@ interface AuthContextValue {
   logout: () => void;
   updateName: (name: string) => Promise<void>;
   refreshProfile: () => Promise<void>;
+  updateAvatar: (avatar: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -49,6 +51,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(user);
       setToken(token);
       applyToken(token);
+  // ensure freshest profile (including avatar)
+  await refreshProfile();
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng nhập thất bại');
     } finally { setLoading(false); }
@@ -63,6 +67,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(user);
       setToken(token);
       applyToken(token);
+  await refreshProfile();
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng ký thất bại');
     } finally { setLoading(false); }
@@ -92,12 +97,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     await refreshProfile();
   };
 
+  const updateAvatar = async (avatar: string) => {
+    if(!API_USERS) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+    if(!token) throw new Error('Chưa đăng nhập');
+    await axios.patch(`${API_USERS}/me/avatar`, { avatar });
+    await refreshProfile();
+  };
+
   useEffect(() => {
     if(token){ applyToken(token); }
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, token, login, register, logout, updateName, refreshProfile }}>
+  <AuthContext.Provider value={{ user, loading, token, login, register, logout, updateName, refreshProfile, updateAvatar }}>
       {children}
     </AuthContext.Provider>
   );
