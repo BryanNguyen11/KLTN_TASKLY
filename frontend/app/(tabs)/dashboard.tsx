@@ -239,7 +239,7 @@ export default function DashboardScreen() {
         <View>
           <View style={styles.headerRow}>            
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <View style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></View>
+              <Pressable onPress={()=> router.push('/profile')} style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></Pressable>
               <View>
                 <Text style={styles.greet}>Xin chào{user?.name ? `, ${user.name}` : ''}</Text>
                 <Text style={styles.role}>

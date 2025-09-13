@@ -21,6 +21,8 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
+  updateName: (name: string) => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -31,63 +33,71 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [token, setToken] = useState<string | null>(null);
 
   const BASE = process.env.EXPO_PUBLIC_API_BASE;
-  const API_URL = BASE ? `${BASE}/api/auth` : undefined;
+  const API_AUTH = BASE ? `${BASE}/api/auth` : undefined;
+  const API_USERS = BASE ? `${BASE}/api/users` : undefined;
+
+  const applyToken = (tk: string) => {
+    axios.defaults.headers.common['Authorization'] = `Bearer ${tk}`;
+  };
 
   const login = async (email: string, password: string) => {
     setLoading(true);
     try {
-  if(!API_URL) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
-  const res = await axios.post(`${API_URL}/login`, { email, password });
+      if(!API_AUTH) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+      const res = await axios.post(`${API_AUTH}/login`, { email, password });
       const { token, user } = res.data;
       setUser(user);
       setToken(token);
-  axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // Nếu muốn lưu token:
-      // await AsyncStorage.setItem('token', token);
+      applyToken(token);
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng nhập thất bại');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const register = async (name: string, email: string, password: string) => {
     setLoading(true);
     try {
-  if(!API_URL) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
-  const res = await axios.post(`${API_URL}/register`, {
-        name,
-        email,
-        password
-      });
+      if(!API_AUTH) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+      const res = await axios.post(`${API_AUTH}/register`, { name, email, password });
       const { token, user } = res.data;
       setUser(user);
       setToken(token);
-  axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // await AsyncStorage.setItem('token', token);
+      applyToken(token);
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng ký thất bại');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   const logout = () => {
     setUser(null);
     setToken(null);
-  delete axios.defaults.headers.common['Authorization'];
-    // await AsyncStorage.removeItem('token');
+    delete axios.defaults.headers.common['Authorization'];
+  };
+
+  const refreshProfile = async () => {
+    if(!API_USERS || !token) return;
+    try {
+      const res = await axios.get(`${API_USERS}/me`);
+      setUser(res.data);
+    } catch { /* silent */ }
+  };
+
+  const updateName = async (name: string) => {
+    if(!API_USERS) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+    if(!token) throw new Error('Chưa đăng nhập');
+    const trimmed = name.trim();
+    if(trimmed.length < 2) throw new Error('Tên tối thiểu 2 ký tự');
+    await axios.patch(`${API_USERS}/me`, { name: trimmed });
+    // refresh user
+    await refreshProfile();
   };
 
   useEffect(() => {
-    // TODO: load token từ AsyncStorage nếu cần
-    if(token){
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-    }
+    if(token){ applyToken(token); }
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, token, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, token, login, register, logout, updateName, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );
