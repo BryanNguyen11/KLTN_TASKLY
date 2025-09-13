@@ -4,17 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { 
-  useSharedValue, 
-  useAnimatedStyle, 
-  withTiming, 
-  Easing, 
-  FadeInDown, 
-  FadeOutUp, 
-  Layout, 
-  withRepeat,
-  withSequence
-} from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence } from 'react-native-reanimated';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -204,8 +194,8 @@ export default function DashboardScreen() {
       const updatedSubs = (t.subTasks||[]).map((st,i)=> i===index? { ...st, completed: !st.completed }: st);
       const done = updatedSubs.filter(s=>s.completed).length;
       const percent = updatedSubs.length? Math.round(done/updatedSubs.length*100):0;
-      const newStatus = percent===100? 'completed' : (t.status==='completed' && percent<100 ? 'in-progress' : t.status);
-      return { ...t, subTasks: updatedSubs, completionPercent: percent, status:newStatus, completed: newStatus==='completed', completedAt: newStatus==='completed'? (t.completedAt || new Date().toISOString()): undefined };
+      // Do NOT auto change main task status/completed; user decides separately
+      return { ...t, subTasks: updatedSubs, completionPercent: percent };
     }));
     if(subModalTask && subModalTask.id===tId){
       setSubModalTask(prev => {
@@ -213,8 +203,7 @@ export default function DashboardScreen() {
         const updatedSubs = (prev.subTasks||[]).map((st,i)=> i===index? { ...st, completed: !st.completed }: st);
         const done = updatedSubs.filter(s=>s.completed).length;
         const percent = updatedSubs.length? Math.round(done/updatedSubs.length*100):0;
-        const newStatus = percent===100? 'completed' : (prev.status==='completed' && percent<100 ? 'in-progress' : prev.status);
-        return { ...prev, subTasks: updatedSubs, completionPercent: percent, status:newStatus, completed: newStatus==='completed', completedAt: newStatus==='completed'? (prev.completedAt || new Date().toISOString()): undefined };
+        return { ...prev, subTasks: updatedSubs, completionPercent: percent };
       });
     }
     // API call
@@ -225,7 +214,7 @@ export default function DashboardScreen() {
         DeviceEventEmitter.emit('taskUpdated', data);
         // ensure subModalTask sync
         if(subModalTask && subModalTask.id===tId){
-          setSubModalTask(prev => prev ? { ...prev, subTasks: data.subTasks, completionPercent: data.completionPercent, status: data.status, completed: data.status==='completed', completedAt: data.completedAt } : prev);
+          setSubModalTask(prev => prev ? { ...prev, subTasks: data.subTasks, completionPercent: data.completionPercent } : prev);
         }
       })
       .catch(()=> {
@@ -346,14 +335,7 @@ export default function DashboardScreen() {
                 {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
                 {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
               </View>
-              {item.subTasks && item.subTasks.length>0 && (
-                <View style={styles.subProgressWrap}>
-                  <View style={styles.subProgressBarBg}>
-                    <View style={[styles.subProgressBarFill,{ width: `${item.completionPercent||0}%` }]} />
-                  </View>
-                  <Text style={styles.subProgressText}>{item.completionPercent||0}% {(item.subTasks&&item.subTasks.length)? `${item.subTasks.filter(s=>s.completed).length}/${item.subTasks.length}`:''}</Text>
-                </View>
-              )}
+              {/* Subtask progress removed as requested */}
             </View>
           </Pressable>
             );
@@ -492,6 +474,7 @@ const QuickAction = ({ iconName, label, bg, color, onPress }: QuickActionProps) 
     </AnimatedPressable>
   );
 };
+
 
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },

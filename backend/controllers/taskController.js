@@ -84,21 +84,8 @@ exports.toggleSubTask = async (req,res) => {
     // Toggle the subtask
     task.subTasks[index].completed = !task.subTasks[index].completed;
 
-    // Re-evaluate completion
-    const total = task.subTasks.length;
-    const doneCount = task.subTasks.filter(st=>st.completed).length;
-    const allDone = total>0 && doneCount === total;
-
-    if(allDone){
-      task.status = 'completed';
-      if(!task.completedAt) task.completedAt = new Date();
-    } else {
-      // If previously completed but now not all done -> revert
-      if(task.status === 'completed') {
-        task.status = doneCount>0 ? 'in-progress' : 'todo';
-        task.completedAt = undefined;
-      }
-    }
+  // Re-evaluate completion percent only (no auto status change; main task completion is manual)
+  // If you later need to auto-suggest completion, you can return doneCount/total here.
 
     await task.save();
     // Ensure we send virtuals (already enabled with toJSON) but refetch lean for consistency

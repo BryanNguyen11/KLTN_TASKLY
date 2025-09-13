@@ -257,6 +257,9 @@ export default function CreateTaskScreen() {
   const removeSubTask = (id:string) => {
     setForm(prev => ({ ...prev, subTasks: prev.subTasks.filter(st=>st.id!==id) }));
   };
+  const toggleSubTaskCompleted = (id:string) => {
+    setForm(prev => ({ ...prev, subTasks: prev.subTasks.map(st => st.id===id? { ...st, completed: !st.completed }: st) }));
+  };
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>      
@@ -405,8 +408,13 @@ export default function CreateTaskScreen() {
           <Text style={styles.sectionTitle}>Tác vụ con (Subtasks)</Text>
           {form.subTasks.map(st => (
             <View key={st.id} style={styles.subTaskRow}>
+              <Pressable onPress={()=>toggleSubTaskCompleted(st.id)} style={styles.subChkBtn} hitSlop={8}>
+                <View style={[styles.subChkCircle, st.completed && styles.subChkCircleDone]}>
+                  {st.completed && <Ionicons name='checkmark' size={14} color='#fff' />}
+                </View>
+              </Pressable>
               <TextInput
-                style={[styles.input, styles.subTaskInput, errors.sub && !st.title.trim() && { borderColor:'#dc2626', backgroundColor:'#fef2f2' }]
+                style={[styles.input, styles.subTaskInput, errors.sub && !st.title.trim() && { borderColor:'#dc2626', backgroundColor:'#fef2f2' }, st.completed && { textDecorationLine:'line-through', opacity:0.6 }]
                 }
                 placeholder='Tên tác vụ con'
                 value={st.title}
@@ -565,4 +573,7 @@ const styles = StyleSheet.create({
   removeSubText:{ color:'#b91c1c', fontWeight:'700' },
   addSubBtn:{ marginTop:4, backgroundColor:'rgba(58,124,165,0.1)', paddingVertical:12, borderRadius:14, alignItems:'center' },
   addSubText:{ color:'#2f6690', fontWeight:'600', fontSize:13 },
+  subChkBtn:{ width:40, height:48, justifyContent:'center', alignItems:'center', marginRight:4 },
+  subChkCircle:{ width:22, height:22, borderRadius:11, borderWidth:2, borderColor:'#3a7ca5', alignItems:'center', justifyContent:'center', backgroundColor:'#fff' },
+  subChkCircleDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
 });
