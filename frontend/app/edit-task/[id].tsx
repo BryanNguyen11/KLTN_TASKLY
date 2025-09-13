@@ -21,7 +21,7 @@ export default function EditTaskScreen(){
   const [priority,setPriority] = useState<TaskPriority>('medium');
   const [importance,setImportance] = useState<TaskPriority>('medium');
 
-  const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
   const load = useCallback(async ()=>{
     if(!token||!id) return;

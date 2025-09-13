@@ -57,7 +57,7 @@ export default function CreateTaskScreen() {
   const [newTag, setNewTag] = useState('');
   const [errors, setErrors] = useState<{start?:string; end?:string; sub?:string}>({});
 
-  const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
   const authHeader = () => ({ headers: { Authorization: token ? `Bearer ${token}` : '' } });
 

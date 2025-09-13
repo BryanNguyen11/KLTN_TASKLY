@@ -40,7 +40,7 @@ export default function DashboardScreen() {
     cacheDeleted.current[id] = target;
     setToast('Đã xóa. Hoàn tác?');
     // schedule real delete
-    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
     const timeout = setTimeout(async () => {
       try { await axios.delete(`${API_BASE}/api/tasks/${id}`); }
       catch { /* ignore, maybe show error toast */ }
@@ -75,7 +75,7 @@ export default function DashboardScreen() {
     // optimistic API
     const target = tasks.find(t=>t.id===id);
     if(!target) return;
-    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
     const desiredStatus = target.completed ? 'todo' : 'completed'; // because we toggled state locally already
     axios.put(`${API_BASE}/api/tasks/${id}`, { status: desiredStatus })
       .then(res => {
@@ -90,7 +90,7 @@ export default function DashboardScreen() {
   };
 
   // Fetch tasks from API
-  const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
   const fetchTasks = async () => {
     if(!token) return;
     setLoading(true); setError(null);
@@ -207,7 +207,7 @@ export default function DashboardScreen() {
       });
     }
     // API call
-    const API_BASE = (process.env.EXPO_PUBLIC_API_BASE || 'http://192.168.1.26:5000');
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
     axios.patch(`${API_BASE}/api/tasks/${tId}/subtasks/${index}`)
       .then(res => {
         const data = res.data;

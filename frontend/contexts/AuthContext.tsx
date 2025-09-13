@@ -30,12 +30,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(false);
   const [token, setToken] = useState<string | null>(null);
 
-  const API_URL = 'http://192.168.1.26:5000/api/auth'; // IP máy tính
+  const BASE = process.env.EXPO_PUBLIC_API_BASE;
+  const API_URL = BASE ? `${BASE}/api/auth` : undefined;
 
   const login = async (email: string, password: string) => {
     setLoading(true);
     try {
-      const res = await axios.post(`${API_URL}/login`, { email, password });
+  if(!API_URL) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+  const res = await axios.post(`${API_URL}/login`, { email, password });
       const { token, user } = res.data;
       setUser(user);
       setToken(token);
@@ -52,7 +54,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const register = async (name: string, email: string, password: string) => {
     setLoading(true);
     try {
-      const res = await axios.post(`${API_URL}/register`, {
+  if(!API_URL) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+  const res = await axios.post(`${API_URL}/register`, {
         name,
         email,
         password
