@@ -16,6 +16,14 @@ exports.register = async (req, res) => {
     // Tạo user mới (mật khẩu sẽ tự động được hash nhờ pre('save'))
     const user = new User({ name, email, password });
     await user.save();
+    // ✅ In thông tin user ra terminal
+    console.log('🆕 Người dùng mới đăng ký:', {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role
+    });
+
 
     // Tạo token ngay sau khi đăng ký (tuỳ chọn)
     const token = jwt.sign(

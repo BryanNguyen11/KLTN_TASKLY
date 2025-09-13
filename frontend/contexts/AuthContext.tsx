@@ -1,11 +1,24 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  ReactNode
+} from 'react';
+import axios from 'axios';
 
-interface User { id: string; email: string; }
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
+
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -15,29 +28,49 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const fakeDelay = (ms: number) => new Promise(r => setTimeout(r, ms));
+  const API_URL = 'http://192.168.3.18:5000/api/auth'; // IP máy tính
 
   const login = async (email: string, password: string) => {
     setLoading(true);
-    await fakeDelay(800);
-    // TODO: replace with real API call
-    if (!email || !password) throw new Error('Thông tin không hợp lệ');
-    setUser({ id: 'u_' + Date.now(), email });
-    setLoading(false);
+    try {
+      const res = await axios.post(`${API_URL}/login`, { email, password });
+      const { token, user } = res.data;
+      setUser(user);
+      // Nếu muốn lưu token:
+      // await AsyncStorage.setItem('token', token);
+    } catch (err: any) {
+      throw new Error(err.response?.data?.message || 'Đăng nhập thất bại');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const register = async (email: string, password: string) => {
+  const register = async (name: string, email: string, password: string) => {
     setLoading(true);
-    await fakeDelay(900);
-    if (!email || !password) throw new Error('Thông tin không hợp lệ');
-    setUser({ id: 'u_' + Date.now(), email });
-    setLoading(false);
+    try {
+      const res = await axios.post(`${API_URL}/register`, {
+        name,
+        email,
+        password
+      });
+      const { token, user } = res.data;
+      setUser(user);
+      // await AsyncStorage.setItem('token', token);
+    } catch (err: any) {
+      throw new Error(err.response?.data?.message || 'Đăng ký thất bại');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const logout = () => setUser(null);
+  const logout = () => {
+    setUser(null);
+    // await AsyncStorage.removeItem('token');
+  };
 
-  // Persist stub (optional future): use secure storage
-  useEffect(() => { /* load persisted session if any */ }, []);
+  useEffect(() => {
+    // TODO: load token từ AsyncStorage nếu cần
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, loading, login, register, logout }}>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,21 +18,41 @@ export default function RegisterScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const handleRegister = async () => {
-    if (!email || !password || !confirm) {
-      setError('Vui lòng nhập đầy đủ thông tin');
-      return;
-    }
-    if (!validateEmail(email)) { setError('Email không hợp lệ'); return; }
-    if (!validatePassword(password)) { setError('Mật khẩu tối thiểu 6 ký tự'); return; }
-    if (password !== confirm) { setError('Mật khẩu nhập lại không khớp'); return; }
-    setError(null);
-    setLoading(true);
-    try {
-      await register(email, password);
-    } catch (e: any) {
-      setError(e.message || 'Đăng ký thất bại');
-    } finally { setLoading(false); }
-  };
+  if (!email || !password || !confirm) {
+    setError('Vui lòng nhập đầy đủ thông tin');
+    return;
+  }
+  if (!validateEmail(email)) {
+    setError('Email không hợp lệ');
+    return;
+  }
+  if (!validatePassword(password)) {
+    setError('Mật khẩu tối thiểu 6 ký tự');
+    return;
+  }
+  if (password !== confirm) {
+    setError('Mật khẩu nhập lại không khớp');
+    return;
+  }
+
+  setError(null);
+  setLoading(true);
+  try {
+    const name = email.split('@')[0]; // ✅ tạo tên từ email
+    await register(name, email, password); // ✅ truyền đủ 3 tham số
+    // ✅ THÊM THÔNG BÁO VÀ CHUYỂN MÀN HÌNH
+    Alert.alert('Thành công', 'Tài khoản đã được tạo!', [
+      {
+        text: 'OK',
+        onPress: () => router.replace('/auth/login') // hoặc router.push nếu bạn muốn quay lại
+      }
+    ]);
+  } catch (e: any) {
+    setError(e.message || 'Đăng ký thất bại');
+  } finally {
+    setLoading(false);
+  }
+};
 
   return (
   <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
