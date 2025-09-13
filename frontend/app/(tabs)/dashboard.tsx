@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { mockTasks, mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,9 +14,13 @@ import Animated, {
   withRepeat,
   withSequence
 } from 'react-native-reanimated';
+import { useAuth } from '@/contexts/AuthContext';
+import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function DashboardScreen() {
+  const { user } = useAuth();
+  const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>(mockTasks);
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
@@ -26,6 +30,14 @@ export default function DashboardScreen() {
   const toggleTask = (id: string) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, completed: !t.completed, status: !t.completed ? 'completed' : 'todo' } : t));
   };
+
+  // Listen for new task created from create-task screen
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('taskCreated', (newTask: Task) => {
+      setTasks(prev => [newTask, ...prev]);
+    });
+    return () => sub.remove();
+  }, []);
 
   const completed = tasks.filter(t => t.completed).length;
   const total = tasks.length;
@@ -60,8 +72,10 @@ export default function DashboardScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               <View style={styles.avatar}><Ionicons name="person" size={22} color="#fff" /></View>
               <View>
-                <Text style={styles.greet}>Xin chào</Text>
-                <Text style={styles.role}>Sinh viên • Sẵn sàng học tập?</Text>
+                <Text style={styles.greet}>Xin chào{user?.name ? `, ${user.name}` : ''}</Text>
+                <Text style={styles.role}>
+                  {(user?.role === 'admin' && 'Quản trị') || (user?.role === 'leader' && 'Trưởng nhóm') || 'Sinh viên'} • Sẵn sàng học tập?
+                </Text>
               </View>
             </View>
             <Pressable style={styles.targetBtn}>
@@ -159,7 +173,7 @@ export default function DashboardScreen() {
           <View style={{ marginTop: 24 }}>
             <Text style={styles.quickTitle}>Thao tác nhanh</Text>
             <View style={styles.quickGrid}>
-              <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' />
+              <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' onPress={()=> router.push('/create-task')} />
               <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' />
               <QuickAction iconName='flag' label='AI Gợi ý' bg='rgba(47,102,144,0.12)' color='#2f6690' />
               <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
@@ -169,7 +183,7 @@ export default function DashboardScreen() {
       }
     />
     {/* Floating Action Button with pulse */}
-    <AnimatedPressable style={[styles.fab, fabStyle]} onPress={()=>{}}>
+  <AnimatedPressable style={[styles.fab, fabStyle]} onPress={()=> router.push('/create-task')}>
       <Ionicons name='add' size={28} color='#fff' />
     </AnimatedPressable>
     </SafeAreaView>
