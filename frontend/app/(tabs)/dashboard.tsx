@@ -48,23 +48,28 @@ export default function DashboardScreen() {
 
   const pendingDeletes = React.useRef<{[k:string]:ReturnType<typeof setTimeout>}>({});
   const cacheDeleted = React.useRef<{[k:string]:Task}>({});
-  const handleDelete = async (id: string) => {
+  const performDelete = (id:string) => {
     if(!token) return;
-    setShowActions(false);
     const target = tasks.find(t=>t.id===id);
     if(!target) return;
-    // remove optimistically
     setTasks(prev => prev.filter(t=>t.id!==id));
     cacheDeleted.current[id] = target;
     setToast('Đã xóa. Hoàn tác?');
-    // schedule real delete
-  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
+    const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
     const timeout = setTimeout(async () => {
-      try { await axios.delete(`${API_BASE}/api/tasks/${id}`); }
-      catch { /* ignore, maybe show error toast */ }
+      try { await axios.delete(`${API_BASE}/api/tasks/${id}`); DeviceEventEmitter.emit('toast','Xóa vĩnh viễn thành công'); }
+      catch { DeviceEventEmitter.emit('toast','Lỗi xóa trên server'); }
       finally { delete cacheDeleted.current[id]; delete pendingDeletes.current[id]; }
     }, 2500);
     pendingDeletes.current[id] = timeout;
+  };
+
+  const handleDelete = (id:string) => {
+    setShowActions(false);
+    Alert.alert('Xác nhận','Bạn chắc chắn muốn xóa tác vụ này?',[
+      { text:'Hủy', style:'cancel' },
+      { text:'Xóa', style:'destructive', onPress:()=> performDelete(id) }
+    ]);
   };
 
   const undoLastDelete = () => {
@@ -188,6 +193,7 @@ export default function DashboardScreen() {
       .then(res => {
         const u = res.data;
         DeviceEventEmitter.emit('taskUpdated', u);
+        setToast('Đã cập nhật');
       })
       .catch(()=>{
         // rollback on error
@@ -364,8 +370,9 @@ export default function DashboardScreen() {
                   </Text>
                 </View>
               </View>
-              <Pressable style={styles.targetBtn}>
-                <Ionicons name="flag" size={18} color="#fff" />
+              <Pressable onPress={()=> setAiMode(m=>!m)} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
+                <Ionicons name='sparkles' size={18} color={aiMode? '#fff':'#2f6690'} />
+                <Text style={[styles.aiTopText, aiMode && styles.aiTopTextActive]}>AI</Text>
               </Pressable>
             </View>
 
@@ -445,7 +452,14 @@ export default function DashboardScreen() {
               </View>
             )}
             <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Tác vụ</Text>
+              <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                <Text style={styles.sectionTitle}>Tác vụ</Text>
+                {aiMode && (
+                  <View style={styles.aiBadge}>
+                    <Text style={styles.aiBadgeText}>AI</Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
             </View>
             {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
@@ -564,7 +578,7 @@ export default function DashboardScreen() {
       }
     />
     {/* Floating Action Button with pulse */}
-    <View style={styles.fabWrapper} pointerEvents="box-none">
+  <View style={styles.fabWrapper} pointerEvents="box-none">
       {showFabMenu && <Pressable style={styles.fabBackdrop} onPress={()=> setShowFabMenu(false)} />}
       {showFabMenu && (
         <View style={styles.fabMenu}>
@@ -586,9 +600,30 @@ export default function DashboardScreen() {
         <Ionicons name={showFabMenu? 'close':'add'} size={28} color='#fff' />
       </Pressable>
     </View>
+    {/* Action Sheet Modal for edit/delete */}
+    <Modal visible={showActions} transparent animationType='fade' onRequestClose={()=> setShowActions(false)}>
+      <Pressable style={styles.modalBackdrop} onPress={()=> setShowActions(false)}>
+        <View style={styles.actionSheet}>
+          <Text style={styles.sheetTitle}>{actionTask?.title}</Text>
+          <Pressable style={styles.sheetBtn} onPress={()=>{ if(actionTask) { setShowActions(false); router.push({ pathname:'/create-task', params:{ editId: actionTask.id } }); } }}>
+            <Ionicons name='create-outline' size={20} color='#2f6690' />
+            <Text style={styles.sheetBtnText}>Chỉnh sửa</Text>
+          </Pressable>
+          <Pressable style={[styles.sheetBtn, styles.deleteBtn]} onPress={()=>{ if(actionTask) handleDelete(actionTask.id); }}>
+            <Ionicons name='trash-outline' size={20} color='#dc2626' />
+            <Text style={[styles.sheetBtnText,{ color:'#dc2626' }]}>Xóa</Text>
+          </Pressable>
+          <Pressable style={styles.cancelAction} onPress={()=> setShowActions(false)}>
+            <Text style={styles.cancelActionText}>Đóng</Text>
+          </Pressable>
+        </View>
+      </Pressable>
+    </Modal>
     </SafeAreaView>
   );
 }
+
+// Action sheet modal appended after main return earlier? (Ensure inside component before export). Adding below component export logic isn't valid. We integrate above just before closing SafeAreaView.
 
 interface QuickActionProps { iconName: any; label: string; bg: string; color: string; onPress?: () => void; }
 const QuickAction = ({ iconName, label, bg, color, onPress }: QuickActionProps) => {
@@ -614,6 +649,10 @@ const styles = StyleSheet.create({
   greet: { fontSize: 18, fontWeight: '600', color: '#16425b' },
   role: { fontSize: 12, color: '#2f6690', marginTop: 2 },
   targetBtn: { width: 44, height:44, borderRadius: 22, backgroundColor: '#81c3d7', justifyContent: 'center', alignItems: 'center' },
+  aiTopBtn:{ flexDirection:'row', alignItems:'center', backgroundColor:'rgba(47,102,144,0.1)', paddingHorizontal:14, height:44, borderRadius:22 },
+  aiTopBtnActive:{ backgroundColor:'#3a7ca5' },
+  aiTopText:{ marginLeft:6, color:'#2f6690', fontWeight:'600', fontSize:13 },
+  aiTopTextActive:{ color:'#fff' },
   progressCard: { backgroundColor: 'rgba(58,124,165,0.08)', borderRadius: 20, padding: 16, marginBottom: 20 },
   progressRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   progressTitle: { fontSize: 14, fontWeight: '600', color: '#16425b' },
@@ -633,6 +672,8 @@ const styles = StyleSheet.create({
   dayTextActive: { color: '#fff' },
   sectionHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom: 12 },
   sectionTitle: { fontSize: 18, fontWeight: '600', color: '#16425b' },
+  aiBadge:{ backgroundColor:'#3a7ca5', paddingHorizontal:8, paddingVertical:2, borderRadius:8 },
+  aiBadgeText:{ color:'#fff', fontSize:11, fontWeight:'700', letterSpacing:0.5 },
   sectionSub: { fontSize: 12, color: '#2f6690' },
   taskCard: { flexDirection:'row', alignItems:'center', padding:14, borderRadius: 18, backgroundColor: 'rgba(217,220,214,0.3)', marginBottom: 12 },
   taskDone: { backgroundColor: 'rgba(217,220,214,0.15)', opacity: 0.75 },
