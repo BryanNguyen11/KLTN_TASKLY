@@ -9,6 +9,16 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
+// Helper to color dots by importance
+const importanceDotColor = (importance?: string) => {
+  switch(importance){
+    case 'high': return '#dc2626';
+    case 'medium': return '#f59e0b';
+    case 'low': return '#3a7ca5';
+    default: return '#3a7ca5';
+  }
+};
+
 export default function DashboardScreen() {
   // NEW: date filtering enhancement plan
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
@@ -72,8 +82,10 @@ export default function DashboardScreen() {
 
   // Build a map date -> tasks[] for fast counts
   const taskMap = React.useMemo(()=> {
-    const map: Record<string, number> = {};
-    tasks.forEach(t => { if(t.date){ const d = t.date; map[d] = (map[d]||0)+1; } });
+    // Replace with dayInfo: for each date store total & highestImportance
+    const map: Record<string, { count:number; importanceRank:number; color:string; }> = {};
+    const rank = (imp?:string) => imp==='high'?3: imp==='medium'?2: imp==='low'?1:0;
+    tasks.forEach(t => { if(t.date){ const key = t.date; const r = rank(t.importance); if(!map[key]) map[key] = { count:0, importanceRank:0, color: importanceDotColor(t.importance) }; map[key].count++; if(r > map[key].importanceRank){ map[key].importanceRank = r; map[key].color = importanceDotColor(t.importance); } } });
     return map;
   }, [tasks]);
 
@@ -116,9 +128,18 @@ export default function DashboardScreen() {
 
   // Filter tasks based on tab + selected date
   const filteredTasks = React.useMemo(()=>{
-    if(selectedTab === 'Hôm nay') return tasks.filter(t=> t.date === todayISO && !t.completed);
-    if(selectedTab === 'Tuần') return tasks.filter(t=> weekISO.includes(t.date) && !t.completed);
-    if(selectedTab === 'Tháng') return tasks.filter(t=> t.date.startsWith(currentMonth.toISOString().slice(0,7)) && !t.completed);
+    const today = todayISO;
+    if(selectedTab === 'Hôm nay'){
+      // show tasks of today + any past incomplete (date < today) not completed
+      return tasks.filter(t => !t.completed && (t.date === today || t.date < today));
+    }
+    if(selectedTab === 'Tuần'){
+      // if a specific day selected inside the week -> show only that day
+      return tasks.filter(t=> !t.completed && weekISO.includes(t.date) && t.date === selectedDateISO);
+    }
+    if(selectedTab === 'Tháng'){
+      return tasks.filter(t=> !t.completed && t.date === selectedDateISO);
+    }
     return tasks.filter(t=>!t.completed);
   }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth]);
 
@@ -348,11 +369,12 @@ export default function DashboardScreen() {
                 {weekISO.map((iso,i)=> {
                   const active = iso === selectedDateISO;
                   const dayNum = parseInt(iso.split('-')[2],10);
+                  const info = taskMap[iso];
                   return (
                     <Pressable key={iso} onPress={()=> selectDay(iso)}>
-                      <Animated.View entering={FadeInDown.delay(i*25)} style={[styles.dayBtn, active && styles.dayActive]}>
+                      <Animated.View entering={FadeInDown.delay(i*25)} style={[styles.dayBtn, active && styles.dayActive]}>                        
                         <Text style={[styles.dayText, active && styles.dayTextActive]}>{dayNum}</Text>
-                        {taskMap[iso] && <View style={[styles.dot, active && styles.dotActive]} />}
+                        {info && <View style={[styles.dotBase, { backgroundColor: info.color }, active && styles.dotActiveOutline]} />}
                       </Animated.View>
                     </Pressable>
                   );
@@ -375,11 +397,11 @@ export default function DashboardScreen() {
                       if(!iso) return <View key={c} style={styles.monthCellEmpty} />;
                       const active = iso === selectedDateISO;
                       const dayNum = parseInt(iso.split('-')[2],10);
-                      const count = taskMap[iso] || 0;
+                      const info = taskMap[iso];
                       return (
                         <Pressable key={iso} onPress={()=> selectDay(iso)} style={[styles.monthCell, active && styles.monthCellActive]}>
                           <Text style={[styles.monthCellText, active && styles.monthCellTextActive]}>{dayNum}</Text>
-                          {count>0 && <View style={styles.dotSmallWrapper}><View style={[styles.dotSmall, active && styles.dotSmallActive]} /></View>}
+                          {info && <View style={styles.dotSmallWrapper}><View style={[styles.dotSmallBase, { backgroundColor: info.color }, active && styles.dotSmallOutline]} /></View>}
                         </Pressable>
                       );
                     })}
@@ -673,6 +695,10 @@ const styles = StyleSheet.create({
   dotSmallWrapper: { position:'absolute', bottom:4 },
   dotSmall: { width:6, height:6, borderRadius:3, backgroundColor:'#3a7ca5' },
   dotSmallActive: { backgroundColor:'#fff' },
-  dot:{ position:'absolute', bottom:4, width:6, height:6, borderRadius:3, backgroundColor:'#3a7ca5' },
-  dotActive:{ backgroundColor:'#fff' },
+  dotBase:{ position:'absolute', bottom:4, width:8, height:8, borderRadius:4 },
+  dotActiveOutline:{ borderWidth:1, borderColor:'#fff' },
+  dotSmallBase:{ width:6, height:6, borderRadius:3 },
+  dotSmallOutline:{ borderWidth:1, borderColor:'#fff' },
+  // remove old dot styles kept for backward compatibility
+  // dot and dotActive no longer used by new logic
 });
