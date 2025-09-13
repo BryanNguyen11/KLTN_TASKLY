@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, ActivityIndicator, Alert } from 'react-native';
+import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,7 +15,8 @@ interface Stats {
 }
 
 export default function ProfileScreen(){
-  const { user, updateName, refreshProfile } = useAuth();
+  const { user, updateName, refreshProfile, logout } = useAuth();
+  const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
@@ -90,6 +92,15 @@ export default function ProfileScreen(){
             </View>
           </View>
         )}
+        <Pressable style={styles.logoutBtn} onPress={()=> {
+          Alert.alert('Đăng xuất','Bạn chắc chắn muốn đăng xuất?',[
+            { text:'Hủy', style:'cancel' },
+            { text:'Đăng xuất', style:'destructive', onPress:()=> { logout(); router.replace('/auth/login'); } }
+          ]);
+        }}>
+          <Ionicons name='log-out-outline' size={18} color='#fff' />
+          <Text style={styles.logoutText}>Đăng xuất</Text>
+        </Pressable>
       </View>
     </SafeAreaView>
   );
@@ -115,4 +126,6 @@ const styles = StyleSheet.create({
   evalGood:{ backgroundColor:'rgba(34,197,94,0.18)' },
   evalLate:{ backgroundColor:'rgba(239,68,68,0.18)' },
   error:{ color:'#dc2626', marginBottom:12 },
+  logoutBtn:{ flexDirection:'row', alignItems:'center', justifyContent:'center', marginTop:24, backgroundColor:'#dc2626', paddingVertical:14, borderRadius:18, gap:8 },
+  logoutText:{ color:'#fff', fontWeight:'600', fontSize:14 },
 });
