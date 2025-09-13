@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
+import { aiOrderedTasks } from '@/utils/aiTaskSort';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence, interpolate } from 'react-native-reanimated';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -25,6 +26,7 @@ export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [aiMode, setAiMode] = useState(false); // AI suggestion sorting active
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionTask, setActionTask] = useState<Task | null>(null);
@@ -34,6 +36,9 @@ export default function DashboardScreen() {
   const [showSubModal, setShowSubModal] = useState(false);
   const [subModalTask, setSubModalTask] = useState<Task | null>(null);
   const [showCompletedCollapse, setShowCompletedCollapse] = useState(true);
+  const [showFabMenu, setShowFabMenu] = useState(false);
+  const menuAnim = useSharedValue(0); // 0 closed, 1 open
+
   useEffect(()=>{
     if(toast){
       const t = setTimeout(()=> setToast(null), 1800);
@@ -83,10 +88,22 @@ export default function DashboardScreen() {
 
   // Build a map date -> tasks[] for fast counts
   const taskMap = React.useMemo(()=> {
-    // Replace with dayInfo: for each date store total & highestImportance
-    const map: Record<string, { count:number; importanceRank:number; color:string; }> = {};
+    // dayInfo: date -> { total, completed, color(highest importance of incomplete tasks) }
+    const map: Record<string, { total:number; completed:number; color:string; }> = {};
     const rank = (imp?:string) => imp==='high'?3: imp==='medium'?2: imp==='low'?1:0;
-    tasks.forEach(t => { if(t.date){ const key = t.date; const r = rank(t.importance); if(!map[key]) map[key] = { count:0, importanceRank:0, color: importanceDotColor(t.importance) }; map[key].count++; if(r > map[key].importanceRank){ map[key].importanceRank = r; map[key].color = importanceDotColor(t.importance); } } });
+    tasks.forEach(t => {
+      if(!t.date) return;
+      const key = t.date;
+      if(!map[key]) map[key] = { total:0, completed:0, color:'#3a7ca5' };
+      map[key].total++;
+      if(t.completed) map[key].completed++;
+      if(!t.completed){
+        const curRank = rank(t.importance);
+        // derive existing importance rank from stored color
+        const existingRank = map[key].color === '#dc2626' ? 3 : map[key].color === '#f59e0b' ? 2 : 1;
+        if(curRank > existingRank){ map[key].color = importanceDotColor(t.importance); }
+      }
+    });
     return map;
   }, [tasks]);
 
@@ -130,19 +147,22 @@ export default function DashboardScreen() {
   // Filter tasks based on tab + selected date
   const filteredTasks = React.useMemo(()=>{
     const today = todayISO;
+    const applySort = (list:Task[]) => aiMode ? aiOrderedTasks(list, today) : list;
     if(selectedTab === 'Hôm nay'){
-      // show tasks of today + any past incomplete (date < today) not completed
-      return tasks.filter(t => !t.completed && (t.date === today || t.date < today));
+      const base = tasks.filter(t => !t.completed && (t.date === today || t.date < today));
+      return applySort(base);
     }
     if(selectedTab === 'Tuần'){
-      // if a specific day selected inside the week -> show only that day
-      return tasks.filter(t=> !t.completed && weekISO.includes(t.date) && t.date === selectedDateISO);
+      const base = tasks.filter(t=> !t.completed && weekISO.includes(t.date) && t.date === selectedDateISO);
+      return applySort(base);
     }
     if(selectedTab === 'Tháng'){
-      return tasks.filter(t=> !t.completed && t.date === selectedDateISO);
+      const base = tasks.filter(t=> !t.completed && t.date === selectedDateISO);
+      return applySort(base);
     }
-    return tasks.filter(t=>!t.completed);
-  }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth]);
+    const base = tasks.filter(t=>!t.completed);
+    return applySort(base);
+  }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth, aiMode]);
 
   // Completed tasks (still show below) - you could scope per view if wanted
   const completedTasks = React.useMemo(()=> tasks.filter(t=> t.completed), [tasks]);
@@ -316,12 +336,22 @@ export default function DashboardScreen() {
       });
   };
 
+  // Remove animation helpers for debug simple menu
+  // const menuAnim = useSharedValue(0);
+  // useEffect(()=>{ menuAnim.value = withTiming(showFabMenu?1:0,{ duration:280 }); },[showFabMenu]);
+  // const fabRotateStyle = useAnimatedStyle(()=> ({ transform:[{ rotate: `${interpolate(menuAnim.value,[0,1],[0,45])}deg` }] }));
+  // const buildItemStyle = (i:number)=> useAnimatedStyle(()=>({ opacity: menuAnim.value }));
+  // const action1Style = buildItemStyle(0); const action2Style = buildItemStyle(1); const action3Style = buildItemStyle(2);
+  // const menuStyle = useAnimatedStyle(()=> ({ opacity: menuAnim.value }));
+
+  const bottomPad = showFabMenu ? 260 : 140;
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <FlatList
         data={filteredTasks}
         keyExtractor={item => item.id}
-        contentContainerStyle={{ padding:20, paddingBottom:120 }}
+        contentContainerStyle={{ padding:20, paddingBottom: bottomPad }}
         ListHeaderComponent={
           <View>
             <View style={styles.headerRow}>            
@@ -367,7 +397,7 @@ export default function DashboardScreen() {
             )}
             {selectedTab === 'Tuần' && (
               <View style={styles.weekRow}>
-                {weekISO.map((iso,i)=> {
+    {weekISO.map((iso,i)=> {
                   const active = iso === selectedDateISO;
                   const dayNum = parseInt(iso.split('-')[2],10);
                   const info = taskMap[iso];
@@ -375,7 +405,7 @@ export default function DashboardScreen() {
                     <Pressable key={iso} onPress={()=> selectDay(iso)}>
                       <Animated.View entering={FadeInDown.delay(i*25)} style={[styles.dayBtn, active && styles.dayActive]}>                        
                         <Text style={[styles.dayText, active && styles.dayTextActive]}>{dayNum}</Text>
-                        {info && <View style={[styles.dotBase, { backgroundColor: info.color }, active && styles.dotActiveOutline]} />}
+      {info && <View style={[styles.dotBase, { backgroundColor: info.completed === info.total ? '#9ca3af' : info.color }, active && styles.dotActiveOutline]} />}
                       </Animated.View>
                     </Pressable>
                   );
@@ -402,7 +432,11 @@ export default function DashboardScreen() {
                       return (
                         <Pressable key={iso} onPress={()=> selectDay(iso)} style={[styles.monthCell, active && styles.monthCellActive]}>
                           <Text style={[styles.monthCellText, active && styles.monthCellTextActive]}>{dayNum}</Text>
-                          {info && <View style={styles.dotSmallWrapper}><View style={[styles.dotSmallBase, { backgroundColor: info.color }, active && styles.dotSmallOutline]} /></View>}
+                          {info && (
+                            <View style={styles.dotSmallWrapper}>
+                              <View style={[styles.dotSmallBase, { backgroundColor: info.completed === info.total ? '#9ca3af' : info.color }, active && styles.dotSmallOutline]} />
+                            </View>
+                          )}
                         </Pressable>
                       );
                     })}
@@ -522,7 +556,7 @@ export default function DashboardScreen() {
             <View style={styles.quickGrid}>
               <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' onPress={()=> router.push('/create-task')} />
               <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' />
-              <QuickAction iconName='flag' label='AI Gợi ý' bg='rgba(47,102,144,0.12)' color='#2f6690' />
+              <QuickAction iconName='flag' label={aiMode ? 'Bỏ AI' : 'AI Gợi ý'} bg='rgba(47,102,144,0.12)' color={aiMode? '#dc2626':'#2f6690'} onPress={()=> setAiMode(m=>!m)} />
               <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
             </View>
           </View>
@@ -530,64 +564,28 @@ export default function DashboardScreen() {
       }
     />
     {/* Floating Action Button with pulse */}
-  <AnimatedPressable style={[styles.fab, fabStyle]} onPress={()=> router.push('/create-task')}>
-      <Ionicons name='add' size={28} color='#fff' />
-    </AnimatedPressable>
-
-    <Modal visible={showActions} transparent animationType='fade' onRequestClose={()=>setShowActions(false)}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.actionSheet}>
-          <Text style={styles.sheetTitle} numberOfLines={2}>{actionTask?.title}</Text>
-          <Pressable style={styles.sheetBtn} onPress={() => { if(actionTask){ setShowActions(false); router.push({ pathname:'/create-task', params:{ editId: actionTask.id }} as any); } }}>
-            <Ionicons name='create-outline' size={18} color='#16425b' />
-            <Text style={styles.sheetBtnText}>Chỉnh sửa</Text>
+    <View style={styles.fabWrapper} pointerEvents="box-none">
+      {showFabMenu && <Pressable style={styles.fabBackdrop} onPress={()=> setShowFabMenu(false)} />}
+      {showFabMenu && (
+        <View style={styles.fabMenu}>
+          <Pressable style={[styles.fabAction,{ backgroundColor:'#3a7ca5' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-task'); }}>
+            <Ionicons name='add-circle-outline' size={22} color='#fff' />
+            <Text style={styles.fabActionText}>Tác vụ mới</Text>
           </Pressable>
-          <Pressable style={[styles.sheetBtn, styles.deleteBtn]} onPress={() => {
-            if(!actionTask) return;
-            Alert.alert('Xóa tác vụ','Bạn chắc chắn muốn xóa?',[
-              { text:'Hủy', style:'cancel' },
-              { text:'Xóa', style:'destructive', onPress: ()=> handleDelete(actionTask.id) }
-            ]);
-          }}>
-            <Ionicons name='trash-outline' size={18} color='#b91c1c' />
-            <Text style={[styles.sheetBtnText,{ color:'#b91c1c' }]}>{deleting? 'Đang xóa...' : 'Xóa'}</Text>
+          <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-schedule'); }}>
+            <Ionicons name='calendar-outline' size={22} color='#fff' />
+            <Text style={styles.fabActionText}>Lịch mới</Text>
           </Pressable>
-          <Pressable style={styles.sheetBtn} onPress={() => { if(actionTask){ setShowActions(false); openSubModal(actionTask);} }}>
-            <Ionicons name='list-outline' size={18} color='#16425b' />
-            <Text style={styles.sheetBtnText}>Subtasks</Text>
-          </Pressable>
-          <Pressable style={styles.cancelAction} onPress={()=>setShowActions(false)}>
-            <Text style={styles.cancelActionText}>Đóng</Text>
+          <Pressable style={[styles.fabAction,{ backgroundColor:'#16425b' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-project'); }}>
+            <Ionicons name='briefcase-outline' size={22} color='#fff' />
+            <Text style={styles.fabActionText}>Dự án mới</Text>
           </Pressable>
         </View>
-      </View>
-    </Modal>
-    <Modal visible={showSubModal} transparent animationType='fade' onRequestClose={closeSubModal}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.subModalBox}>
-          <Text style={styles.subModalTitle}>{subModalTask?.title}</Text>
-          <View style={styles.subList}>
-            {subModalTask?.subTasks?.length ? subModalTask.subTasks.map((st,i)=>(
-              <Pressable key={i} style={styles.subItem} onPress={()=>{ toggleSubTask(subModalTask.id, i); }}>
-                <View style={[styles.subCheck, st.completed && styles.subCheckDone]}>{st.completed && <Ionicons name='checkmark' size={14} color='#fff' />}</View>
-                <Text style={[styles.subItemText, st.completed && styles.subItemTextDone]}>{st.title}</Text>
-              </Pressable>
-            )): <Text style={styles.emptySub}>Chưa có subtask</Text>}
-          </View>
-          <Pressable style={styles.closeSubBtn} onPress={closeSubModal}><Text style={styles.closeSubText}>Đóng</Text></Pressable>
-        </View>
-      </View>
-    </Modal>
-    {toast && (
-      <View style={styles.toast}>
-        <Text style={styles.toastText}>{toast}</Text>
-        {toast.includes('Hoàn tác?') && (
-          <Pressable onPress={undoLastDelete} style={styles.undoInline}>          
-            <Text style={styles.undoInlineText}>Hoàn tác</Text>
-          </Pressable>
-        )}
-      </View>
-    )}
+      )}
+      <Pressable style={styles.fab} onPress={()=> setShowFabMenu(o=>!o)}>
+        <Ionicons name={showFabMenu? 'close':'add'} size={28} color='#fff' />
+      </Pressable>
+    </View>
     </SafeAreaView>
   );
 }
@@ -664,6 +662,10 @@ const styles = StyleSheet.create({
   quickGrid: { flexDirection:'row', flexWrap:'wrap', justifyContent:'space-between' },
   quickBtn: { width:'48%', borderRadius:18, paddingVertical:18, alignItems:'center', marginBottom:12 },
   quickLabel: { fontSize:12, fontWeight:'500', color:'#3a7ca5' },
+  fabWrapper:{ position:'absolute', bottom:0, right:0, left:0, top:0, zIndex:50 },
+  fabMenu:{ position:'absolute', bottom:110, right:24, alignItems:'flex-end', gap:14 },
+  fabAction:{ flexDirection:'row', alignItems:'center', paddingHorizontal:14, paddingVertical:10, borderRadius:18, gap:8, shadowColor:'#000', shadowOpacity:0.18, shadowRadius:6, elevation:4 },
+  fabActionText:{ color:'#fff', fontWeight:'600', fontSize:13 },
   fab: { position:'absolute', bottom:28, right:24, width:64, height:64, borderRadius:32, backgroundColor:'#3a7ca5', alignItems:'center', justifyContent:'center', shadowColor:'#000', shadowOpacity:0.2, shadowRadius:6, elevation:6 },
   modalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.28)', justifyContent:'flex-end' },
   actionSheet:{ backgroundColor:'#fff', padding:20, borderTopLeftRadius:28, borderTopRightRadius:28 },
@@ -718,4 +720,5 @@ const styles = StyleSheet.create({
   completedToggleRow:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:12 },
   completedScrollWrapper:{ maxHeight:200, borderRadius:16, overflow:'hidden' },
   completedScroll:{ },
+  fabBackdrop:{ position:'absolute', top:0, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.25)' },
 });
