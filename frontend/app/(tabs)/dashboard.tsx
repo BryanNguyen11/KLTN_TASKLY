@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
 import axios from 'axios';
@@ -33,6 +33,7 @@ export default function DashboardScreen() {
   const [toast, setToast] = useState<string | null>(null);
   const [showSubModal, setShowSubModal] = useState(false);
   const [subModalTask, setSubModalTask] = useState<Task | null>(null);
+  const [showCompletedCollapse, setShowCompletedCollapse] = useState(true);
   useEffect(()=>{
     if(toast){
       const t = setTimeout(()=> setToast(null), 1800);
@@ -415,7 +416,11 @@ export default function DashboardScreen() {
             </View>
             {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
             {error && <Text style={{ color:'#ef4444', marginBottom:12 }}>{error}</Text>}
-            {!loading && !error && filteredTasks.length===0 && <Text style={{ color:'#2f6690', marginBottom:12 }}>Không có tác vụ.</Text>}
+            {!loading && !error && filteredTasks.length===0 && (
+              selectedTab === 'Hôm nay' ?
+                <Text style={{ color:'#16425b', marginBottom:12, fontWeight:'600' }}>🎉 Bạn đã hoàn thành mọi tác vụ hôm nay!</Text> :
+                <Text style={{ color:'#2f6690', marginBottom:12 }}>Không có tác vụ.</Text>
+            )}
           </View>
         }
         renderItem={({ item, index }) => (
@@ -464,23 +469,32 @@ export default function DashboardScreen() {
         )}
         ListFooterComponent={
           <View style={{ marginTop: 16 }}>
-          {/* Completed tasks section */}
+          {/* Completed tasks section (collapsible) */}
           {tasks.some(t=>t.completed) && (
             <View style={{ marginBottom:24 }}>
-              <Text style={styles.completedHeader}>Đã hoàn thành</Text>
-              {tasks.filter(t=>t.completed).map(t => (
-                <View key={t.id} style={styles.completedItem}>
-                  <View style={{ flex:1 }}>
-                    <Text style={styles.completedTitle}>{t.title}</Text>
-                    {t.completedAt && (
-                      <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'})}</Text>
-                    )}
-                  </View>
-                  <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>
-                    <Text style={styles.undoText}>↺</Text>
-                  </Pressable>
+              <Pressable style={styles.completedToggleRow} onPress={()=> setShowCompletedCollapse(s=>!s)}>
+                <Text style={styles.completedHeader}>Đã hoàn thành</Text>
+                <Ionicons name={showCompletedCollapse? 'chevron-up' : 'chevron-down'} size={20} color={'#16425b'} />
+              </Pressable>
+              {showCompletedCollapse && (
+                <View style={styles.completedScrollWrapper}>
+                  <ScrollView style={styles.completedScroll} nestedScrollEnabled>
+                    {tasks.filter(t=>t.completed).map(t => (
+                      <View key={t.id} style={styles.completedItem}>
+                        <View style={{ flex:1 }}>
+                          <Text style={styles.completedTitle}>{t.title}</Text>
+                          {t.completedAt && (
+                            <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'})}</Text>
+                          )}
+                        </View>
+                        <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>
+                          <Text style={styles.undoText}>↺</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </ScrollView>
                 </View>
-              ))}
+              )}
             </View>
           )}
           {/* Projects (show leader projects) */}
@@ -701,4 +715,7 @@ const styles = StyleSheet.create({
   dotSmallOutline:{ borderWidth:1, borderColor:'#fff' },
   // remove old dot styles kept for backward compatibility
   // dot and dotActive no longer used by new logic
+  completedToggleRow:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:12 },
+  completedScrollWrapper:{ maxHeight:200, borderRadius:16, overflow:'hidden' },
+  completedScroll:{ },
 });
