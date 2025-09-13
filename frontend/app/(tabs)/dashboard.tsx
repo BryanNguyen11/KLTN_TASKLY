@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView } from 'react-native';
+import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
 import { aiOrderedTasks } from '@/utils/aiTaskSort';
@@ -193,7 +194,6 @@ export default function DashboardScreen() {
       .then(res => {
         const u = res.data;
         DeviceEventEmitter.emit('taskUpdated', u);
-        setToast('Đã cập nhật');
       })
       .catch(()=>{
         // rollback on error
@@ -252,6 +252,7 @@ export default function DashboardScreen() {
         completionPercent: newTask.completionPercent
       };
       setTasks(prev => [adapted, ...prev]);
+      setToast('Đã thêm tác vụ');
     });
     const upd = DeviceEventEmitter.addListener('taskUpdated', (uTask: any) => {
       const adapted: Task = {
@@ -270,6 +271,7 @@ export default function DashboardScreen() {
         completionPercent: uTask.completionPercent
       };
       setTasks(prev => prev.map(t=> t.id===adapted.id ? { ...t, ...adapted } : t));
+      setToast('Đã cập nhật');
     });
   const toastListener = DeviceEventEmitter.addListener('toast', (msg:string)=> setToast(msg));
   return () => { sub.remove(); upd.remove(); toastListener.remove(); };
@@ -493,24 +495,42 @@ export default function DashboardScreen() {
                 else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
               }
               return (
-                <Pressable onLongPress={()=>{ setActionTask(item); setShowActions(true); }} delayLongPress={350} onPress={() => toggleTask(item.id)} style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
-              <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
-                {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
-              </Animated.View>
-              <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
-              <View style={{ flex:1 }}>
-                <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
-                <View style={styles.metaRow}>
-                  {!!item.time && (<>
-                    <Ionicons name="time" size={12} color="#2f6690" />
-                    <Text style={styles.metaText}>{item.time}</Text>
-                  </>)}
-                  {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
-                  {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
-                </View>
-                {/* Subtask progress removed as requested */}
-              </View>
-            </Pressable>
+                <Swipeable
+                  overshootRight={false}
+                  renderRightActions={() => (
+                    <Pressable style={styles.swipeDeleteBtn} onPress={()=> handleDelete(item.id)}>
+                      <Ionicons name='trash' size={22} color='#fff' />
+                    </Pressable>
+                  )}
+                >
+                  <View style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
+                    <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:12 }}>
+                      <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
+                        {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
+                      </Animated.View>
+                    </Pressable>
+                    <Pressable
+                      style={{ flex:1 }}
+                      hitSlop={4}
+                      delayLongPress={350}
+                      onLongPress={()=>{ setActionTask(item); setShowActions(true); }}
+                      onPress={()=> { if(item.subTasks && item.subTasks.length>0){ openSubModal(item); } else { router.push({ pathname:'/create-task', params:{ editId: item.id } }); } }}
+                    >
+                      <View style={{ flexDirection:'row', alignItems:'center' }}>
+                        <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
+                        <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
+                      </View>
+                      <View style={styles.metaRow}>
+                        {!!item.time && (<>
+                          <Ionicons name="time" size={12} color="#2f6690" />
+                          <Text style={styles.metaText}>{item.time}</Text>
+                        </>)}
+                        {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
+                        {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
+                      </View>
+                    </Pressable>
+                  </View>
+                </Swipeable>
               );
             })()}
           </Animated.View>
@@ -619,6 +639,16 @@ export default function DashboardScreen() {
         </View>
       </Pressable>
     </Modal>
+    {toast && (
+      <View style={styles.toast} pointerEvents='box-none'>
+        <Text style={styles.toastText}>{toast}</Text>
+        {toast.includes('Hoàn tác?') && (
+          <Pressable style={styles.undoInline} onPress={undoLastDelete}>
+            <Text style={styles.undoInlineText}>Hoàn tác</Text>
+          </Pressable>
+        )}
+      </View>
+    )}
     </SafeAreaView>
   );
 }
@@ -762,4 +792,5 @@ const styles = StyleSheet.create({
   completedScrollWrapper:{ maxHeight:200, borderRadius:16, overflow:'hidden' },
   completedScroll:{ },
   fabBackdrop:{ position:'absolute', top:0, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.25)' },
+  swipeDeleteBtn:{ width:72, justifyContent:'center', alignItems:'center', backgroundColor:'#dc2626', marginBottom:12, borderTopRightRadius:18, borderBottomRightRadius:18 },
 });
