@@ -78,6 +78,13 @@ export default function CreateTaskScreen() {
     setForm(prev => ({ ...prev, [key]: value }));
   }, []);
 
+  // Format YYYY-MM-DD -> DD/MM/YYYY for display only
+  const toDisplayDate = (iso: string) => {
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const [y,m,d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+
   const toggleTag = (tagId: string, name?: string) => {
     setForm(prev => ({
       ...prev,
@@ -299,7 +306,7 @@ export default function CreateTaskScreen() {
             <View style={[styles.field, styles.half]}>
               <Text style={styles.label}>Ngày bắt đầu</Text>
               <Pressable onPress={()=>openDate('date')} style={[styles.pickerBtn, errors.start && styles.pickerBtnError]}> 
-                <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{form.date}</Text>
+                <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{toDisplayDate(form.date)}</Text>
               </Pressable>
             </View>
             <View style={[styles.field, styles.half]}>
@@ -314,7 +321,7 @@ export default function CreateTaskScreen() {
               <Text style={styles.label}>Ngày kết thúc</Text>
               <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
                 <Pressable onPress={()=>openDate('endDate')} style={[styles.pickerBtn,{ flex:1 }, errors.end && styles.pickerBtnError]}> 
-                  <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endDate}</Text>
+                  <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{toDisplayDate(form.endDate)}</Text>
                 </Pressable>
               </View>
             </View>
