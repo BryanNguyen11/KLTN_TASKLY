@@ -20,6 +20,14 @@ interface FormState {
   notes: string;
   link: string;
   props: Record<string, string>;
+  // repeat rule (optional)
+  isRepeating?: boolean;
+  repeat?: {
+    frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+    endMode?: 'never' | 'onDate' | 'after';
+    endDate?: string;
+    count?: number;
+  };
 }
 
 export default function CreateEventScreen(){
@@ -32,7 +40,7 @@ export default function CreateEventScreen(){
   const [saving, setSaving] = useState(false);
   const [types, setTypes] = useState<EventTypeDoc[]>([]);
   const [loadingTypes, setLoadingTypes] = useState(false);
-  const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|null}>({mode:'date', field:null});
+  const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|'repeatEndDate'|null}>({mode:'date', field:null});
   const [tempDate, setTempDate] = useState<Date | null>(null);
   const [errors, setErrors] = useState<{start?:string; end?:string}>({});
   const [form, setForm] = useState<FormState>({
@@ -45,7 +53,9 @@ export default function CreateEventScreen(){
     location: '',
     notes: '',
     link: '',
-    props: {}
+    props: {},
+    isRepeating: false,
+    repeat: undefined,
   });
 
   const authHeader = () => ({ headers: { Authorization: token ? `Bearer ${token}` : '' } });
@@ -55,7 +65,14 @@ export default function CreateEventScreen(){
     setLoadingTypes(true);
     try {
       const res = await axios.get(`${API_BASE}/api/event-types`, authHeader());
-      setTypes(res.data);
+      const list: EventTypeDoc[] = res.data;
+      setTypes(list);
+      // Default select a type similar to Google Calendar (first default type if exists)
+      setForm(prev => {
+        if(prev.typeId) return prev;
+        const preferred = list.find(t=> t.isDefault) || list[0];
+        return preferred ? { ...prev, typeId: preferred._id } : prev;
+      });
     } catch(e) { /* silent */ } finally { setLoadingTypes(false); }
   };
 
@@ -64,6 +81,20 @@ export default function CreateEventScreen(){
   const update = useCallback(<K extends keyof FormState>(key:K, value: FormState[K]) => {
     setForm(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  // When event type changes, prune props to only fields of that type to avoid duplicates
+  useEffect(() => {
+    const t = types.find(tt=> tt._id === form.typeId);
+    if(!t) return;
+    setForm(prev => {
+      const allowed = new Set(t.fields.map(f=> f.key));
+      const nextProps: Record<string,string> = {};
+      for(const k of Object.keys(prev.props||{})){
+        if(allowed.has(k)) nextProps[k] = prev.props[k];
+      }
+      return { ...prev, props: nextProps };
+    });
+  }, [form.typeId, types]);
 
   const parseDateValue = (field:'date'|'endDate') => {
     const raw = (form as any)[field];
@@ -88,7 +119,9 @@ export default function CreateEventScreen(){
     if(selected && showPicker.field){
       if(showPicker.mode==='date'){
         const iso = selected.toISOString().split('T')[0];
-        if(showPicker.field === 'endDate'){
+        if(showPicker.field === 'repeatEndDate'){
+          setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
+        } else if(showPicker.field === 'endDate'){
           setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
         } else setForm(prev => ({ ...prev, date: iso }));
       } else {
@@ -103,7 +136,9 @@ export default function CreateEventScreen(){
     if(tempDate && showPicker.field){
       if(showPicker.mode==='date'){
         const iso = tempDate.toISOString().split('T')[0];
-        if(showPicker.field === 'endDate'){
+        if(showPicker.field === 'repeatEndDate'){
+          setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
+        } else if(showPicker.field === 'endDate'){
           setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
         } else setForm(prev => ({ ...prev, date: iso }));
       } else {
@@ -144,7 +179,7 @@ export default function CreateEventScreen(){
       if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
     }
     setSaving(true);
-    const payload = {
+    const payload: any = {
       title: form.title.trim(),
       typeId: form.typeId,
       date: form.date,
@@ -156,6 +191,7 @@ export default function CreateEventScreen(){
       link: form.link || undefined,
       props: form.props
     };
+    if(form.isRepeating && form.repeat){ payload.repeat = form.repeat; }
     try {
       if(editId){
         const res = await axios.put(`${API_BASE}/api/events/${editId}`, payload, authHeader());
@@ -259,6 +295,61 @@ export default function CreateEventScreen(){
           </View>
         </View>
 
+        {/* Repeat rule */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Lặp lại</Text>
+          <View style={[styles.field, { flexDirection:'row', alignItems:'center', justifyContent:'space-between' }]}>
+            <Text style={styles.label}>Lặp lại sự kiện</Text>
+            <Switch value={!!form.isRepeating} onValueChange={(v)=> setForm(prev => ({ ...prev, isRepeating: v, repeat: v? (prev.repeat || { frequency:'weekly', endMode:'never' }): undefined }))} />
+          </View>
+          {!!form.isRepeating && (
+            <>
+              <View style={styles.field}>
+                <Text style={styles.label}>Tần suất</Text>
+                <View style={styles.typeList}>
+                  {(['daily','weekly','monthly','yearly'] as const).map(freq => {
+                    const active = form.repeat?.frequency === freq;
+                    const label = freq==='daily'? 'Hàng ngày' : freq==='weekly'? 'Hàng tuần' : freq==='monthly'? 'Hàng tháng' : 'Hàng năm';
+                    return (
+                      <Pressable key={freq} onPress={()=> setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{}), frequency: freq } }))} style={[styles.typeChip, active && styles.typeChipActive]}>
+                        <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+              <View style={styles.field}>
+                <Text style={styles.label}>Kết thúc</Text>
+                <View style={styles.typeList}>
+                  {(['never','after','onDate'] as const).map(mode => {
+                    const active = (form.repeat?.endMode || 'never') === mode;
+                    const label = mode==='never'? 'Không bao giờ' : mode==='after'? 'Sau số lần' : 'Vào ngày';
+                    return (
+                      <Pressable key={mode} onPress={()=> setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: mode } }))} style={[styles.typeChip, active && styles.typeChipActive]}>
+                        <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {(form.repeat?.endMode === 'after') && (
+                  <View style={[styles.field, { marginTop:8 }]}>
+                    <Text style={styles.label}>Số lần</Text>
+                    <TextInput style={styles.input} keyboardType='number-pad' placeholder='VD: 10' value={String(form.repeat?.count||'')} onChangeText={(t)=> setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode:'after', count: parseInt(t||'0',10) || undefined } }))} />
+                  </View>
+                )}
+                {(form.repeat?.endMode === 'onDate') && (
+                  <View style={[styles.field, { marginTop:8 }]}>
+                    <Text style={styles.label}>Ngày kết thúc lặp</Text>
+                    <Pressable onPress={()=>{ setTempDate(form.repeat?.endDate? new Date(form.repeat.endDate+'T00:00:00'): new Date()); setShowPicker({ mode:'date', field:'repeatEndDate' }); }} style={styles.pickerBtn}>
+                      <Text style={styles.pickerText}>{form.repeat?.endDate? toDisplayDate(form.repeat.endDate): 'Không chọn'}</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            </>
+          )}
+        </View>
+
         {selectedType && (
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>Thuộc tính ({selectedType.name})</Text>
@@ -292,6 +383,15 @@ export default function CreateEventScreen(){
             else display = `${toDisplayDate(startDate)} ${form.startTime || ''} → ${toDisplayDate(endDate)} ${form.endTime || ''}`;
             return <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Thời gian:</Text><Text style={styles.summaryValue}>{display}</Text></View>;
           })()}
+          {!!form.isRepeating && form.repeat && (
+            <View style={styles.summaryRow}>
+              <Text style={styles.summaryLabel}>Lặp lại:</Text>
+              <Text style={styles.summaryValue}>
+                {form.repeat.frequency==='daily'? 'Hàng ngày' : form.repeat.frequency==='weekly'? 'Hàng tuần' : form.repeat.frequency==='monthly'? 'Hàng tháng' : 'Hàng năm'}
+                {form.repeat.endMode==='never'? '' : form.repeat.endMode==='after'? ` • Sau ${form.repeat.count||0} lần` : form.repeat.endDate? ` • đến ${toDisplayDate(form.repeat.endDate)}` : ''}
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={{ height: 40 }} />

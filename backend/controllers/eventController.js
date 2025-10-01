@@ -4,13 +4,13 @@ const EventType = require('../models/EventType');
 exports.createEvent = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {} } = req.body;
+  const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {}, repeat } = req.body;
     if (!title || !typeId || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     // check type exists
     const et = await EventType.findById(typeId);
     if (!et) return res.status(400).json({ message: 'Loại sự kiện không hợp lệ' });
     if (endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
-    const doc = await Event.create({ userId, title, typeId, date, endDate, startTime, endTime, location, notes, link, tags, props });
+  const doc = await Event.create({ userId, title, typeId, date, endDate, startTime, endTime, location, notes, link, tags, props, repeat });
     res.status(201).json(doc);
   } catch (e) {
     res.status(500).json({ message: 'Lỗi tạo sự kiện', error: e.message });

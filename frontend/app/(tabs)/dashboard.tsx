@@ -43,7 +43,8 @@ export default function DashboardScreen() {
   const { user, token } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
-  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string };
+  type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
+  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule };
   const [events, setEvents] = useState<EventItem[]>([]);
   const [aiMode, setAiMode] = useState(false); // AI suggestion sorting active
   const [loading, setLoading] = useState(false);
@@ -153,6 +154,71 @@ export default function DashboardScreen() {
     return arr;
   };
   const weekISO = buildWeek(selectedDateISO);
+
+  // Recurrence helpers (expand events with repeat)
+  const isoToDate = (iso: string) => { const [y,m,d] = iso.split('-').map(n=>parseInt(String(n),10)); return new Date(y, (m||1)-1, d||1); };
+  const addDaysISO = (iso: string, n: number) => { const dt = isoToDate(iso); dt.setDate(dt.getDate()+n); return toLocalISODate(dt); };
+  const diffDays = (aIso: string, bIso: string) => { const a = isoToDate(aIso); const b = isoToDate(bIso); const ms = b.getTime()-a.getTime(); return Math.round(ms/86400000); };
+  const addMonthsISO = (iso: string, n: number) => { const d = isoToDate(iso); const day = d.getDate(); const target = new Date(d.getFullYear(), d.getMonth()+n, day); if(target.getDate()!==day) return null; return toLocalISODate(target); };
+  const diffMonths = (startIso: string, iso: string) => { const a = isoToDate(startIso); const b = isoToDate(iso); return (b.getFullYear()-a.getFullYear())*12 + (b.getMonth()-a.getMonth()); };
+  const occursOnDate = (ev: EventItem, iso: string): boolean => {
+    const span = ev.endDate ? (diffDays(ev.date, ev.endDate) + 1) : 1;
+    const withinSpan = (occStart: string) => {
+      if(span <= 1) return occStart === iso;
+      const occEnd = addDaysISO(occStart, span-1);
+      return occStart <= iso && iso <= occEnd;
+    };
+    if(!ev.repeat){
+      if(!ev.endDate) return ev.date === iso;
+      return ev.date <= iso && iso <= ev.endDate;
+    }
+    const r = ev.repeat;
+    if(!r) return false;
+    const start = ev.date;
+    if(iso < start) return false;
+    const endMode = r.endMode || 'never';
+    if(r.frequency==='daily'){
+      const k = diffDays(start, iso);
+      if(k < 0) return false;
+      const occStart = addDaysISO(start, k);
+      const n = k + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='weekly'){
+      const k = Math.floor(diffDays(start, iso)/7);
+      if(k < 0) return false;
+      const occStart = addDaysISO(start, k*7);
+      if(occStart > iso) return false;
+      const n = k + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='monthly'){
+      const m = diffMonths(start, iso);
+      if(m < 0) return false;
+      const occStart = addMonthsISO(start, m);
+      if(!occStart || occStart > iso) return false;
+      const n = m + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='yearly'){
+      const a = isoToDate(start), b = isoToDate(iso);
+      const years = b.getFullYear() - a.getFullYear();
+      if(years < 0) return false;
+      const occStart = toLocalISODate(new Date(a.getFullYear()+years, a.getMonth(), a.getDate()));
+      if(occStart > iso) return false;
+      const n = years + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    return false;
+  };
 
   // Month matrix (6 rows x 7 cols) storing ISO or '' for padding
   const monthMatrix = React.useMemo(()=> {
@@ -269,7 +335,8 @@ export default function DashboardScreen() {
         endDate: e.endDate,
         startTime: e.startTime,
         endTime: e.endTime,
-        location: e.location
+        location: e.location,
+        repeat: e.repeat
       }));
       setEvents(mapped);
     } catch(e){ /* silent for now */ }
@@ -287,6 +354,7 @@ export default function DashboardScreen() {
         startTime: ev.startTime,
         endTime: ev.endTime,
         location: ev.location,
+        repeat: ev.repeat,
       } as EventItem;
       setEvents(prev => [adapted, ...prev]);
     });
@@ -477,13 +545,13 @@ export default function DashboardScreen() {
                   const [y,m,d] = iso.split('-');
                   const display = `${d}/${m}`;
                   const w = weekdayVNFromISO(iso);
-                  const dayEvents = events.filter(ev => ev.date === iso);
+                  const dayEvents = events.filter(ev => occursOnDate(ev, iso));
                   const dayTasks = tasks.filter(t => !t.completed && t.date === iso);
                   const isToday = iso === todayISO;
                   return (
                     <Animated.View key={iso} entering={FadeInDown.delay(60 + i*30)} style={[styles.weekDayCard, isToday && styles.weekDayCardToday]}>
                       <View style={styles.weekDayHeader}>
-                        <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                        <View style={{ flexDirection:'row', alignItems:'center', gap:8, flexShrink:1 }}>
                           <Ionicons name='calendar-outline' size={16} color='#16425b' />
                           <Text style={styles.weekDayTitle}>{w}, {display}</Text>
                           {isToday && (
@@ -493,7 +561,16 @@ export default function DashboardScreen() {
                             </View>
                           )}
                         </View>
-                        <Text style={styles.weekDayCount}>{dayEvents.length} sự kiện • {dayTasks.length} tác vụ</Text>
+                        <View style={styles.countsRow}>
+                          <View style={[styles.countPill, styles.eventsCountPill]}>
+                            <Ionicons name='calendar-outline' size={12} color='#2f6690' />
+                            <Text style={[styles.countText, styles.eventsCountText]}>{dayEvents.length}</Text>
+                          </View>
+                          <View style={[styles.countPill, styles.tasksCountPill]}>
+                            <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
+                            <Text style={[styles.countText, styles.tasksCountText]}>{dayTasks.length}</Text>
+                          </View>
+                        </View>
                       </View>
                       {dayEvents.length>0 ? (
                         <View style={styles.eventList}>
@@ -574,6 +651,90 @@ export default function DashboardScreen() {
                     })}
                   </View>
                 ))}
+                {/* Day detail card: show both events and tasks for selected day */}
+                {selectedDateISO ? (
+                  (() => {
+                    const iso = selectedDateISO;
+                    const [y,m,d] = iso.split('-');
+                    const display = `${d}/${m}/${y}`;
+                    const w = weekdayVNFromISO(iso);
+                    const isToday = iso === todayISO;
+                    const dayEvents = events.filter(ev => occursOnDate(ev, iso));
+                    const dayTasks = tasks.filter(t => !t.completed && t.date === iso);
+                    return (
+                      <Animated.View entering={FadeInDown.delay(40)} style={[styles.weekDayCard, { marginTop: 8 }, isToday && styles.weekDayCardToday]}>
+                        <View style={styles.weekDayHeader}>
+                          <View style={{ flexDirection:'row', alignItems:'center', gap:8, flexShrink:1 }}>
+                            <Ionicons name='calendar-outline' size={16} color='#16425b' />
+                            <Text style={styles.weekDayTitle}>{w}, {display}</Text>
+                            {isToday && (
+                              <View style={styles.todayPill}>
+                                <Ionicons name='sunny-outline' size={12} color='#fff' style={{ marginRight:4 }} />
+                                <Text style={styles.todayPillText}>Hôm nay</Text>
+                              </View>
+                            )}
+                          </View>
+                          <View style={styles.countsRow}>
+                            <View style={[styles.countPill, styles.eventsCountPill]}>
+                              <Ionicons name='calendar-outline' size={12} color='#2f6690' />
+                              <Text style={[styles.countText, styles.eventsCountText]}>{dayEvents.length}</Text>
+                            </View>
+                            <View style={[styles.countPill, styles.tasksCountPill]}>
+                              <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
+                              <Text style={[styles.countText, styles.tasksCountText]}>{dayTasks.length}</Text>
+                            </View>
+                          </View>
+                        </View>
+                        {dayEvents.length>0 ? (
+                          <View style={styles.eventList}>
+                            {dayEvents.map((ev, idx) => {
+                              const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
+                              return (
+                                <View key={ev.id+idx} style={styles.eventChip}>
+                                  <View style={styles.eventColorBar} />
+                                  <View style={{ flex:1 }}>
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='time-outline' size={14} color='#2f6690' />
+                                      {time ? (
+                                        <Text style={styles.eventChipTime}>{time}</Text>
+                                      ) : (
+                                        <View style={styles.allDayPill}><Text style={styles.allDayPillText}>Cả ngày</Text></View>
+                                      )}
+                                    </View>
+                                    <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                    {!!ev.location && (
+                                      <View style={styles.eventMetaRow}>
+                                        <Ionicons name='location-outline' size={14} color='#607d8b' />
+                                        <Text style={styles.eventChipLoc} numberOfLines={1}>{ev.location}</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        ) : (
+                          <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                        )}
+                        {dayTasks.length>0 ? (
+                          <View style={styles.dayTaskChips}>
+                            {dayTasks.map((t, idx) => { 
+                              const ttime = t.time || null;
+                              return (
+                                <View key={t.id+idx} style={styles.taskChip}>
+                                  <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                  <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                  {!!ttime && <Text style={styles.taskChipTime}>{ttime}</Text>}
+                                </View>
+                              )})}
+                          </View>
+                        ) : (
+                          <Text style={styles.emptyHint}>Không có tác vụ</Text>
+                        )}
+                      </Animated.View>
+                    );
+                  })()
+                ) : null}
               </View>
             )}
             <View style={styles.sectionHeader}>
@@ -959,6 +1120,13 @@ const styles = StyleSheet.create({
   weekDayHeader:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8 },
   weekDayTitle:{ color:'#16425b', fontWeight:'700' },
   weekDayCount:{ color:'#607d8b', fontSize:12 },
+  countsRow:{ flexDirection:'row', alignItems:'center', gap:6 },
+  countPill:{ flexDirection:'row', alignItems:'center', gap:4, paddingHorizontal:8, paddingVertical:2, borderRadius:999 },
+  eventsCountPill:{ backgroundColor:'rgba(129,195,215,0.18)' },
+  tasksCountPill:{ backgroundColor:'rgba(217,220,214,0.6)' },
+  countText:{ fontSize:12, fontWeight:'700' },
+  eventsCountText:{ color:'#2f6690' },
+  tasksCountText:{ color:'#16425b' },
   eventList:{ gap:8 },
   eventChip:{ backgroundColor:'rgba(58,124,165,0.06)', borderRadius:12, padding:10, flexDirection:'row' },
   eventChipTime:{ color:'#2f6690', fontSize:12, fontWeight:'600', marginBottom:2 },
