@@ -348,7 +348,7 @@ export default function CreateTaskScreen() {
             <Text style={styles.label}>Tên tác vụ *</Text>
             <TextInput
               style={styles.input}
-              placeholder='VD: Hoàn thành bài tập Toán'
+              placeholder='VD: Một công việc bạn cần hoàn thành'
               value={form.title}
               onChangeText={t=>update('title', t)}
             />

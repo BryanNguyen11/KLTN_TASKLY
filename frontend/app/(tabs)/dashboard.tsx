@@ -21,12 +21,30 @@ const importanceDotColor = (importance?: string) => {
   }
 };
 
+// Local date helpers: ensure app follows device local time (not UTC)
+const toLocalISODate = (d?: Date) => {
+  const dt = d || new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const weekdayVNFromISO = (iso: string) => {
+  if(!iso) return '';
+  const [y,m,d] = iso.split('-').map(Number);
+  const dt = new Date(y, (m||1)-1, d||1);
+  const names = ['Chủ nhật','Thứ 2','Thứ 3','Thứ 4','Thứ 5','Thứ 6','Thứ 7'];
+  return names[dt.getDay()];
+};
+
 export default function DashboardScreen() {
   // NEW: date filtering enhancement plan
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
   const { user, token } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
+  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string };
+  const [events, setEvents] = useState<EventItem[]>([]);
   const [aiMode, setAiMode] = useState(false); // AI suggestion sorting active
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +104,13 @@ export default function DashboardScreen() {
   };
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
-  const todayISO = new Date().toISOString().split('T')[0];
+  // Keep a ticking now to refresh "today" and any relative date logic
+  const [now, setNow] = useState<Date>(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60 * 1000); // refresh each minute
+    return () => clearInterval(id);
+  }, []);
+  const todayISO = toLocalISODate(now);
   const [selectedDateISO, setSelectedDateISO] = useState<string>(todayISO);
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const days = getDaysOfWeek();
@@ -124,7 +148,7 @@ export default function DashboardScreen() {
     for(let i=0;i<7;i++){
       const d = new Date(start);
       d.setDate(start.getDate()+i);
-      arr.push(d.toISOString().split('T')[0]);
+      arr.push(toLocalISODate(d));
     }
     return arr;
   };
@@ -140,7 +164,7 @@ export default function DashboardScreen() {
     const cells: string[] = [];
     for(let i=0;i<firstDay;i++) cells.push('');
     for(let d=1; d<=daysInMonth; d++){
-      const iso = new Date(year, month, d).toISOString().split('T')[0];
+      const iso = toLocalISODate(new Date(year, month, d));
       cells.push(iso);
     }
     while(cells.length % 7 !== 0) cells.push('');
@@ -208,7 +232,7 @@ export default function DashboardScreen() {
     if(!token) return;
     setLoading(true); setError(null);
     try {
-      const res = await axios.get(`${API_BASE}/api/tasks`);
+      const res = await axios.get(`${API_BASE}/api/tasks`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
       // Map API tasks to local Task interface
       const mapped: Task[] = res.data.map((t: any) => ({
         id: t._id,
@@ -232,6 +256,42 @@ export default function DashboardScreen() {
   };
 
   useEffect(()=>{ fetchTasks(); },[token]);
+
+  // Fetch events from API
+  const fetchEvents = async () => {
+    if(!token) return;
+    try {
+      const res = await axios.get(`${API_BASE}/api/events`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      const mapped: EventItem[] = res.data.map((e:any)=>({
+        id: e._id,
+        title: e.title,
+        date: e.date?.split('T')[0] || e.date,
+        endDate: e.endDate,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        location: e.location
+      }));
+      setEvents(mapped);
+    } catch(e){ /* silent for now */ }
+  };
+  useEffect(()=>{ fetchEvents(); },[token]);
+
+  // Listen for eventCreated to update without refetch
+  useEffect(()=>{
+    const onEvt = DeviceEventEmitter.addListener('eventCreated', (ev:any) => {
+      const adapted = {
+        id: ev._id || ev.id,
+        title: ev.title,
+        date: ev.date?.split('T')[0] || ev.date,
+        endDate: ev.endDate,
+        startTime: ev.startTime,
+        endTime: ev.endTime,
+        location: ev.location,
+      } as EventItem;
+      setEvents(prev => [adapted, ...prev]);
+    });
+    return () => { onEvt.remove(); };
+  }, []);
 
   // Listen for new task created from create-task screen (append without refetch)
   useEffect(() => {
@@ -407,22 +467,79 @@ export default function DashboardScreen() {
             {/* Dynamic date pickers */}
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
-                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({(() => { const [y,m,d] = todayISO.split('-'); return `${d}/${m}/${y}`; })()})</Text>
+                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({(() => { const [y,m,d] = todayISO.split('-'); const w = weekdayVNFromISO(todayISO); return `${w}, ${d}/${m}/${y}`; })()})</Text>
               </View>
             )}
+            {/* Ẩn hàng ô số (ngày) ở chế độ tuần để tập trung phần thẻ bên dưới */}
             {selectedTab === 'Tuần' && (
-              <View style={styles.weekRow}>
-    {weekISO.map((iso,i)=> {
-                  const active = iso === selectedDateISO;
-                  const dayNum = parseInt(iso.split('-')[2],10);
-                  const info = taskMap[iso];
+              <View style={{ marginTop: 8 }}>
+                {weekISO.map((iso, i) => {
+                  const [y,m,d] = iso.split('-');
+                  const display = `${d}/${m}`;
+                  const w = weekdayVNFromISO(iso);
+                  const dayEvents = events.filter(ev => ev.date === iso);
+                  const dayTasks = tasks.filter(t => !t.completed && t.date === iso);
+                  const isToday = iso === todayISO;
                   return (
-                    <Pressable key={iso} onPress={()=> selectDay(iso)}>
-                      <Animated.View entering={FadeInDown.delay(i*25)} style={[styles.dayBtn, active && styles.dayActive]}>                        
-                        <Text style={[styles.dayText, active && styles.dayTextActive]}>{dayNum}</Text>
-      {info && <View style={[styles.dotBase, { backgroundColor: info.completed === info.total ? '#9ca3af' : info.color }, active && styles.dotActiveOutline]} />}
-                      </Animated.View>
-                    </Pressable>
+                    <Animated.View key={iso} entering={FadeInDown.delay(60 + i*30)} style={[styles.weekDayCard, isToday && styles.weekDayCardToday]}>
+                      <View style={styles.weekDayHeader}>
+                        <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                          <Ionicons name='calendar-outline' size={16} color='#16425b' />
+                          <Text style={styles.weekDayTitle}>{w}, {display}</Text>
+                          {isToday && (
+                            <View style={styles.todayPill}>
+                              <Ionicons name='sunny-outline' size={12} color='#fff' style={{ marginRight:4 }} />
+                              <Text style={styles.todayPillText}>Hôm nay</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.weekDayCount}>{dayEvents.length} sự kiện • {dayTasks.length} tác vụ</Text>
+                      </View>
+                      {dayEvents.length>0 ? (
+                        <View style={styles.eventList}>
+                          {dayEvents.map((ev, idx) => {
+                            const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
+                            return (
+                              <View key={ev.id+idx} style={styles.eventChip}>
+                                <View style={styles.eventColorBar} />
+                                <View style={{ flex:1 }}>
+                                  <View style={styles.eventMetaRow}>
+                                    <Ionicons name='time-outline' size={14} color='#2f6690' />
+                                    {time ? (
+                                      <Text style={styles.eventChipTime}>{time}</Text>
+                                    ) : (
+                                      <View style={styles.allDayPill}><Text style={styles.allDayPillText}>Cả ngày</Text></View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {!!ev.location && (
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='location-outline' size={14} color='#607d8b' />
+                                      <Text style={styles.eventChipLoc} numberOfLines={1}>{ev.location}</Text>
+                                    </View>
+                                  )}
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      ) : (
+                        <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                      )}
+                      {dayTasks.length>0 ? (
+                        <View style={styles.dayTaskChips}>
+                          {dayTasks.map((t, idx) => (
+                            <View key={t.id+idx} style={styles.taskChip}>
+                              <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                              <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                              {!!t.time && <Text style={styles.taskChipTime}>{t.time}</Text>}
+                            </View>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text style={styles.emptyHint}>Không có tác vụ</Text>
+                      )}
+                    </Animated.View>
                   );
                 })}
               </View>
@@ -489,13 +606,13 @@ export default function DashboardScreen() {
               // deadline color logic
               let deadlineStyle: any = null;
               if(item.endDate){
-                const todayISO = new Date().toISOString().split('T')[0];
+                const localToday = toLocalISODate(new Date());
                 // Attempt to parse end time from item.time (pattern HH:MM-HH:MM)
                 let endTime: string | undefined;
                 if(item.time && item.time.includes('-')) endTime = item.time.split('-')[1];
                 const endDeadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
                 const now = new Date();
-                const isEndToday = item.endDate === todayISO;
+                const isEndToday = item.endDate === localToday;
                 const isOverdue = now > endDeadline;
                 if(isOverdue) deadlineStyle = styles.deadlineOverdueCard;
                 else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
@@ -612,9 +729,9 @@ export default function DashboardScreen() {
             <Ionicons name='add-circle-outline' size={22} color='#fff' />
             <Text style={styles.fabActionText}>Tác vụ mới</Text>
           </Pressable>
-          <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-schedule'); }}>
+          <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-event'); }}>
             <Ionicons name='calendar-outline' size={22} color='#fff' />
-            <Text style={styles.fabActionText}>Lịch mới</Text>
+            <Text style={styles.fabActionText}>Sự kiện mới</Text>
           </Pressable>
           <Pressable style={[styles.fabAction,{ backgroundColor:'#16425b' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-project'); }}>
             <Ionicons name='briefcase-outline' size={22} color='#fff' />
@@ -837,4 +954,28 @@ const styles = StyleSheet.create({
   completedScroll:{ },
   fabBackdrop:{ position:'absolute', top:0, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.25)' },
   swipeDeleteBtn:{ width:72, justifyContent:'center', alignItems:'center', backgroundColor:'#dc2626', marginBottom:12, borderTopRightRadius:18, borderBottomRightRadius:18 },
+  // Week event/task section
+  weekDayCard:{ backgroundColor:'#fff', borderRadius:16, padding:12, marginBottom:10, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:1 },
+  weekDayHeader:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8 },
+  weekDayTitle:{ color:'#16425b', fontWeight:'700' },
+  weekDayCount:{ color:'#607d8b', fontSize:12 },
+  eventList:{ gap:8 },
+  eventChip:{ backgroundColor:'rgba(58,124,165,0.06)', borderRadius:12, padding:10, flexDirection:'row' },
+  eventChipTime:{ color:'#2f6690', fontSize:12, fontWeight:'600', marginBottom:2 },
+  eventChipTitle:{ color:'#16425b', fontWeight:'600' },
+  eventChipLoc:{ color:'#607d8b', fontSize:12 },
+  dayTaskChips:{ flexDirection:'row', flexWrap:'wrap', gap:8, marginTop:10 },
+  taskChip:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'rgba(217,220,214,0.5)', paddingHorizontal:10, paddingVertical:6, borderRadius:12 },
+  taskChipDot:{ width:8, height:8, borderRadius:4 },
+  taskChipText:{ color:'#16425b', maxWidth:220 },
+  taskChipTime:{ marginLeft:6, color:'#607d8b', fontSize:12 },
+  emptyHint:{ color:'#94a3b8', fontSize:12, marginTop:4 },
+  // Enhancements for week card visuals
+  weekDayCardToday:{ borderWidth:1, borderColor:'#2f6690' },
+  todayPill:{ flexDirection:'row', alignItems:'center', backgroundColor:'#3a7ca5', borderColor:'#81c3d7', borderWidth:1, paddingHorizontal:10, paddingVertical:4, borderRadius:999, shadowColor:'#000', shadowOpacity:0.08, shadowRadius:4, elevation:2 },
+  todayPillText:{ color:'#fff', fontSize:12, fontWeight:'700' },
+  eventColorBar:{ width:4, alignSelf:'stretch', backgroundColor:'#3a7ca5', borderRadius:2, marginRight:8 },
+  eventMetaRow:{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:2 },
+  allDayPill:{ backgroundColor:'#e0f2fe', borderColor:'#38bdf8', borderWidth:1, paddingHorizontal:8, paddingVertical:2, borderRadius:8 },
+  allDayPillText:{ color:'#0369a1', fontSize:12, fontWeight:'600' },
 });
