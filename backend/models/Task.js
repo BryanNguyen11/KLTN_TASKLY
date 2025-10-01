@@ -11,6 +11,7 @@ const taskSchema = new mongoose.Schema({
   time: { type: String, required: false }, // legacy single time (optional)
   priority: { type: String, enum: ['low','medium','high'], default: 'medium' },
   importance: { type: String, enum: ['low','medium','high'], default: 'medium' },
+  urgency: { type: String, enum: ['low','medium','high'], default: 'medium' },
   type: { type: String, enum: ['personal','group'], default: 'personal' },
   estimatedHours: { type: Number, default: 1 },
   status: { type: String, enum: ['todo','in-progress','completed'], default: 'todo' },

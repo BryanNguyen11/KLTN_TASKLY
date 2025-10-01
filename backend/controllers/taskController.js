@@ -3,12 +3,12 @@ const Task = require('../models/Task');
 exports.createTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', type='personal', estimatedHours=1, tags=[], subTasks=[] } = req.body;
+  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[] } = req.body;
     if(!title || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     if(!startTime && !time) return res.status(400).json({ message: 'Cần startTime/endTime hoặc time' });
   if(endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
   const sanitizedSubTasks = Array.isArray(subTasks) ? subTasks.filter(st => st && st.title && st.title.trim()).map(st => ({ title: st.title.trim(), completed: !!st.completed })) : [];
-  const task = await Task.create({ userId, title, description, date, endDate, startTime, endTime, time, priority, importance, type, estimatedHours, tags, subTasks: sanitizedSubTasks });
+  const task = await Task.create({ userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks });
     res.status(201).json(task);
   } catch(err){
     res.status(500).json({ message: 'Lỗi tạo task', error: err.message });
@@ -39,7 +39,7 @@ exports.getTask = async (req,res) => {
 exports.updateTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-    const updates = { ...req.body };
+  const updates = { ...req.body };
     if(updates.subTasks){
       updates.subTasks = Array.isArray(updates.subTasks) ? updates.subTasks.filter(st => st && st.title && st.title.trim()).map(st => ({ title: st.title.trim(), completed: !!st.completed })) : [];
     }

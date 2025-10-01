@@ -407,7 +407,7 @@ export default function DashboardScreen() {
             {/* Dynamic date pickers */}
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
-                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({todayISO})</Text>
+                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({(() => { const [y,m,d] = todayISO.split('-'); return `${d}/${m}/${y}`; })()})</Text>
               </View>
             )}
             {selectedTab === 'Tuần' && (
@@ -558,7 +558,7 @@ export default function DashboardScreen() {
                         <View style={{ flex:1 }}>
                           <Text style={styles.completedTitle}>{t.title}</Text>
                           {t.completedAt && (
-                            <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit'})}</Text>
+                            <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit', year:'numeric' })}</Text>
                           )}
                         </View>
                         <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>

@@ -10,6 +10,7 @@ export interface Task {
   endDate?: string; // YYYY-MM-DD optional
   priority: TaskPriority;
   importance?: TaskPriority; // new field
+  urgency?: TaskPriority; // new field
   completed: boolean;
   type: TaskType;
   status: TaskStatus;

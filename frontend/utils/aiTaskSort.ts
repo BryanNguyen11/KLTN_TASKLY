@@ -18,6 +18,7 @@ export interface SortedTaskResult {
 
 const importanceRank = (imp?: string) => imp === 'high' ? 3 : imp === 'medium' ? 2 : 1; // low default 1
 const priorityRank = (p?: string) => p === 'high' ? 3 : p === 'medium' ? 2 : 1;
+const urgencyRank = (u?: string) => u === 'high' ? 3 : u === 'medium' ? 2 : 1;
 
 // Compute urgency number (higher = more urgent)
 function computeUrgency(task: Task, todayISO: string): number {
@@ -40,7 +41,9 @@ function computeUrgency(task: Task, todayISO: string): number {
     else if(diffDays <= 14) urgency += 2;
     else urgency += 1; // far away
   }
-  urgency += priorityRank(task.priority) * 0.8; // weight priority
+  // If explicit urgency provided, use it as amplifier; otherwise fallback to priority as before
+  if (task.urgency) urgency += urgencyRank(task.urgency) * 1.2;
+  else urgency += priorityRank(task.priority) * 0.8;
   return urgency;
 }
 
@@ -67,7 +70,12 @@ export function aiSortTasks(tasks: Task[], todayISO?: string): SortedTaskResult[
     const quadrant = determineQuadrant(imp, urg);
     // Composite score: prioritize lower quadrant number, then higher urgency, then higher importance, then earlier due date
     const dueRef = t.endDate || t.date || '9999-12-31';
-    const composite = (5 - quadrant) * 1000 + urg * 50 + imp * 30 - dateScore(dueRef);
+    // Tie-breakers:
+    // - earlier due date wins (already via dateScore)
+    // - smaller estimated hours wins (quick wins first)
+    const est = Math.max(0, Math.min(24, (t as any).estimatedHours ?? 1));
+    const smallTaskBoost = (24 - est) * 2; // smaller est => larger boost
+    const composite = (5 - quadrant) * 1000 + urg * 50 + imp * 30 - dateScore(dueRef) + smallTaskBoost;
     return { quadrant, score: composite, task: t };
   });
   // Sort descending by score (higher composite -> earlier in list)

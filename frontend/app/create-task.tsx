@@ -17,8 +17,9 @@ interface FormState {
   endDate: string; // YYYY-MM-DD (ngày kết thúc)
   startTime: string; // HH:mm
   endTime: string; // HH:mm
-  priority: TaskPriority;
-  importance: TaskPriority;
+  priority: TaskPriority; // sẽ được tính từ importance + urgency
+  importance: TaskPriority; // nhập từ người dùng
+  urgency: TaskPriority;    // nhập từ người dùng
   type: TaskType;
   estimatedHours: string;
   tags: string[];
@@ -41,11 +42,12 @@ export default function CreateTaskScreen() {
     title: '',
     description: '',
     date: today,
-    endDate: today,
+    endDate: '',
     startTime: '09:00',
-    endTime: '10:00',
+    endTime: '',
     priority: 'medium',
     importance: 'medium',
+    urgency: 'medium',
     type: 'personal',
     estimatedHours: '1',
     tags: [],
@@ -77,6 +79,21 @@ export default function CreateTaskScreen() {
   const update = useCallback(<K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  // Tính mức ưu tiên từ (quan trọng, khẩn cấp)
+  const score = (v: TaskPriority) => v === 'high' ? 3 : v === 'medium' ? 2 : 1;
+  const computePriority = (importance: TaskPriority, urgency: TaskPriority): TaskPriority => {
+    const s = score(importance) + score(urgency);
+    if (s >= 5) return 'high';
+    if (s >= 3) return 'medium';
+    return 'low';
+  };
+
+  // Đồng bộ priority mỗi khi importance/urgency thay đổi
+  useEffect(() => {
+    setForm(prev => ({ ...prev, priority: computePriority(prev.importance, prev.urgency) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.importance, form.urgency]);
 
   // Format YYYY-MM-DD -> DD/MM/YYYY for display only
   const toDisplayDate = (iso: string) => {
@@ -115,20 +132,26 @@ export default function CreateTaskScreen() {
     if(!token) { Alert.alert('Lỗi','Chưa đăng nhập'); return; }
     // Validate dates & times
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) { Alert.alert('Lỗi','Ngày bắt đầu không hợp lệ'); return; }
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
-    if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
-    if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    if(form.endDate){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
+      if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
+      if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    } else {
+      // Không có endDate: nếu có endTime thì phải sau startTime (cùng ngày)
+      if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    }
     if(form.subTasks.some(st=>!st.title.trim())) { Alert.alert('Lỗi','Vui lòng nhập tên cho tất cả tác vụ con'); return; }
     setSaving(true);
     const payload = {
       title: form.title.trim(),
       description: form.description,
       date: form.date,
-      endDate: form.endDate,
+      endDate: form.endDate || undefined,
       startTime: form.startTime,
-      endTime: form.endTime,
+      endTime: form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined),
       priority: form.priority,
       importance: form.importance,
+      urgency: form.urgency,
       type: form.type,
       estimatedHours: parseFloat(form.estimatedHours)||1,
       tags: form.tags,
@@ -162,11 +185,12 @@ export default function CreateTaskScreen() {
           title: t.title,
           description: t.description||'',
           date: t.date?.split('T')[0] || prev.date,
-          endDate: t.endDate || t.date?.split('T')[0] || prev.endDate,
+          endDate: t.endDate || '',
           startTime: t.startTime || prev.startTime,
-          endTime: t.endTime || prev.endTime,
+          endTime: t.endTime || '',
           priority: t.priority || 'medium',
           importance: t.importance || 'medium',
+          urgency: (t as any).urgency || 'medium',
           type: t.type || 'personal',
           estimatedHours: String(t.estimatedHours||1),
           tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id),
@@ -191,7 +215,16 @@ export default function CreateTaskScreen() {
     if(e.type === 'dismissed'){ setShowPicker({mode:'date', field:null}); return; }
     if(selected && showPicker.field){
       if(showPicker.mode==='date'){
-        update(showPicker.field as any, selected.toISOString().split('T')[0]);
+        const iso = selected.toISOString().split('T')[0];
+        if(showPicker.field === 'endDate'){
+          setForm(prev => ({
+            ...prev,
+            endDate: iso,
+            endTime: prev.endTime || '23:59'
+          }));
+        } else {
+          update(showPicker.field as any, iso);
+        }
       } else {
         const hh = selected.getHours().toString().padStart(2,'0');
         const mm = selected.getMinutes().toString().padStart(2,'0');
@@ -206,7 +239,18 @@ export default function CreateTaskScreen() {
     if(Platform.OS !== 'android') return; // android handled inline event commit
     if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; }
     if(selected && showPicker.field){
-      if(showPicker.mode==='date') update(showPicker.field as any, selected.toISOString().split('T')[0]);
+      if(showPicker.mode==='date'){
+        const iso = selected.toISOString().split('T')[0];
+        if(showPicker.field === 'endDate'){
+          setForm(prev => ({
+            ...prev,
+            endDate: iso,
+            endTime: prev.endTime || '23:59'
+          }));
+        } else {
+          update(showPicker.field as any, iso);
+        }
+      }
       else {
         const hh = selected.getHours().toString().padStart(2,'0');
         const mm = selected.getMinutes().toString().padStart(2,'0');
@@ -217,7 +261,18 @@ export default function CreateTaskScreen() {
   };
   const confirmIOS = () => {
     if(tempDate && showPicker.field){
-      if(showPicker.mode==='date') update(showPicker.field as any, tempDate.toISOString().split('T')[0]);
+      if(showPicker.mode==='date'){
+        const iso = tempDate.toISOString().split('T')[0];
+        if(showPicker.field === 'endDate'){
+          setForm(prev => ({
+            ...prev,
+            endDate: iso,
+            endTime: prev.endTime || '23:59'
+          }));
+        } else {
+          update(showPicker.field as any, iso);
+        }
+      }
       else {
         const hh = tempDate.getHours().toString().padStart(2,'0');
         const mm = tempDate.getMinutes().toString().padStart(2,'0');
@@ -247,10 +302,16 @@ export default function CreateTaskScreen() {
 
   useEffect(()=>{
     const newErr: typeof errors = {} as any;
-    if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
-    if(form.date === form.endDate && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) newErr.start = 'Ngày bắt đầu sai định dạng';
-    if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
+    if(form.endDate){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
+      else {
+        if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
+        if(form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+      }
+    } else {
+      if(form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+    }
     if(form.subTasks.some(st=>!st.title.trim())) newErr.sub = 'Có tác vụ con chưa nhập tên';
     setErrors(newErr);
   },[form.date, form.endDate, form.startTime, form.endTime, form.subTasks]);
@@ -334,29 +395,32 @@ export default function CreateTaskScreen() {
           </View>
         </View>
           <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Ưu tiên & Loại</Text>
-          <Text style={styles.sub}>Chọn mức ưu tiên cho tác vụ</Text>
-          <View style={styles.priorityRow}>
-            {(['low','medium','high'] as TaskPriority[]).map(p => {
-              const active = form.priority === p;
-              return (
-                <Pressable key={p} onPress={()=>update('priority', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
-                  <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Text style={[styles.sub,{ marginTop:4 }]}>Mức độ quan trọng</Text>
-          <View style={styles.priorityRow}>
-            {(['low','medium','high'] as TaskPriority[]).map(p => {
-              const active = form.importance === p;
-              return (
-                <Pressable key={p} onPress={()=>update('importance', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
-                  <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
+            <Text style={styles.sectionTitle}>Tầm quan trọng & Khẩn cấp</Text>
+            <Text style={styles.sub}>Mức độ quan trọng</Text>
+            <View style={styles.priorityRow}>
+              {(['low','medium','high'] as TaskPriority[]).map(p => {
+                const active = form.importance === p;
+                return (
+                  <Pressable key={p} onPress={()=>update('importance', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
+                    <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.sub,{ marginTop:4 }]}>Mức độ khẩn cấp</Text>
+            <View style={styles.priorityRow}>
+              {(['low','medium','high'] as TaskPriority[]).map(p => {
+                const active = form.urgency === p;
+                return (
+                  <Pressable key={p} onPress={()=>update('urgency', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
+                    <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={{ marginTop: 6 }}>
+              <Text style={[styles.sub]}>Mức ưu tiên tính toán: <Text style={{ fontWeight:'700', color:'#16425b' }}>{priorityLabel(form.priority)}</Text></Text>
+            </View>
           <View style={[styles.typeRow, { opacity: isLeader ? 1 : 0.65 }]}>            
             <View>
               <Text style={styles.label}>{form.type === 'group' ? 'Tác vụ nhóm' : 'Tác vụ cá nhân'}</Text>
@@ -449,14 +513,20 @@ export default function CreateTaskScreen() {
 
         <View style={styles.card}>          
           <Text style={styles.sectionTitle}>Tóm tắt</Text>
-          <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Ưu tiên:</Text><Text style={styles.summaryValue}>{priorityLabel(form.priority)}</Text></View>
+          <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Ưu tiên (tính):</Text><Text style={styles.summaryValue}>{priorityLabel(form.priority)}</Text></View>
           <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Loại:</Text><Text style={styles.summaryValue}>{form.type==='group'?'Nhóm':'Cá nhân'}</Text></View>
           {(() => {
-            const startDate = form.date; const endDate = form.endDate; const sameDay = startDate === endDate;
-            const fmt = (d:string) => { if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d; const [y,m,dd]=d.split('-'); return `${dd}/${m}`; };
+            const startDate = form.date; const endDate = form.endDate; const sameDay = endDate && (startDate === endDate);
+            const fmt = (d:string) => { if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d; const [y,m,dd]=d.split('-'); return `${dd}/${m}/${y}`; };
             let display = '';
-            if(sameDay) display = `${fmt(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`;
-            else display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`;
+            if(!endDate){
+              // Không có ngày kết thúc: hiển thị 1 ngày, có thể kèm khoảng giờ nếu có endTime
+              display = `${fmt(startDate)} ${form.startTime || ''}${form.endTime ? '–' + form.endTime : ''}`;
+            } else if(sameDay) {
+              display = `${fmt(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`;
+            } else {
+              display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`;
+            }
             const todayISO = new Date().toISOString().split('T')[0];
             const endDeadline = (endDate && form.endTime) ? new Date(`${endDate}T${form.endTime}:00`) : (endDate ? new Date(`${endDate}T23:59:59`) : undefined);
             const now = new Date();
@@ -471,6 +541,7 @@ export default function CreateTaskScreen() {
             );
           })()}
           <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Quan trọng:</Text><Text style={styles.summaryValue}>{priorityLabel(form.importance)}</Text></View>
+          <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Khẩn cấp:</Text><Text style={styles.summaryValue}>{priorityLabel(form.urgency)}</Text></View>
           {form.tags.length>0 && <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Tags:</Text><Text style={styles.summaryValue}>{form.tags.join(', ')}</Text></View>}
         </View>
         <View style={{ height: 40 }} />
@@ -531,7 +602,7 @@ const styles = StyleSheet.create({
   textarea:{ minHeight:90, textAlignVertical:'top' },
   row:{ flexDirection:'row', justifyContent:'space-between', gap:12 },
   half:{ flex:1 },
-  priorityRow:{ flexDirection:'row', justifyContent:'space-between', marginBottom:14 },
+  priorityRow:{ flexDirection:'row', justifyContent:'space-between', marginBottom:10, marginTop:4 },
   priorityBtn:{ flex:1, marginHorizontal:4, backgroundColor:'rgba(217,220,214,0.6)', paddingVertical:10, borderRadius:14, alignItems:'center' },
   priorityBtnActive:{ backgroundColor:'#3a7ca5' },
   priorityText:{ fontSize:13, color:'#2f6690', fontWeight:'500' },
