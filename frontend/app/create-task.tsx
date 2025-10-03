@@ -37,7 +37,15 @@ export default function CreateTaskScreen() {
   const [showAI, setShowAI] = useState(false);
   const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|null}>({mode:'date', field:null});
   const [tempDate, setTempDate] = useState<Date | null>(null);
-  const today = new Date().toISOString().split('T')[0];
+  // Helper to format Date as local YYYY-MM-DD (avoid UTC shift from toISOString)
+  const toLocalISODate = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const today = toLocalISODate(new Date());
   const [form, setForm] = useState<FormState>({
     title: '',
     description: '',
@@ -215,7 +223,7 @@ export default function CreateTaskScreen() {
     if(e.type === 'dismissed'){ setShowPicker({mode:'date', field:null}); return; }
     if(selected && showPicker.field){
       if(showPicker.mode==='date'){
-        const iso = selected.toISOString().split('T')[0];
+        const iso = toLocalISODate(selected);
         if(showPicker.field === 'endDate'){
           setForm(prev => ({
             ...prev,
@@ -240,7 +248,7 @@ export default function CreateTaskScreen() {
     if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; }
     if(selected && showPicker.field){
       if(showPicker.mode==='date'){
-        const iso = selected.toISOString().split('T')[0];
+        const iso = toLocalISODate(selected);
         if(showPicker.field === 'endDate'){
           setForm(prev => ({
             ...prev,
@@ -262,7 +270,7 @@ export default function CreateTaskScreen() {
   const confirmIOS = () => {
     if(tempDate && showPicker.field){
       if(showPicker.mode==='date'){
-        const iso = tempDate.toISOString().split('T')[0];
+        const iso = toLocalISODate(tempDate);
         if(showPicker.field === 'endDate'){
           setForm(prev => ({
             ...prev,
@@ -527,7 +535,7 @@ export default function CreateTaskScreen() {
             } else {
               display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`;
             }
-            const todayISO = new Date().toISOString().split('T')[0];
+            const todayISO = toLocalISODate(new Date());
             const endDeadline = (endDate && form.endTime) ? new Date(`${endDate}T${form.endTime}:00`) : (endDate ? new Date(`${endDate}T23:59:59`) : undefined);
             const now = new Date();
             const isEndToday = endDate === todayISO;

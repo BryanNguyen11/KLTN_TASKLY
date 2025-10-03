@@ -36,7 +36,15 @@ export default function CreateEventScreen(){
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
-  const today = new Date().toISOString().split('T')[0];
+  // Helper: format Date -> local YYYY-MM-DD to avoid UTC shift from toISOString
+  const toLocalISODate = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const today = toLocalISODate(new Date());
   const [saving, setSaving] = useState(false);
   const [types, setTypes] = useState<EventTypeDoc[]>([]);
   const [loadingTypes, setLoadingTypes] = useState(false);
@@ -118,7 +126,7 @@ export default function CreateEventScreen(){
     if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; }
     if(selected && showPicker.field){
       if(showPicker.mode==='date'){
-        const iso = selected.toISOString().split('T')[0];
+        const iso = toLocalISODate(selected);
         if(showPicker.field === 'repeatEndDate'){
           setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
         } else if(showPicker.field === 'endDate'){
@@ -135,7 +143,7 @@ export default function CreateEventScreen(){
   const confirmIOS = () => {
     if(tempDate && showPicker.field){
       if(showPicker.mode==='date'){
-        const iso = tempDate.toISOString().split('T')[0];
+        const iso = toLocalISODate(tempDate);
         if(showPicker.field === 'repeatEndDate'){
           setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
         } else if(showPicker.field === 'endDate'){

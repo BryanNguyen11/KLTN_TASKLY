@@ -536,6 +536,80 @@ export default function DashboardScreen() {
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
                 <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({(() => { const [y,m,d] = todayISO.split('-'); const w = weekdayVNFromISO(todayISO); return `${w}, ${d}/${m}/${y}`; })()})</Text>
+                {(() => {
+                  // Build today's events and filter out those already ended today
+                  const todaysAll = events.filter(ev => occursOnDate(ev, todayISO));
+                  const nowHM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+                  const isEndedForToday = (ev: EventItem): boolean => {
+                    if(!ev.endTime) return false; // without endTime, don't consider ended
+                    if(ev.endDate){
+                      if(todayISO === ev.endDate){ return ev.endTime <= nowHM; }
+                      if(todayISO < ev.endDate){ return false; }
+                      // todayISO > ev.endDate shouldn't occur when occursOnDate is true
+                      return true;
+                    } else {
+                      // single-day
+                      if(ev.date === todayISO){ return ev.endTime <= nowHM; }
+                      return true;
+                    }
+                  };
+                  const todaysEvents = todaysAll.filter(ev => !isEndedForToday(ev))
+                    .sort((a,b) => (a.startTime||'99:99').localeCompare(b.startTime||'99:99'));
+                  const [y,m,d] = todayISO.split('-');
+                  const display = `${d}/${m}/${y}`;
+                  const w = weekdayVNFromISO(todayISO);
+                  return (
+                    <Animated.View entering={FadeInDown.delay(40)} style={[styles.weekDayCard, { marginTop: 8 }, styles.weekDayCardToday]}>
+                      <View style={styles.weekDayHeader}>
+                        <View style={{ flexDirection:'row', alignItems:'center', gap:8, flexShrink:1 }}>
+                          <Ionicons name='calendar-outline' size={16} color='#16425b' />
+                          <Text style={styles.weekDayTitle}>{w}, {display}</Text>
+                          <View style={styles.todayPill}>
+                            <Ionicons name='sunny-outline' size={12} color='#fff' style={{ marginRight:4 }} />
+                            <Text style={styles.todayPillText}>Hôm nay</Text>
+                          </View>
+                        </View>
+                        <View style={styles.countsRow}>
+                          <View style={[styles.countPill, styles.eventsCountPill]}>
+                            <Ionicons name='calendar-outline' size={12} color='#2f6690' />
+                            <Text style={[styles.countText, styles.eventsCountText]}>{todaysEvents.length}</Text>
+                          </View>
+                        </View>
+                      </View>
+                      {todaysEvents.length>0 ? (
+                        <View style={styles.eventList}>
+                          {todaysEvents.map((ev, idx) => {
+                            const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
+                            return (
+                              <View key={ev.id+idx} style={styles.eventChip}>
+                                <View style={styles.eventColorBar} />
+                                <View style={{ flex:1 }}>
+                                  <View style={styles.eventMetaRow}>
+                                    <Ionicons name='time-outline' size={14} color='#2f6690' />
+                                    {time ? (
+                                      <Text style={styles.eventChipTime}>{time}</Text>
+                                    ) : (
+                                      <View style={styles.allDayPill}><Text style={styles.allDayPillText}>Cả ngày</Text></View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {!!ev.location && (
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='location-outline' size={14} color='#607d8b' />
+                                      <Text style={styles.eventChipLoc} numberOfLines={1}>{ev.location}</Text>
+                                    </View>
+                                  )}
+                                </View>
+                              </View>
+                            );
+                          })}
+                        </View>
+                      ) : (
+                        <Text style={styles.emptyHint}>Không có sự kiện còn lại trong hôm nay</Text>
+                      )}
+                    </Animated.View>
+                  );
+                })()}
               </View>
             )}
             {/* Ẩn hàng ô số (ngày) ở chế độ tuần để tập trung phần thẻ bên dưới */}
