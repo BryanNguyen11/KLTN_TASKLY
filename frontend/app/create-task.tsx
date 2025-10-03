@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, ScrollView, Pressable, Alert, Switch, ActivityIndicator, Modal } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, Switch, ActivityIndicator, Modal } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { DeviceEventEmitter } from 'react-native';
@@ -24,18 +25,20 @@ interface FormState {
   estimatedHours: string;
   tags: string[];
   subTasks: { id: string; title: string; completed: boolean }[]; // local id
+  isRepeating?: boolean;
+  repeat?: { frequency: 'daily'|'weekly'|'monthly'|'yearly'; endMode: 'never'|'onDate'|'after'; endDate?: string; count?: string };
 }
 
 type Tag = { _id: string; name: string; slug: string };
 
 export default function CreateTaskScreen() {
   const router = useRouter();
-  const { editId } = useLocalSearchParams<{ editId?: string }>();
+  const { editId, occDate } = useLocalSearchParams<{ editId?: string; occDate?: string }>();
   const { user, token } = useAuth();
   const isLeader = user?.role === 'leader' || user?.role === 'admin';
   const [saving, setSaving] = useState(false);
   const [showAI, setShowAI] = useState(false);
-  const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|null}>({mode:'date', field:null});
+  const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|'repeatEndDate'|null}>({mode:'date', field:null});
   const [tempDate, setTempDate] = useState<Date | null>(null);
   // Helper to format Date as local YYYY-MM-DD (avoid UTC shift from toISOString)
   const toLocalISODate = (d: Date) => {
@@ -59,7 +62,9 @@ export default function CreateTaskScreen() {
     type: 'personal',
     estimatedHours: '1',
     tags: [],
-    subTasks: []
+    subTasks: [],
+    isRepeating: false,
+    repeat: undefined
   });
   const [tags, setTags] = useState<Tag[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
@@ -163,8 +168,16 @@ export default function CreateTaskScreen() {
       type: form.type,
       estimatedHours: parseFloat(form.estimatedHours)||1,
       tags: form.tags,
-      subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed }))
+      subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed })),
     };
+    if(form.isRepeating && form.repeat){
+      (payload as any).repeat = {
+        frequency: form.repeat.frequency,
+        endMode: form.repeat.endMode,
+        endDate: form.repeat.endMode==='onDate' ? form.repeat.endDate : undefined,
+        count: form.repeat.endMode==='after' ? (parseInt(form.repeat.count||'0',10)||undefined) : undefined,
+      };
+    }
     try {
       if(editId){
         const res = await axios.put(`${API_BASE}/api/tasks/${editId}`, payload, authHeader());
@@ -179,6 +192,105 @@ export default function CreateTaskScreen() {
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || (editId? 'Không cập nhật được':'Không thể tạo tác vụ'));
     } finally { setSaving(false); }
+  };
+
+  // Delete with scope similar to events
+  const onDelete = async () => {
+    if(!editId || !token) return;
+    const hasRepeat = !!form.repeat;
+    if(!hasRepeat){
+      Alert.alert('Xóa tác vụ', 'Bạn có chắc muốn xóa tác vụ này?', [
+        { text:'Hủy', style:'cancel' },
+        { text:'Xóa', style:'destructive', onPress: async ()=>{
+          try { await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader()); DeviceEventEmitter.emit('taskDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa tác vụ'); router.back(); }
+          catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
+        } }
+      ]);
+      return;
+    }
+    // Repeating task: choose scope
+    Alert.alert(
+      'Xóa tác vụ lặp lại',
+      'Bạn muốn xóa chỉ lần này hay từ lần này trở đi?\n(Lưu ý: hiện tại chưa hỗ trợ exceptionDates, thao tác sẽ cắt hoặc tách chuỗi lặp.)',
+      [
+        { text:'Hủy', style:'cancel' },
+        { text:'Chỉ lần này', onPress: async ()=>{
+          try {
+            // If occDate equals series start, shift series start to next occurrence; otherwise split series
+            const start = form.date;
+            const r = form.repeat!;
+            const target = occDate || start;
+            // Compute next occurrence similar to dashboard recurrence math
+            const isoToDate = (iso:string)=>{ const [y,m,d]=iso.split('-').map(n=>parseInt(String(n),10)); return new Date(y,(m||1)-1,d||1); };
+            const toLocalISODate = (d:Date)=>{ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); const day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; };
+            const addDays = (iso:string,n:number)=>{ const dt=isoToDate(iso); dt.setDate(dt.getDate()+n); return toLocalISODate(dt); };
+            const addMonths = (iso:string,n:number)=>{ const d=isoToDate(iso); const day=d.getDate(); const t=new Date(d.getFullYear(), d.getMonth()+n, day); if(t.getDate()!==day) return null; return toLocalISODate(t); };
+            let nextStart: string | null = null;
+            if(r.frequency==='daily') nextStart = addDays(target, 1);
+            else if(r.frequency==='weekly') nextStart = addDays(target, 7);
+            else if(r.frequency==='monthly') nextStart = addMonths(target, 1);
+            else if(r.frequency==='yearly') { const a=isoToDate(target); nextStart = toLocalISODate(new Date(a.getFullYear()+1, a.getMonth(), a.getDate())); }
+            // Case 1: target is start -> move start to nextStart
+            if(target === start){
+              const updates:any = { date: nextStart };
+              // adjust endDate span if existed
+              if(form.endDate){ const spanMs = isoToDate(form.endDate).getTime() - isoToDate(start).getTime(); const newEnd = new Date(isoToDate(nextStart!).getTime()+spanMs); updates.endDate = toLocalISODate(newEnd); }
+              const res = await axios.put(`${API_BASE}/api/tasks/${editId}`, { ...updates }, authHeader());
+              DeviceEventEmitter.emit('taskUpdated', res.data);
+              DeviceEventEmitter.emit('toast','Đã xóa lần đầu tiên của chuỗi');
+              router.back();
+              return;
+            }
+            // Case 2: split series at occDate: set current's repeat endDate to day before target
+            const prevDay = addDays(target, -1);
+            const updates:any = { repeat: { ...r, endMode:'onDate', endDate: prevDay } };
+            await axios.put(`${API_BASE}/api/tasks/${editId}`, updates, authHeader());
+            // Create a new task for future occurrences starting nextStart with same fields
+            const clonePayload:any = {
+              title: form.title,
+              description: form.description,
+              date: nextStart,
+              endDate: form.endDate ? addDays(nextStart!, ( (new Date(form.endDate).getTime()-new Date(form.date).getTime())/86400000 )) : undefined,
+              startTime: form.startTime,
+              endTime: form.endTime,
+              priority: form.priority,
+              importance: form.importance,
+              urgency: form.urgency,
+              type: form.type,
+              estimatedHours: parseFloat(form.estimatedHours)||1,
+              tags: form.tags,
+              subTasks: form.subTasks.map(st=> ({ title: st.title, completed: st.completed })),
+              repeat: { ...r }
+            };
+            const created = await axios.post(`${API_BASE}/api/tasks`, clonePayload, authHeader());
+            DeviceEventEmitter.emit('taskUpdated', { _id: editId, ...updates });
+            DeviceEventEmitter.emit('taskCreated', created.data);
+            DeviceEventEmitter.emit('toast','Đã xóa 1 lần và tách chuỗi');
+            router.back();
+          } catch(e:any){ Alert.alert('Lỗi','Không thể xóa chỉ lần này'); }
+        }},
+        { text:'Từ lần này trở đi', style:'destructive', onPress: async ()=>{
+          try {
+            if(!occDate){ // no occDate -> treat as delete whole series from start
+              await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader());
+              DeviceEventEmitter.emit('taskDeleted', editId);
+              DeviceEventEmitter.emit('toast','Đã xóa chuỗi');
+              router.back();
+              return;
+            }
+            // set repeat endDate to day before occDate
+            const [y,m,d] = occDate.split('-').map(Number);
+            const dt = new Date(y!, (m||1)-1, d||1); dt.setDate(dt.getDate()-1);
+            const prev = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+            const updates:any = { repeat: { ...(form.repeat||{}), endMode:'onDate', endDate: prev } };
+            const res = await axios.put(`${API_BASE}/api/tasks/${editId}`, updates, authHeader());
+            DeviceEventEmitter.emit('taskUpdated', res.data);
+            DeviceEventEmitter.emit('toast','Đã cắt chuỗi từ lần này');
+            router.back();
+          } catch(e:any){ Alert.alert('Lỗi','Không thể cắt chuỗi'); }
+        }}
+      ]
+    );
   };
 
   // Load task if edit mode
@@ -202,7 +314,14 @@ export default function CreateTaskScreen() {
           type: t.type || 'personal',
           estimatedHours: String(t.estimatedHours||1),
           tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id),
-          subTasks: (t.subTasks||[]).map((st:any)=> ({ id: st._id || Math.random().toString(36).slice(2), title: st.title, completed: !!st.completed }))
+          subTasks: (t.subTasks||[]).map((st:any)=> ({ id: st._id || Math.random().toString(36).slice(2), title: st.title, completed: !!st.completed })),
+          isRepeating: !!t.repeat,
+          repeat: t.repeat ? {
+            frequency: t.repeat.frequency,
+            endMode: t.repeat.endMode || 'never',
+            endDate: t.repeat.endDate,
+            count: t.repeat.count ? String(t.repeat.count) : undefined
+          } : undefined
         }));
       } catch(e){
         Alert.alert('Lỗi','Không tải được tác vụ để sửa');
@@ -230,6 +349,11 @@ export default function CreateTaskScreen() {
             endDate: iso,
             endTime: prev.endTime || '23:59'
           }));
+        } else if (showPicker.field === 'repeatEndDate') {
+          setForm(prev => ({
+            ...prev,
+            repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'onDate' }), endDate: iso, endMode:'onDate' }
+          }));
         } else {
           update(showPicker.field as any, iso);
         }
@@ -255,6 +379,11 @@ export default function CreateTaskScreen() {
             endDate: iso,
             endTime: prev.endTime || '23:59'
           }));
+        } else if (showPicker.field === 'repeatEndDate') {
+          setForm(prev => ({
+            ...prev,
+            repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'onDate' }), endDate: iso, endMode:'onDate' }
+          }));
         } else {
           update(showPicker.field as any, iso);
         }
@@ -277,6 +406,11 @@ export default function CreateTaskScreen() {
             endDate: iso,
             endTime: prev.endTime || '23:59'
           }));
+        } else if (showPicker.field === 'repeatEndDate') {
+          setForm(prev => ({
+            ...prev,
+            repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'onDate' }), endDate: iso, endMode:'onDate' }
+          }));
         } else {
           update(showPicker.field as any, iso);
         }
@@ -291,6 +425,16 @@ export default function CreateTaskScreen() {
     setTempDate(null);
   };
   const cancelIOS = () => { setShowPicker({mode:'date', field:null}); setTempDate(null); };
+
+  const updateRepeat = <K extends keyof NonNullable<FormState['repeat']>>(key: K, value: NonNullable<FormState['repeat']>[K]) => {
+    setForm(prev => ({ ...prev, repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'never' }), [key]: value } as any }));
+  };
+  const openRepeatEndDate = () => {
+    const raw = form.repeat?.endDate;
+    const base = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(raw+'T00:00:00') : new Date();
+    setTempDate(base);
+    setShowPicker({ mode:'date', field:'repeatEndDate' });
+  };
 
   const priorityLabel = (p: TaskPriority) => p==='high'?'Cao':p==='medium'?'Trung bình':'Thấp';
 
@@ -343,13 +487,18 @@ export default function CreateTaskScreen() {
         <Pressable onPress={()=>router.back()} style={styles.backBtn}>
           <Ionicons name='arrow-back' size={22} color='#16425b' />
         </Pressable>
-  <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa tác vụ' : 'Tạo tác vụ mới'}</Text>
-        <Pressable onPress={generateAI} style={styles.aiBtn}>
-          <Ionicons name='sparkles' size={18} color='#2f6690' />
-          <Text style={styles.aiText}>AI</Text>
+        <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa tác vụ' : 'Tạo tác vụ mới'}</Text>
+        <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
+          {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
         </Pressable>
       </View>
-      <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScrollView
+        contentContainerStyle={styles.body}
+        showsVerticalScrollIndicator={false}
+        enableOnAndroid
+        extraScrollHeight={100}
+        keyboardShouldPersistTaps='handled'
+      >
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Thông tin cơ bản</Text>
           <View style={styles.field}>            
@@ -510,6 +659,58 @@ export default function CreateTaskScreen() {
           </Pressable>
         </View>
 
+        {/* Repeat rule (aligned with create-event) */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Lặp lại</Text>
+          <View style={[styles.typeRow,{ paddingVertical:0, marginBottom:6 }]}>            
+            <Text style={styles.label}>Lặp lại tác vụ</Text>
+            <Switch
+              value={!!form.isRepeating}
+              onValueChange={(v)=> setForm(prev => ({ ...prev, isRepeating: v, repeat: v? (prev.repeat || { frequency:'weekly', endMode:'never' }) : undefined }))}
+            />
+          </View>
+          {!!form.isRepeating && (
+            <View>
+              <Text style={styles.label}>Tần suất</Text>
+              <View style={styles.typeList}>
+                {(['daily','weekly','monthly','yearly'] as const).map(freq => {
+                  const active = form.repeat?.frequency === freq;
+                  return (
+                    <Pressable key={freq} onPress={()=> updateRepeat('frequency', freq)} style={[styles.typeChip, active && styles.typeChipActive]}>
+                      <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{freq==='daily'?'Hàng ngày': freq==='weekly'?'Hàng tuần': freq==='monthly'?'Hàng tháng':'Hàng năm'}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <Text style={[styles.label,{ marginTop:6 }]}>Kết thúc</Text>
+              <View style={styles.typeList}>
+                {(['never','onDate','after'] as const).map(mode => {
+                  const active = (form.repeat?.endMode || 'never') === mode;
+                  return (
+                    <Pressable key={mode} onPress={()=> updateRepeat('endMode', mode)} style={[styles.typeChip, active && styles.typeChipActive]}>
+                      <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{mode==='never'?'Không bao giờ': mode==='onDate'?'Vào ngày':'Sau số lần'}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {(form.repeat?.endMode === 'after') && (
+                <View style={styles.field}>
+                  <Text style={styles.label}>Số lần lặp</Text>
+                  <TextInput style={styles.input} keyboardType='number-pad' placeholder='VD: 10' value={String(form.repeat?.count||'')} onChangeText={(t)=> updateRepeat('count', t)} />
+                </View>
+              )}
+              {(form.repeat?.endMode === 'onDate') && (
+                <View style={styles.field}>
+                  <Text style={styles.label}>Ngày kết thúc lặp</Text>
+                  <Pressable onPress={openRepeatEndDate} style={styles.pickerBtn}>
+                    <Text style={styles.pickerText}>{form.repeat?.endDate? toDisplayDate(form.repeat.endDate): 'Không chọn'}</Text>
+                  </Pressable>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+
         {showAI && (
           <View style={styles.aiBox}>
             <Text style={styles.aiTitle}>Gợi ý từ AI</Text>
@@ -553,7 +754,7 @@ export default function CreateTaskScreen() {
           {form.tags.length>0 && <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Tags:</Text><Text style={styles.summaryValue}>{form.tags.join(', ')}</Text></View>}
         </View>
         <View style={{ height: 40 }} />
-      </ScrollView>
+  </KeyboardAwareScrollView>
       <View style={styles.bottomBar}>        
         <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>router.back()}>
           <Text style={styles.cancelText}>Hủy</Text>
@@ -616,6 +817,12 @@ const styles = StyleSheet.create({
   priorityText:{ fontSize:13, color:'#2f6690', fontWeight:'500' },
   priorityTextActive:{ color:'#fff' },
   typeRow:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', paddingVertical:10 },
+  // chips layout (match event screen)
+  typeList:{ flexDirection:'row', flexWrap:'wrap' },
+  typeChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  typeChipActive:{ backgroundColor:'#3a7ca5' },
+  typeChipText:{ color:'#2f6690', fontWeight:'600' },
+  typeChipTextActive:{ color:'#fff' },
   sub:{ fontSize:11, color:'#607d8b', marginTop:2 },
   tagsWrap:{ flexDirection:'row', flexWrap:'wrap' },
   tag:{ paddingHorizontal:12, paddingVertical:6, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },

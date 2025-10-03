@@ -240,20 +240,94 @@ export default function DashboardScreen() {
     return rows;
   }, [currentMonth]);
 
-  // Filter tasks based on tab + selected date
+  // Determine if a repeating task occurs on a given ISO date
+  const occursTaskOnDate = (t: Task, iso: string): boolean => {
+    // respect multi-day span as well
+    const span = t.endDate ? (diffDays(t.date, t.endDate) + 1) : 1;
+    const withinSpan = (occStart: string) => {
+      if(span <= 1) return occStart === iso;
+      const occEnd = addDaysISO(occStart, span-1);
+      return occStart <= iso && iso <= occEnd;
+    };
+    if(!t.repeat){
+      if(!t.endDate) return t.date === iso;
+      return t.date <= iso && iso <= t.endDate;
+    }
+    const r = t.repeat;
+    const start = t.date;
+    if(iso < start) return false;
+    const endMode = r.endMode || 'never';
+    if(r.frequency==='daily'){
+      const k = diffDays(start, iso);
+      if(k < 0) return false;
+      const occStart = addDaysISO(start, k);
+      const n = k + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='weekly'){
+      const k = Math.floor(diffDays(start, iso)/7);
+      if(k < 0) return false;
+      const occStart = addDaysISO(start, k*7);
+      if(occStart > iso) return false;
+      const n = k + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='monthly'){
+      const m = diffMonths(start, iso);
+      if(m < 0) return false;
+      const occStart = addMonthsISO(start, m);
+      if(!occStart || occStart > iso) return false;
+      const n = m + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    if(r.frequency==='yearly'){
+      const a = isoToDate(start), b = isoToDate(iso);
+      const years = b.getFullYear() - a.getFullYear();
+      if(years < 0) return false;
+      const occStart = toLocalISODate(new Date(a.getFullYear()+years, a.getMonth(), a.getDate()));
+      if(occStart > iso) return false;
+      const n = years + 1;
+      if(endMode==='after' && r.count && n > r.count) return false;
+      if(endMode==='onDate' && r.endDate && occStart > r.endDate) return false;
+      return withinSpan(occStart);
+    }
+    return false;
+  };
+
+  // Filter tasks based on tab + selected date (include recurring)
   const filteredTasks = React.useMemo(()=>{
     const today = todayISO;
     const applySort = (list:Task[]) => aiMode ? aiOrderedTasks(list, today) : list;
     if(selectedTab === 'Hôm nay'){
-      const base = tasks.filter(t => !t.completed && (t.date === today || t.date < today));
+      const baseAll = tasks.filter(t => !t.completed && occursTaskOnDate(t, today));
+      // Skip tasks already ended today if they have an endTime (align with events Today card logic)
+      const nowHM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+      const notEnded = baseAll.filter(t => {
+        const et = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+        if(!et) return true; // no end time => consider ongoing
+        if(t.endDate){
+          if(today === t.endDate) return et > nowHM; // ends today and after now
+          if(today < t.endDate) return true;        // ends in the future
+          return false;                             // ended before today (shouldn't occur if occursTaskOnDate true)
+        }
+        // single-day task
+        return et > nowHM;
+      });
+      const base = notEnded;
       return applySort(base);
     }
     if(selectedTab === 'Tuần'){
-      const base = tasks.filter(t=> !t.completed && weekISO.includes(t.date) && t.date === selectedDateISO);
+      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO));
       return applySort(base);
     }
     if(selectedTab === 'Tháng'){
-      const base = tasks.filter(t=> !t.completed && t.date === selectedDateISO);
+      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO));
       return applySort(base);
     }
     const base = tasks.filter(t=>!t.completed);
@@ -306,6 +380,8 @@ export default function DashboardScreen() {
         time: t.startTime && t.endTime ? `${t.startTime}-${t.endTime}` : (t.time || ''),
         date: t.date?.split('T')[0] || '',
   endDate: t.endDate || undefined,
+        startTime: t.startTime,
+        endTime: t.endTime,
         priority: t.priority || 'medium',
         importance: t.importance,
         completed: t.status === 'completed',
@@ -313,7 +389,8 @@ export default function DashboardScreen() {
         status: t.status || 'todo',
         completedAt: t.completedAt,
         subTasks: t.subTasks,
-        completionPercent: t.completionPercent
+        completionPercent: t.completionPercent,
+        repeat: t.repeat,
       }));
       setTasks(mapped);
     } catch(e:any){
@@ -358,7 +435,24 @@ export default function DashboardScreen() {
       } as EventItem;
       setEvents(prev => [adapted, ...prev]);
     });
-    return () => { onEvt.remove(); };
+    const onUpd = DeviceEventEmitter.addListener('eventUpdated', (ev:any) => {
+      const adapted = {
+        id: ev._id || ev.id,
+        title: ev.title,
+        date: ev.date?.split?.('T')?.[0] || ev.date,
+        endDate: ev.endDate,
+        startTime: ev.startTime,
+        endTime: ev.endTime,
+        location: ev.location,
+        repeat: ev.repeat,
+      } as EventItem;
+      setEvents(prev => prev.map(e => e.id===adapted.id ? { ...e, ...adapted } : e));
+    });
+    const onDel = DeviceEventEmitter.addListener('eventDeleted', (id:any) => {
+      const delId = typeof id === 'string' ? id : (id? id.toString() : '');
+      setEvents(prev => prev.filter(e => e.id !== delId));
+    });
+    return () => { onEvt.remove(); onUpd.remove(); onDel.remove(); };
   }, []);
 
   // Listen for new task created from create-task screen (append without refetch)
@@ -371,13 +465,16 @@ export default function DashboardScreen() {
         time: newTask.startTime && newTask.endTime ? `${newTask.startTime}-${newTask.endTime}` : (newTask.time || ''),
         date: newTask.date?.split('T')[0] || newTask.date,
   endDate: newTask.endDate,
+        startTime: newTask.startTime,
+        endTime: newTask.endTime,
         priority: newTask.priority,
         importance: newTask.importance,
         completed: newTask.status === 'completed',
         type: newTask.type,
         status: newTask.status,
         subTasks: newTask.subTasks,
-        completionPercent: newTask.completionPercent
+        completionPercent: newTask.completionPercent,
+        repeat: newTask.repeat,
       };
       setTasks(prev => [adapted, ...prev]);
       setToast('Đã thêm tác vụ');
@@ -389,6 +486,8 @@ export default function DashboardScreen() {
         time: uTask.startTime && uTask.endTime ? `${uTask.startTime}-${uTask.endTime}` : (uTask.time || ''),
         date: uTask.date?.split('T')[0] || uTask.date,
   endDate: uTask.endDate,
+        startTime: uTask.startTime,
+        endTime: uTask.endTime,
         priority: uTask.priority,
         importance: uTask.importance,
         completed: uTask.status === 'completed',
@@ -396,13 +495,18 @@ export default function DashboardScreen() {
         status: uTask.status,
         completedAt: uTask.completedAt,
         subTasks: uTask.subTasks,
-        completionPercent: uTask.completionPercent
+        completionPercent: uTask.completionPercent,
+        repeat: uTask.repeat,
       };
       setTasks(prev => prev.map(t=> t.id===adapted.id ? { ...t, ...adapted } : t));
       setToast('Đã cập nhật');
     });
   const toastListener = DeviceEventEmitter.addListener('toast', (msg:string)=> setToast(msg));
-  return () => { sub.remove(); upd.remove(); toastListener.remove(); };
+  const del = DeviceEventEmitter.addListener('taskDeleted', (id:any) => {
+    const delId = typeof id === 'string' ? id : (id? id.toString() : '');
+    setTasks(prev => prev.filter(t => t.id !== delId));
+  });
+  return () => { sub.remove(); upd.remove(); toastListener.remove(); del.remove(); };
   }, []);
 
   const completed = tasks.filter(t => t.completed).length;
@@ -581,7 +685,7 @@ export default function DashboardScreen() {
                           {todaysEvents.map((ev, idx) => {
                             const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                             return (
-                              <View key={ev.id+idx} style={styles.eventChip}>
+                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: todayISO } })}>
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <View style={styles.eventMetaRow}>
@@ -600,7 +704,7 @@ export default function DashboardScreen() {
                                     </View>
                                   )}
                                 </View>
-                              </View>
+                              </Pressable>
                             );
                           })}
                         </View>
@@ -620,7 +724,7 @@ export default function DashboardScreen() {
                   const display = `${d}/${m}`;
                   const w = weekdayVNFromISO(iso);
                   const dayEvents = events.filter(ev => occursOnDate(ev, iso));
-                  const dayTasks = tasks.filter(t => !t.completed && t.date === iso);
+                  const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso));
                   const isToday = iso === todayISO;
                   return (
                     <Animated.View key={iso} entering={FadeInDown.delay(60 + i*30)} style={[styles.weekDayCard, isToday && styles.weekDayCardToday]}>
@@ -651,7 +755,7 @@ export default function DashboardScreen() {
                           {dayEvents.map((ev, idx) => {
                             const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                             return (
-                              <View key={ev.id+idx} style={styles.eventChip}>
+                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: iso } })}>
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <View style={styles.eventMetaRow}>
@@ -670,7 +774,7 @@ export default function DashboardScreen() {
                                     </View>
                                   )}
                                 </View>
-                              </View>
+                              </Pressable>
                             );
                           })}
                         </View>
@@ -679,13 +783,16 @@ export default function DashboardScreen() {
                       )}
                       {dayTasks.length>0 ? (
                         <View style={styles.dayTaskChips}>
-                          {dayTasks.map((t, idx) => (
-                            <View key={t.id+idx} style={styles.taskChip}>
-                              <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                              <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                              {!!t.time && <Text style={styles.taskChipTime}>{t.time}</Text>}
-                            </View>
-                          ))}
+                          {dayTasks.map((t, idx) => {
+                            const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
+                            return (
+                              <View key={t.id+idx} style={styles.taskChip}>
+                                <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
+                              </View>
+                            );
+                          })}
                         </View>
                       ) : (
                         <Text style={styles.emptyHint}>Không có tác vụ</Text>
@@ -711,7 +818,18 @@ export default function DashboardScreen() {
                       if(!iso) return <View key={c} style={styles.monthCellEmpty} />;
                       const active = iso === selectedDateISO;
                       const dayNum = parseInt(iso.split('-')[2],10);
-                      const info = taskMap[iso];
+                      // Build dot info from tasks that occur on that iso (recurring aware)
+                      const occTasks = tasks.filter(t => occursTaskOnDate(t, iso));
+                      const info = (() => {
+                        if(!occTasks.length) return undefined;
+                        const total = occTasks.length;
+                        const completed = occTasks.filter(t=> t.completed).length;
+                        const rank = (imp?:string)=> imp==='high'?3: imp==='medium'?2: imp==='low'?1:0;
+                        let best = 0; let color = '#3a7ca5';
+                        occTasks.forEach(t=>{ if(!t.completed){ const r = rank(t.importance); if(r>best){ best = r; color = importanceDotColor(t.importance); } } });
+                        if(best===0) color = '#9ca3af';
+                        return { total, completed, color };
+                      })();
                       return (
                         <Pressable key={iso} onPress={()=> selectDay(iso)} style={[styles.monthCell, active && styles.monthCellActive]}>
                           <Text style={[styles.monthCellText, active && styles.monthCellTextActive]}>{dayNum}</Text>
@@ -734,7 +852,7 @@ export default function DashboardScreen() {
                     const w = weekdayVNFromISO(iso);
                     const isToday = iso === todayISO;
                     const dayEvents = events.filter(ev => occursOnDate(ev, iso));
-                    const dayTasks = tasks.filter(t => !t.completed && t.date === iso);
+                    const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso));
                     return (
                       <Animated.View entering={FadeInDown.delay(40)} style={[styles.weekDayCard, { marginTop: 8 }, isToday && styles.weekDayCardToday]}>
                         <View style={styles.weekDayHeader}>
@@ -764,7 +882,7 @@ export default function DashboardScreen() {
                             {dayEvents.map((ev, idx) => {
                               const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                               return (
-                                <View key={ev.id+idx} style={styles.eventChip}>
+                                <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: iso } })}>
                                   <View style={styles.eventColorBar} />
                                   <View style={{ flex:1 }}>
                                     <View style={styles.eventMetaRow}>
@@ -783,7 +901,7 @@ export default function DashboardScreen() {
                                       </View>
                                     )}
                                   </View>
-                                </View>
+                                </Pressable>
                               );
                             })}
                           </View>
@@ -793,7 +911,7 @@ export default function DashboardScreen() {
                         {dayTasks.length>0 ? (
                           <View style={styles.dayTaskChips}>
                             {dayTasks.map((t, idx) => { 
-                              const ttime = t.time || null;
+                              const ttime = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || null);
                               return (
                                 <View key={t.id+idx} style={styles.taskChip}>
                                   <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
@@ -872,7 +990,7 @@ export default function DashboardScreen() {
                       hitSlop={4}
                       delayLongPress={350}
                       onLongPress={()=>{ setActionTask(item); setShowActions(true); }}
-                      onPress={()=> { if(item.subTasks && item.subTasks.length>0){ openSubModal(item); } else { router.push({ pathname:'/create-task', params:{ editId: item.id } }); } }}
+                      onPress={()=> { if(item.subTasks && item.subTasks.length>0){ openSubModal(item); } else { const occ = selectedTab==='Hôm nay' ? todayISO : selectedDateISO; router.push({ pathname:'/create-task', params:{ editId: item.id, occDate: occ } }); } }}
                     >
                       <View style={{ flexDirection:'row', alignItems:'center' }}>
                         <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
@@ -983,7 +1101,7 @@ export default function DashboardScreen() {
       <Pressable style={styles.modalBackdrop} onPress={()=> setShowActions(false)}>
         <View style={styles.actionSheet}>
           <Text style={styles.sheetTitle}>{actionTask?.title}</Text>
-          <Pressable style={styles.sheetBtn} onPress={()=>{ if(actionTask) { setShowActions(false); router.push({ pathname:'/create-task', params:{ editId: actionTask.id } }); } }}>
+          <Pressable style={styles.sheetBtn} onPress={()=>{ if(actionTask) { setShowActions(false); const occ = selectedTab==='Hôm nay' ? todayISO : selectedDateISO; router.push({ pathname:'/create-task', params:{ editId: actionTask.id, occDate: occ } }); } }}>
             <Ionicons name='create-outline' size={20} color='#2f6690' />
             <Text style={styles.sheetBtnText}>Chỉnh sửa</Text>
           </Pressable>
@@ -1034,7 +1152,7 @@ export default function DashboardScreen() {
           {subModalTask && (
             <Pressable
               style={[styles.closeSubBtn,{ backgroundColor:'#2f6690', marginTop:18 }]}
-              onPress={() => { closeSubModal(); router.push({ pathname:'/create-task', params:{ editId: subModalTask.id } }); }}
+              onPress={() => { closeSubModal(); const occ = selectedTab==='Hôm nay' ? todayISO : selectedDateISO; router.push({ pathname:'/create-task', params:{ editId: subModalTask.id, occDate: occ } }); }}
             >
               <Text style={styles.closeSubText}>Chỉnh sửa</Text>
             </Pressable>

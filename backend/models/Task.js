@@ -20,7 +20,14 @@ const taskSchema = new mongoose.Schema({
   subTasks: [{
     title: { type: String, required: true, trim: true },
     completed: { type: Boolean, default: false }
-  }]
+  }],
+  // optional repeat rule similar to events
+  repeat: {
+    frequency: { type: String, enum: ['daily','weekly','monthly','yearly'] },
+    endMode: { type: String, enum: ['never','onDate','after'] },
+    endDate: { type: String },
+    count: { type: Number },
+  }
 },{ timestamps:true });
 
 // Virtual completionPercent based on subTasks

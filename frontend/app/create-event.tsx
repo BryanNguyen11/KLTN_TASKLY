@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TextInput, ScrollView, Pressable, Alert, ActivityIndicator, Modal, Switch, DeviceEventEmitter } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, ActivityIndicator, Modal, Switch, DeviceEventEmitter } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,7 +33,7 @@ interface FormState {
 
 export default function CreateEventScreen(){
   const router = useRouter();
-  const { editId } = useLocalSearchParams<{ editId?: string }>();
+  const { editId, occDate } = useLocalSearchParams<{ editId?: string; occDate?: string }>();
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
@@ -89,6 +90,36 @@ export default function CreateEventScreen(){
   const update = useCallback(<K extends keyof FormState>(key:K, value: FormState[K]) => {
     setForm(prev => ({ ...prev, [key]: value }));
   }, []);
+
+  // Load event details when editing
+  useEffect(() => {
+    const load = async () => {
+      if(!editId || !token) return;
+      try {
+        const res = await axios.get(`${API_BASE}/api/events/${editId}`, authHeader());
+        const e = res.data;
+        const typeId = typeof e.typeId === 'string' ? e.typeId : (e.typeId? e.typeId._id : '');
+        setForm(prev => ({
+          ...prev,
+          title: e.title || '',
+          typeId,
+          date: (e.date?.split?.('T')?.[0]) || e.date || prev.date,
+          endDate: e.endDate || '',
+          startTime: e.startTime || prev.startTime,
+          endTime: e.endTime || '',
+          location: e.location || '',
+          notes: e.notes || '',
+          link: e.link || '',
+          props: e.props || {},
+          isRepeating: !!e.repeat,
+          repeat: e.repeat || undefined,
+        }));
+      } catch(err){
+        Alert.alert('Lỗi','Không tải được sự kiện để sửa');
+      }
+    };
+    load();
+  }, [editId, token]);
 
   // When event type changes, prune props to only fields of that type to avoid duplicates
   useEffect(() => {
@@ -222,15 +253,111 @@ export default function CreateEventScreen(){
 
   const selectedType = types.find(t => t._id === form.typeId);
 
+  const onDelete = async () => {
+    if(!editId || !token){ Alert.alert('Lỗi','Không thể xóa'); return; }
+    const hasRepeat = !!form.repeat;
+    if(!hasRepeat){
+      Alert.alert('Xóa sự kiện','Bạn có chắc muốn xóa sự kiện này?',[
+        { text:'Hủy', style:'cancel' },
+        { text:'Xóa', style:'destructive', onPress: async ()=>{
+          try { await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader()); DeviceEventEmitter.emit('eventDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa sự kiện'); router.back(); }
+          catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
+        } }
+      ]);
+      return;
+    }
+    // Repeating event: ask scope
+    Alert.alert('Xóa sự kiện lặp', 'Bạn muốn xóa:\n• Chỉ lần xuất hiện này\n• Hay sự kiện này và tất cả các sự kiện trong tương lai?', [
+      { text:'Hủy', style:'cancel' },
+      { text:'Chỉ lần này', onPress: async ()=>{
+          try {
+            if(!occDate){
+              await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
+              DeviceEventEmitter.emit('eventDeleted', editId);
+              DeviceEventEmitter.emit('toast','Đã xóa sự kiện');
+              router.back();
+              return;
+            }
+            const freq = form.repeat?.frequency || 'weekly';
+            const [y,m,d] = occDate.split('-').map(n=>parseInt(String(n),10));
+            const base = new Date(y, (m||1)-1, d||1);
+            const next = new Date(base);
+            if(freq==='daily') next.setDate(next.getDate()+1);
+            else if(freq==='weekly') next.setDate(next.getDate()+7);
+            else if(freq==='monthly') next.setMonth(next.getMonth()+1);
+            else if(freq==='yearly') next.setFullYear(next.getFullYear()+1);
+            const nextStartISO = toLocalISODate(next);
+            const seriesStart = form.date;
+            if(occDate === seriesStart){
+              // Xóa occurrence đầu tiên: dời ngày bắt đầu chuỗi sang lần kế tiếp
+              const res = await axios.put(`${API_BASE}/api/events/${editId}`, { date: nextStartISO }, authHeader());
+              DeviceEventEmitter.emit('eventUpdated', res.data);
+              DeviceEventEmitter.emit('toast','Đã bỏ lần xuất hiện đầu tiên');
+              router.back();
+              return;
+            }
+            // Cắt chuỗi hiện tại đến trước occDate
+            const dayBefore = (()=>{ const d0 = new Date(base); d0.setDate(d0.getDate()-1); return toLocalISODate(d0); })();
+            await axios.put(`${API_BASE}/api/events/${editId}`, { repeat: { ...(form.repeat||{}), endMode: 'onDate', endDate: dayBefore } }, authHeader());
+            // Tạo chuỗi mới bắt đầu từ lần kế tiếp, giữ nguyên repeat rule
+            const newPayload: any = {
+              title: form.title.trim(),
+              typeId: form.typeId,
+              date: nextStartISO,
+              endDate: form.endDate || undefined,
+              startTime: form.startTime,
+              endTime: form.endTime || undefined,
+              location: form.location || undefined,
+              notes: form.notes || undefined,
+              link: form.link || undefined,
+              props: form.props || {},
+              repeat: form.repeat || undefined,
+            };
+            const created = await axios.post(`${API_BASE}/api/events`, newPayload, authHeader());
+            // Notify
+            DeviceEventEmitter.emit('eventCreated', created.data);
+            DeviceEventEmitter.emit('toast','Đã xóa lần này và giữ các lần khác');
+            router.back();
+          } catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
+        } },
+      { text:'Từ lần này trở đi', style:'destructive', onPress: async ()=>{
+          try {
+            // If backend supported, we'd call a special endpoint. Fallback: update repeat endDate to day before occDate
+            if(occDate){
+              // set repeat end before occDate
+              const dayBefore = (()=>{ const [y,m,d] = occDate.split('-').map(n=>parseInt(n,10)); const dt = new Date(y,(m||1)-1,d||1); dt.setDate(dt.getDate()-1); return toLocalISODate(dt); })();
+              const res = await axios.put(`${API_BASE}/api/events/${editId}`, { repeat: { ...(form.repeat||{}), endMode: 'onDate', endDate: dayBefore } }, authHeader());
+              DeviceEventEmitter.emit('eventUpdated', res.data);
+              DeviceEventEmitter.emit('toast','Đã xóa các lần trong tương lai');
+              router.back();
+            } else {
+              await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
+              DeviceEventEmitter.emit('toast','Đã xóa sự kiện');
+              router.back();
+            }
+          } catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
+        }
+      },
+    ]);
+  };
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Ionicons name='arrow-back' size={22} color='#16425b' /></Pressable>
         <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa sự kiện':'Tạo sự kiện mới'}</Text>
-        <View style={{ width:40 }} />
+        <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
+          {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
+        </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false}>
+      <KeyboardAwareScrollView
+        contentContainerStyle={styles.body}
+        showsVerticalScrollIndicator={false}
+        enableOnAndroid
+        extraScrollHeight={100}
+        keyboardShouldPersistTaps='handled'
+      >
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Thông tin cơ bản</Text>
           <View style={styles.field}>
@@ -403,7 +530,7 @@ export default function CreateEventScreen(){
         </View>
 
         <View style={{ height: 40 }} />
-      </ScrollView>
+  </KeyboardAwareScrollView>
 
       <View style={styles.bottomBar}>
         <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>router.back()}><Text style={styles.cancelText}>Hủy</Text></Pressable>

@@ -8,6 +8,8 @@ export interface Task {
   time: string; // HH:mm
   date: string; // YYYY-MM-DD
   endDate?: string; // YYYY-MM-DD optional
+  startTime?: string; // HH:mm optional
+  endTime?: string; // HH:mm optional
   priority: TaskPriority;
   importance?: TaskPriority; // new field
   urgency?: TaskPriority; // new field
@@ -17,6 +19,12 @@ export interface Task {
   completedAt?: string; // ISO timestamp when completed
   subTasks?: { title: string; completed: boolean }[]; // added
   completionPercent?: number; // added
+  repeat?: {
+    frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+    endMode?: 'never' | 'onDate' | 'after';
+    endDate?: string;
+    count?: number;
+  };
 }
 
 export const mockTasks: Task[] = [

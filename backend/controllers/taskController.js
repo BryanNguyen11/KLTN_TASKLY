@@ -3,12 +3,19 @@ const Task = require('../models/Task');
 exports.createTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[] } = req.body;
+  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[], repeat } = req.body;
     if(!title || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     if(!startTime && !time) return res.status(400).json({ message: 'Cần startTime/endTime hoặc time' });
   if(endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
+  if(repeat){
+    const { frequency, endMode, endDate: rEndDate, count } = repeat;
+    if(!['daily','weekly','monthly','yearly'].includes(frequency)) return res.status(400).json({ message:'repeat.frequency không hợp lệ' });
+    if(endMode && !['never','onDate','after'].includes(endMode)) return res.status(400).json({ message:'repeat.endMode không hợp lệ' });
+    if(endMode==='onDate' && rEndDate && rEndDate < date) return res.status(400).json({ message:'repeat.endDate phải >= date' });
+    if(endMode==='after' && count && count < 1) return res.status(400).json({ message:'repeat.count phải >= 1' });
+  }
   const sanitizedSubTasks = Array.isArray(subTasks) ? subTasks.filter(st => st && st.title && st.title.trim()).map(st => ({ title: st.title.trim(), completed: !!st.completed })) : [];
-  const task = await Task.create({ userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks });
+  const task = await Task.create({ userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks, repeat: repeat || undefined });
     res.status(201).json(task);
   } catch(err){
     res.status(500).json({ message: 'Lỗi tạo task', error: err.message });
@@ -45,6 +52,14 @@ exports.updateTask = async (req,res) => {
     }
     if(updates.endDate && updates.date && updates.endDate < updates.date) {
       return res.status(400).json({ message:'endDate phải >= date' });
+    }
+    if(Object.prototype.hasOwnProperty.call(updates,'repeat') && updates.repeat){
+      const { frequency, endMode, endDate: rEndDate, count } = updates.repeat;
+      if(!['daily','weekly','monthly','yearly'].includes(frequency)) return res.status(400).json({ message:'repeat.frequency không hợp lệ' });
+      if(endMode && !['never','onDate','after'].includes(endMode)) return res.status(400).json({ message:'repeat.endMode không hợp lệ' });
+      const baseDate = updates.date || (await Task.findById(req.params.id)).date;
+      if(endMode==='onDate' && rEndDate && rEndDate < baseDate) return res.status(400).json({ message:'repeat.endDate phải >= date' });
+      if(endMode==='after' && count && count < 1) return res.status(400).json({ message:'repeat.count phải >= 1' });
     }
     if(Object.prototype.hasOwnProperty.call(updates,'status')){
       if(updates.status === 'completed') {
