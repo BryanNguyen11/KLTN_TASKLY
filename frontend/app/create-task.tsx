@@ -246,11 +246,20 @@ export default function CreateTaskScreen() {
             const updates:any = { repeat: { ...r, endMode:'onDate', endDate: prevDay } };
             await axios.put(`${API_BASE}/api/tasks/${editId}`, updates, authHeader());
             // Create a new task for future occurrences starting nextStart with same fields
+            // Compute span in days using local date helpers to avoid UTC drift
+            const spanDays = (() => {
+              if(!form.endDate) return 0;
+              const startDt = isoToDate(form.date);
+              const endDt = isoToDate(form.endDate);
+              const ms = endDt.getTime() - startDt.getTime();
+              const days = Math.round(ms/86400000);
+              return days < 0 ? 0 : days;
+            })();
             const clonePayload:any = {
               title: form.title,
               description: form.description,
               date: nextStart,
-              endDate: form.endDate ? addDays(nextStart!, ( (new Date(form.endDate).getTime()-new Date(form.date).getTime())/86400000 )) : undefined,
+              endDate: form.endDate ? addDays(nextStart!, spanDays) : undefined,
               startTime: form.startTime,
               endTime: form.endTime,
               priority: form.priority,
@@ -272,6 +281,14 @@ export default function CreateTaskScreen() {
         { text:'Từ lần này trở đi', style:'destructive', onPress: async ()=>{
           try {
             if(!occDate){ // no occDate -> treat as delete whole series from start
+              await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader());
+              DeviceEventEmitter.emit('taskDeleted', editId);
+              DeviceEventEmitter.emit('toast','Đã xóa chuỗi');
+              router.back();
+              return;
+            }
+            // If occDate is on or before the series start, deleting from this occurrence forward == delete whole series
+            if(occDate <= form.date){
               await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader());
               DeviceEventEmitter.emit('taskDeleted', editId);
               DeviceEventEmitter.emit('toast','Đã xóa chuỗi');

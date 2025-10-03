@@ -266,8 +266,13 @@ export default function CreateEventScreen(){
       ]);
       return;
     }
-    // Repeating event: ask scope
-    Alert.alert('Xóa sự kiện lặp', 'Bạn muốn xóa:\n• Chỉ lần xuất hiện này\n• Hay sự kiện này và tất cả các sự kiện trong tương lai?', [
+    // Repeating event: ask scope (avoid multiline single-quote string issues)
+    const delMsg = [
+      'Bạn muốn xóa:',
+      '• Chỉ lần xuất hiện này',
+      '• Hay sự kiện này và tất cả các sự kiện trong tương lai?'
+    ].join('\n');
+    Alert.alert('Xóa sự kiện lặp', delMsg, [
       { text:'Hủy', style:'cancel' },
       { text:'Chỉ lần này', onPress: async ()=>{
           try {

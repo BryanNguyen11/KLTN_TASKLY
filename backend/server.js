@@ -4,6 +4,35 @@ const cors = require('cors');
 require('dotenv').config();
 
 const app = express();
+const http = require('http');
+const server = http.createServer(app);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: { origin: '*', methods: ['GET','POST','PUT','DELETE','PATCH'] }
+});
+
+// Socket.IO auth handshake (simple token pass-through; real verification can decode JWT)
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  socket.userToken = token; // Attach raw token for potential later verification
+  next();
+});
+
+io.on('connection', (socket) => {
+  // Join a personal room after optional token parse (simplified: use token as key if present)
+  if(socket.userToken){
+    socket.join(`user:${socket.userToken}`);
+  }
+  socket.on('joinProject', (projectId) => {
+    if(projectId) socket.join(`project:${projectId}`);
+  });
+  socket.on('leaveProject', (projectId) => {
+    if(projectId) socket.leave(`project:${projectId}`);
+  });
+});
+
+// Helper emitters (can be imported later by separating into its own module if needed)
+app.set('io', io);
 const authRoutes = require('./routes/authRoutes');
 const taskRoutes = require('./routes/taskRoutes');
 const tagRoutes = require('./routes/tagRoutes');
@@ -12,6 +41,7 @@ const Tag = require('./models/Tag');
 const eventTypeRoutes = require('./routes/eventTypeRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const EventType = require('./models/EventType');
+const projectRoutes = require('./routes/projectRoutes');
 
 
 // Middleware
@@ -24,6 +54,7 @@ app.use('/api/tags', tagRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/event-types', eventTypeRoutes);
 app.use('/api/events', eventRoutes);
+app.use('/api/projects', projectRoutes);
 
 // Routes test
 app.get('/', (req, res) => {
@@ -83,8 +114,8 @@ mongoose.connect(process.env.MONGO_URI)
         console.warn('⚠️ Seed defaults failed:', e.message);
       }
     })();
-    app.listen(process.env.PORT, () => {
-      console.log(`🚀 Server running on port ${process.env.PORT}`);
+    server.listen(process.env.PORT, () => {
+      console.log(`🚀 Server + Socket.IO running on port ${process.env.PORT}`);
     });
   })
   .catch(err => console.error(err));

@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { Swipeable } from 'react-native-gesture-handler';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard'; // mockProjects kept temporary fallback
 import { aiOrderedTasks } from '@/utils/aiTaskSort';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
+import io from 'socket.io-client';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence, interpolate } from 'react-native-reanimated';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
@@ -38,6 +40,7 @@ const weekdayVNFromISO = (iso: string) => {
 };
 
 export default function DashboardScreen() {
+  const insets = useSafeAreaInsets();
   // NEW: date filtering enhancement plan
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
   const { user, token } = useAuth();
@@ -57,7 +60,16 @@ export default function DashboardScreen() {
   const [subModalTask, setSubModalTask] = useState<Task | null>(null);
   const [showCompletedCollapse, setShowCompletedCollapse] = useState(true);
   const [showFabMenu, setShowFabMenu] = useState(false);
+  // Projects (real backend)
+  const [projects, setProjects] = useState<any[]>([]);
+  const [showProjectsModal, setShowProjectsModal] = useState(false);
+  const [activeProject, setActiveProject] = useState<any|null>(null);
+  const [inviteInput, setInviteInput] = useState('');
+  const [inviting, setInviting] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
+  const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
   const menuAnim = useSharedValue(0); // 0 closed, 1 open
+  const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
 
   useEffect(()=>{
     if(toast){
@@ -341,6 +353,10 @@ export default function DashboardScreen() {
   const selectDay = (iso:string) => { if(!iso) return; setSelectedDateISO(iso); if(selectedTab==='Hôm nay') {/* no-op */} };
   const goPrevMonth = () => { const d = new Date(currentMonth); d.setMonth(d.getMonth()-1); setCurrentMonth(d); };
   const goNextMonth = () => { const d = new Date(currentMonth); d.setMonth(d.getMonth()+1); setCurrentMonth(d); };
+  // Week navigation: shift anchor date by 7 days
+  const goPrevWeek = () => { setSelectedDateISO(prev => addDaysISO(prev, -7)); };
+  const goNextWeek = () => { setSelectedDateISO(prev => addDaysISO(prev, 7)); };
+  const goThisWeek = () => { setSelectedDateISO(todayISO); };
 
   const toggleTask = (id: string) => {
     const nowISO = new Date().toISOString();
@@ -399,6 +415,72 @@ export default function DashboardScreen() {
   };
 
   useEffect(()=>{ fetchTasks(); },[token]);
+  // Fetch projects
+  const fetchProjects = async () => {
+    if(!token) return;
+    try {
+      const res = await axios.get(`${API_BASE}/api/projects`, { headers:{ Authorization:`Bearer ${token}` } });
+      setProjects(res.data || []);
+    } catch(e){ /* silent */ }
+  };
+  useEffect(()=>{ fetchProjects(); },[token]);
+  useEffect(()=> {
+    const sub = DeviceEventEmitter.addListener('projectsUpdated', () => { fetchProjects(); });
+    return () => sub.remove();
+  }, [token]);
+
+  // Realtime socket connection
+  useEffect(()=>{
+    if(!token) return; // wait for auth
+    const API_BASE = process.env.EXPO_PUBLIC_API_BASE || '';
+    const endpoint = API_BASE.replace(/\/api$/,'');
+  const s = io(endpoint, { auth:{ token }, transports:['websocket'] });
+    setSocket(s as any);
+    s.on('connect', () => {
+      // join all project rooms user has
+      projects.forEach(p => s.emit('joinProject', p._id));
+    });
+    s.on('project:updated', (payload:any) => {
+      setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, invites: payload.invites || p.invites } : p));
+      if(activeProject && activeProject._id===payload.projectId){
+        setActiveProject((p:any)=> p? { ...p, invites: payload.invites || p.invites }: p);
+      }
+    });
+    s.on('project:invited', (payload:any) => {
+      // If the invite email matches current user email, refetch to show new pending invite
+      if((user as any)?.email?.toLowerCase && (user as any).email.toLowerCase() === payload.email){
+        fetchProjects();
+      }
+    });
+    s.on('project:memberJoined', (payload:any) => {
+      setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, members: payload.project.members, invites: payload.project.invites } : p));
+      if(activeProject && activeProject._id===payload.projectId){
+        setActiveProject(payload.project);
+      }
+    });
+    s.on('project:deleted', (payload:any) => {
+      setProjects(prev => prev.filter(p=> p._id!==payload.projectId));
+      if(activeProject && activeProject._id===payload.projectId){
+        setActiveProject(null); setShowProjectsModal(false);
+      }
+    });
+    return () => { s.disconnect(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  // When projects list changes after socket connect, (re)join rooms
+  useEffect(()=>{
+    if(socket){
+      projects.forEach(p => socket.emit('joinProject', p._id));
+    }
+  },[projects, socket]);
+  // Listen for new project creation
+  useEffect(()=>{
+    const sub = DeviceEventEmitter.addListener('projectCreated', (p:any)=>{
+      setProjects(prev => [p, ...prev]);
+    });
+    return () => sub.remove();
+  },[]);
 
   // Fetch events from API
   const fetchEvents = async () => {
@@ -586,6 +668,30 @@ export default function DashboardScreen() {
 
   const bottomPad = showFabMenu ? 260 : 140;
 
+  const userEmailLower = (user as any)?.email?.toLowerCase?.() || '';
+  const pendingInviteProjects = projects.filter(p => (p.invites||[]).some((inv:any)=> inv.email===userEmailLower && inv.status==='pending'));
+
+  const acceptInvite = async (projectId:string) => {
+    if(!token) return;
+    const proj = projects.find(p=> p._id===projectId);
+    if(!proj) return;
+    const myInvite = (proj.invites||[]).find((inv:any)=> inv.email===userEmailLower && inv.status==='pending');
+    if(!myInvite) return;
+    try {
+      setAcceptingInvite(projectId);
+      const res = await axios.post(`${API_BASE}/api/projects/${projectId}/accept`, { token: myInvite.token }, { headers:{ Authorization:`Bearer ${token}` } });
+      const updated = res.data.project;
+      setProjects(prev => prev.map(p=> p._id===projectId ? updated : p));
+      if(activeProject && activeProject._id===projectId){ setActiveProject(updated); }
+      // join realtime room immediately
+      if(socket){ socket.emit('joinProject', projectId); }
+      DeviceEventEmitter.emit('projectsUpdated');
+      setToast('Đã tham gia dự án');
+    } catch(e:any){
+      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tham gia');
+    } finally { setAcceptingInvite(null); }
+  };
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <FlatList
@@ -628,6 +734,27 @@ export default function DashboardScreen() {
                 {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} task`}
               </Text>
             </View>
+
+            {pendingInviteProjects.length > 0 && (
+              <View style={styles.inviteBanner}>
+                <Text style={styles.inviteBannerTitle}>Lời mời dự án</Text>
+                {pendingInviteProjects.map(p => {
+                  const myInv = (p.invites||[]).find((inv:any)=> inv.email===userEmailLower && inv.status==='pending');
+                  return (
+                    <View key={p._id} style={styles.inviteBannerRow}>
+                      <View style={{ flex:1 }}>
+                        <Text style={styles.inviteBannerName}>{p.name}</Text>
+                        <Text style={styles.inviteBannerMeta}>Bạn được mời tham gia</Text>
+                      </View>
+                      <Pressable disabled={acceptingInvite===p._id} onPress={()=> acceptInvite(p._id)} style={[styles.inviteAcceptBtn, acceptingInvite===p._id && { opacity:0.5 }]}>
+                        <Ionicons name='checkmark-circle-outline' size={16} color='#fff' />
+                        <Text style={styles.inviteAcceptText}>{acceptingInvite===p._id? 'Đang...' : 'Tham gia'}</Text>
+                      </Pressable>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
 
             <View style={styles.tabs}>
               {(['Hôm nay','Tuần','Tháng'] as const).map(tab => (
@@ -719,6 +846,22 @@ export default function DashboardScreen() {
             {/* Ẩn hàng ô số (ngày) ở chế độ tuần để tập trung phần thẻ bên dưới */}
             {selectedTab === 'Tuần' && (
               <View style={{ marginTop: 8 }}>
+                {/* Week navigation header */}
+                <View style={styles.monthHeader}>
+                  <Pressable onPress={goPrevWeek} style={styles.monthNav}><Ionicons name='chevron-back' size={18} color='#16425b' /></Pressable>
+                  {(() => {
+                    const start = weekISO[0];
+                    const end = weekISO[6];
+                    const fmt = (iso:string) => { const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
+                    return <Text style={styles.monthTitle}>Tuần {fmt(start)} – {fmt(end)}</Text>;
+                  })()}
+                  <Pressable onPress={goNextWeek} style={styles.monthNav}><Ionicons name='chevron-forward' size={18} color='#16425b' /></Pressable>
+                </View>
+                <View style={{ alignItems:'center', marginBottom:6 }}>
+                  <Pressable onPress={goThisWeek} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:12, backgroundColor:'rgba(58,124,165,0.1)' }}>
+                    <Text style={{ color:'#2f6690', fontWeight:'600', fontSize:12 }}>Về tuần hiện tại</Text>
+                  </Pressable>
+                </View>
                 {weekISO.map((iso, i) => {
                   const [y,m,d] = iso.split('-');
                   const display = `${d}/${m}`;
@@ -1042,30 +1185,38 @@ export default function DashboardScreen() {
             </View>
           )}
           {/* Projects (show leader projects) */}
-          {mockProjects.some(p=>p.role==='leader') && (
-            <View style={{ marginTop: 8 }}>
-              <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
-              {mockProjects.filter(p=>p.role==='leader').map(p => (
-                <View key={p.id} style={styles.projectCard}>
-                  <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                    <Text style={styles.projectName}>{p.name}</Text>
-                    <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
-                  </View>
-                  <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
-                    <Text style={styles.projectMeta}>{p.members} thành viên</Text>
-                    <Text style={styles.projectMeta}>{p.progress}% hoàn thành</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
+          {(() => {
+            const userId = (user as any)?._id || (user as any)?.id;
+            const managed = projects.filter(p => p.owner === userId || (p.members||[]).some((m:any)=> m.user === userId && m.role==='admin'));
+            if(!managed.length) return null;
+            return (
+              <View style={{ marginTop: 8 }}>
+                <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+                {managed.map(p => {
+                  const membersCount = (p.members?.length || 0) + 1; // include owner
+                  return (
+                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); }}>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                        <Text style={styles.projectName}>{p.name}</Text>
+                        <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
+                      </View>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                        <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
+                        <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            );
+          })()}
 
           {/* Quick Actions */}
           <View style={{ marginTop: 24 }}>
             <Text style={styles.quickTitle}>Thao tác nhanh</Text>
             <View style={styles.quickGrid}>
               <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' onPress={()=> router.push('/create-task')} />
-              <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' />
+              <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' onPress={()=> setShowProjectsModal(true)} />
               <QuickAction iconName='flag' label={aiMode ? 'Bỏ AI' : 'AI Gợi ý'} bg='rgba(47,102,144,0.12)' color={aiMode? '#dc2626':'#2f6690'} onPress={()=> setAiMode(m=>!m)} />
               <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
             </View>
@@ -1125,6 +1276,171 @@ export default function DashboardScreen() {
         )}
       </View>
     )}
+    {/* Projects list (sheet) & full-screen detail */}
+    <Modal visible={showProjectsModal} transparent animationType='fade' onRequestClose={()=>{ setShowProjectsModal(false); setActiveProject(null); }}>
+      {!activeProject && (
+        <Pressable style={styles.modalBackdrop} onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }}>
+          <View style={styles.projectsSheet}>
+            <View style={{ maxHeight:420 }}>
+              <Text style={styles.sheetTitle}>Dự án của bạn</Text>
+              <ScrollView style={{ maxHeight:360 }}>
+                {projects.length === 0 && (
+                  <Text style={{ color:'#607d8b', fontSize:12 }}>Chưa có dự án nào.</Text>
+                )}
+                {projects.map(p => {
+                  const membersCount = (p.members?.length || 0) + 1;
+                  return (
+                    <Pressable key={p._id} style={styles.projectRow} onPress={()=> setActiveProject(p)}>
+                      <View style={{ flex:1 }}>
+                        <Text style={styles.projectRowName}>{p.name}</Text>
+                        <Text style={styles.projectRowMeta}>{membersCount} thành viên • {p.status==='archived'?'Đã lưu trữ':'Hoạt động'}</Text>
+                      </View>
+                      <Ionicons name='chevron-forward' size={18} color='#2f6690' />
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Pressable style={styles.createProjectBtn} onPress={()=> { setShowProjectsModal(false); router.push('/create-project'); }}>
+                <Ionicons name='add-circle-outline' size={18} color='#fff' />
+                <Text style={styles.createProjectText}>Tạo dự án mới</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Pressable>
+      )}
+      {activeProject && (
+        <SafeAreaView style={styles.projectFullContainer}>
+          <View style={[styles.projectFullHeader, { paddingTop: insets.top + 4 }]}>
+            <Pressable onPress={()=> setActiveProject(null)} style={styles.projectFullBack} hitSlop={10}>
+              <Ionicons name='chevron-back' size={22} color='#16425b' />
+            </Pressable>
+            <Text style={styles.projectFullTitle} numberOfLines={1}>{activeProject.name}</Text>
+            <Pressable onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }} style={styles.projectFullClose} hitSlop={10}>
+              <Ionicons name='close' size={22} color='#16425b' />
+            </Pressable>
+          </View>
+          <KeyboardAwareScrollView
+            enableOnAndroid
+            extraScrollHeight={100}
+            keyboardShouldPersistTaps='handled'
+            contentContainerStyle={styles.projectFullBody}
+          >
+            {!!activeProject.description && <Text style={styles.projectDescr}>{activeProject.description}</Text>}
+            <Text style={styles.membersHeader}>Thành viên</Text>
+            <View style={{ marginBottom:12 }}>
+              <View style={styles.memberRow}>
+                <Ionicons name='person-circle-outline' size={22} color='#3a7ca5' />
+                <Text style={styles.memberName}>Chủ dự án (Bạn hoặc Owner)</Text>
+              </View>
+              {(activeProject.members||[]).map((m:any, idx:number) => (
+                <View key={idx} style={styles.memberRow}>
+                  <Ionicons name='person-outline' size={20} color='#2f6690' />
+                  <Text style={styles.memberName}>Thành viên: {m.user?.slice?.(0,6) || m.user}</Text>
+                  <Text style={styles.memberRole}>{m.role}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.inviteHeader}>Lời mời</Text>
+            <View>
+              {(activeProject.invites||[]).filter((i:any)=> i.status==='pending').map((inv:any)=> (
+                <View key={inv._id} style={styles.inviteRowProj}>
+                  <Ionicons name='mail-outline' size={18} color='#2f6690' />
+                  <Text style={styles.inviteEmail}>{inv.email}</Text>
+                  <Text style={styles.inviteStatus}>Đang chờ</Text>
+                </View>
+              ))}
+              {(!(activeProject.invites||[]).some((i:any)=> i.status==='pending')) && (
+                <Text style={styles.emptyInvite}>Không có lời mời chờ.</Text>
+              )}
+            </View>
+            {(() => {
+              const userId = (user as any)?._id || (user as any)?.id;
+              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
+              if(!isAdmin) return null;
+              return (
+                <View style={{ marginTop:16 }}>
+                  <Text style={styles.inviteHeader}>Mời thêm</Text>
+                  <Text style={{ fontSize:11, color:'#607d8b', marginBottom:6 }}>Nhập nhiều email, phân tách bằng dấu phẩy.</Text>
+                  <View style={styles.inviteInputWrap}>
+                    <TextInput
+                      style={styles.inviteTextInput}
+                      placeholder='vd: a@gmail.com, b@domain.com'
+                      autoCapitalize='none'
+                      value={inviteInput}
+                      onChangeText={setInviteInput}
+                      multiline
+                    />
+                  </View>
+                  <Pressable
+                    disabled={inviting || !inviteInput.trim()}
+                    onPress={async ()=>{
+                      if(!inviteInput.trim()) return;
+                      setInviting(true);
+                      try {
+                        const emails = inviteInput.split(/[,;\n]/).map(e=> e.trim()).filter(e=> e);
+                        const res = await axios.post(`${API_BASE}/api/projects/${activeProject._id}/invite`, { emails }, { headers:{ Authorization: token?`Bearer ${token}`:'' } });
+                        setProjects(prev => prev.map(p=> p._id===activeProject._id ? { ...p, invites: res.data.invites } : p));
+                        setActiveProject((p: any)=> p ? { ...p, invites: res.data.invites } : p);
+                        DeviceEventEmitter.emit('projectsUpdated');
+                        setInviteInput('');
+                        setToast('Đã gửi lời mời');
+                      } catch(e:any){
+                        Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể mời');
+                      } finally { setInviting(false); }
+                    }}
+                    style={[styles.inviteAddBtn, (inviting || !inviteInput.trim()) && { opacity:0.5 }]}
+                  >
+                    <Ionicons name='send-outline' size={16} color='#fff' />
+                    <Text style={styles.inviteAddText}>{inviting? 'Đang gửi...' : 'Gửi lời mời'}</Text>
+                  </Pressable>
+                </View>
+              );
+            })()}
+            {(() => {
+              const userId = (user as any)?._id || (user as any)?.id;
+              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
+              if(!isAdmin) return null;
+              return (
+                <View style={{ marginTop:32 }}>
+                  <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Xóa dự án</Text>
+                  <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Thao tác này vĩnh viễn và cần xác nhận bằng mật khẩu.</Text>
+                  <Pressable
+                    disabled={deletingProject}
+                    onPress={() => {
+                      Alert.prompt?.('Xóa dự án','Nhập mật khẩu tài khoản admin để xác nhận', [
+                        { text:'Hủy', style:'cancel' },
+            { text:'Xóa', style:'destructive', onPress: async (pwd?: string) => {
+              if(!pwd) return;
+                            setDeletingProject(true);
+                            try {
+                              await axios.delete(`${API_BASE}/api/projects/${activeProject._id}`, { data:{ password: pwd }, headers:{ Authorization: token?`Bearer ${token}`:'' } });
+                              setProjects(prev => prev.filter(p=> p._id!==activeProject._id));
+                              setActiveProject(null);
+                              setShowProjectsModal(false);
+                              setToast('Đã xóa dự án');
+                            } catch(e:any){
+                              Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa');
+                            } finally { setDeletingProject(false); }
+                        }}
+                      ], 'secure-text');
+                      if(!Alert.prompt){
+                        // Fallback for Android: manual flow using another Alert and prompt via simple input not available -> ask user to implement separate screen
+                        Alert.alert('Nhắc nhở','Thiết bị không hỗ trợ nhập trực tiếp. Vui lòng triển khai màn hình xác nhận riêng.');
+                      }
+                    }}
+                    style={[styles.deleteProjectBtn, deletingProject && { opacity:0.5 }]}
+                  >
+                    <Ionicons name='trash-outline' size={16} color='#fff' />
+                    <Text style={styles.deleteProjectText}>{deletingProject? 'Đang xóa...' : 'Xóa dự án'}</Text>
+                  </Pressable>
+                </View>
+              );
+            })()}
+            <View style={{ height: Platform.OS==='ios'? 40: 20 }} />
+          </KeyboardAwareScrollView>
+        </SafeAreaView>
+      )}
+    </Modal>
     {/* Subtasks Modal */}
     <Modal
       visible={showSubModal}
@@ -1281,6 +1597,42 @@ const styles = StyleSheet.create({
   emptySub:{ fontSize:12, color:'#2f6690', paddingVertical:8 },
   closeSubBtn:{ marginTop:12, backgroundColor:'#3a7ca5', paddingVertical:12, borderRadius:16, alignItems:'center' },
   closeSubText:{ color:'#fff', fontWeight:'600' },
+  projectsSheet:{ backgroundColor:'#fff', padding:20, borderTopLeftRadius:28, borderTopRightRadius:28, maxHeight:'80%' },
+  projectRow:{ flexDirection:'row', alignItems:'center', backgroundColor:'rgba(58,124,165,0.06)', padding:12, borderRadius:14, marginBottom:10 },
+  projectRowName:{ fontSize:14, fontWeight:'600', color:'#16425b' },
+  projectRowMeta:{ fontSize:11, color:'#607d8b', marginTop:2 },
+  createProjectBtn:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'#3a7ca5', paddingVertical:12, borderRadius:16, justifyContent:'center', marginTop:8 },
+  createProjectText:{ color:'#fff', fontWeight:'600', fontSize:14 },
+  projectDescr:{ fontSize:12, color:'#2f6690', marginBottom:12 },
+  membersHeader:{ fontSize:13, fontWeight:'700', color:'#16425b', marginBottom:8, marginTop:4 },
+  memberRow:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'rgba(217,220,214,0.35)', padding:10, borderRadius:12, marginBottom:8 },
+  memberName:{ fontSize:12, color:'#16425b', flex:1 },
+  memberRole:{ fontSize:11, color:'#2f6690', fontWeight:'600' },
+  inviteHeader:{ fontSize:13, fontWeight:'700', color:'#16425b', marginTop:8, marginBottom:6 },
+  inviteRowProj:{ flexDirection:'row', alignItems:'center', gap:8, paddingVertical:6 },
+  inviteEmail:{ fontSize:12, color:'#16425b', flex:1 },
+  inviteStatus:{ fontSize:11, color:'#2f6690', fontWeight:'600' },
+  emptyInvite:{ fontSize:11, color:'#607d8b', fontStyle:'italic' },
+  inviteInputWrap:{ backgroundColor:'#f1f5f9', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, padding:10 },
+  inviteTextInput:{ minHeight:60, fontSize:12, color:'#16425b' },
+  inviteAddBtn:{ marginTop:10, backgroundColor:'#3a7ca5', flexDirection:'row', alignItems:'center', gap:8, paddingVertical:12, borderRadius:14, justifyContent:'center' },
+  inviteAddText:{ color:'#fff', fontSize:13, fontWeight:'600' },
+  inviteBanner:{ backgroundColor:'#fff', borderRadius:18, padding:14, marginBottom:18, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:1, borderWidth:1, borderColor:'rgba(0,0,0,0.04)' },
+  inviteBannerTitle:{ fontSize:14, fontWeight:'700', color:'#16425b', marginBottom:10 },
+  inviteBannerRow:{ flexDirection:'row', alignItems:'center', marginBottom:10 },
+  inviteBannerName:{ fontSize:13, fontWeight:'600', color:'#16425b' },
+  inviteBannerMeta:{ fontSize:11, color:'#607d8b', marginTop:2 },
+  inviteAcceptBtn:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'#3a7ca5', paddingHorizontal:14, paddingVertical:8, borderRadius:14 },
+  inviteAcceptText:{ color:'#fff', fontSize:12, fontWeight:'600' },
+  deleteProjectBtn:{ marginTop:4, backgroundColor:'#dc2626', flexDirection:'row', alignItems:'center', gap:8, paddingVertical:12, borderRadius:14, justifyContent:'center' },
+  deleteProjectText:{ color:'#fff', fontSize:13, fontWeight:'600' },
+  // Full-screen project detail styles
+  projectFullContainer:{ flex:1, backgroundColor:'#fff' },
+  projectFullHeader:{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop: Platform.OS==='ios'? 4: 8, paddingBottom:10, borderBottomWidth:1, borderBottomColor:'rgba(0,0,0,0.05)' },
+  projectFullBack:{ padding:8, borderRadius:14, backgroundColor:'rgba(58,124,165,0.08)' },
+  projectFullClose:{ padding:8, borderRadius:14, backgroundColor:'rgba(58,124,165,0.08)' },
+  projectFullTitle:{ flex:1, textAlign:'center', fontSize:16, fontWeight:'700', color:'#16425b', paddingHorizontal:8 },
+  projectFullBody:{ paddingHorizontal:20, paddingTop:16, paddingBottom:40 },
   // Extend styles for calendar & dots
   monthHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8 },
   monthTitle: { fontSize:16, fontWeight:'600', color:'#16425b' },
