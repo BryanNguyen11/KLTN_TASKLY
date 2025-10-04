@@ -27,13 +27,14 @@ interface FormState {
   subTasks: { id: string; title: string; completed: boolean }[]; // local id
   isRepeating?: boolean;
   repeat?: { frequency: 'daily'|'weekly'|'monthly'|'yearly'; endMode: 'never'|'onDate'|'after'; endDate?: string; count?: string };
+  assignedTo?: string; // user id of assignee (for project tasks)
 }
 
 type Tag = { _id: string; name: string; slug: string };
 
 export default function CreateTaskScreen() {
   const router = useRouter();
-  const { editId, occDate } = useLocalSearchParams<{ editId?: string; occDate?: string }>();
+  const { editId, occDate, projectId } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string }>();
   const { user, token } = useAuth();
   const isLeader = user?.role === 'leader' || user?.role === 'admin';
   const [saving, setSaving] = useState(false);
@@ -64,8 +65,11 @@ export default function CreateTaskScreen() {
     tags: [],
     subTasks: [],
     isRepeating: false,
-    repeat: undefined
+    repeat: undefined,
+    assignedTo: undefined,
   });
+  const [projectInfo, setProjectInfo] = useState<any | null>(null);
+  const [loadingProject, setLoadingProject] = useState(false);
   const [tags, setTags] = useState<Tag[]>([]);
   const [loadingTags, setLoadingTags] = useState(false);
   const [creatingTag, setCreatingTag] = useState(false);
@@ -88,6 +92,46 @@ export default function CreateTaskScreen() {
   };
 
   useEffect(()=>{ fetchTags(); },[token]);
+
+  // If creating under a project, fetch project detail and force group type
+  useEffect(() => {
+    const load = async () => {
+      if(!token || !projectId) return;
+      setLoadingProject(true);
+      try {
+        const res = await axios.get(`${API_BASE}/api/projects/${projectId}`, authHeader());
+        setProjectInfo(res.data);
+        setForm(prev => ({ ...prev, type: 'group', assignedTo: (user as any)?._id || (user as any)?.id }));
+      } catch(e){ /* silent */ } finally { setLoadingProject(false); }
+    };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, token]);
+
+  // Ensure a default assignee is selected once project info is available
+  useEffect(() => {
+    if(!projectId || !projectInfo) return;
+    const normalizeId = (val:any): string => {
+      if(!val) return '';
+      if(typeof val === 'string') return val;
+      if(typeof val === 'object'){
+        if(val._id) return String(val._id);
+        if(val.id) return String(val.id);
+        try { return String(val); } catch { return ''; }
+      }
+      return String(val);
+    };
+    const currentUserId = normalizeId((user as any)?._id || (user as any)?.id);
+    const seen = new Set<string>();
+    const ownerId = normalizeId(projectInfo.owner);
+    const list: string[] = [];
+    if(ownerId && !seen.has(ownerId)){ list.push(ownerId); seen.add(ownerId); }
+    (projectInfo.members||[]).forEach((m:any)=>{
+      const id = normalizeId(m?.user);
+      if(id && !seen.has(id)) { list.push(id); seen.add(id); }
+    });
+    if(!form.assignedTo && list.length){ setForm(prev => ({ ...prev, assignedTo: list[0] })); }
+  }, [projectId, projectInfo, user, form.assignedTo]);
 
   const update = useCallback(<K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm(prev => ({ ...prev, [key]: value }));
@@ -155,7 +199,7 @@ export default function CreateTaskScreen() {
     }
     if(form.subTasks.some(st=>!st.title.trim())) { Alert.alert('Lỗi','Vui lòng nhập tên cho tất cả tác vụ con'); return; }
     setSaving(true);
-    const payload = {
+    const payload: any = {
       title: form.title.trim(),
       description: form.description,
       date: form.date,
@@ -165,11 +209,12 @@ export default function CreateTaskScreen() {
       priority: form.priority,
       importance: form.importance,
       urgency: form.urgency,
-      type: form.type,
+      type: projectId ? 'group' : form.type,
       estimatedHours: parseFloat(form.estimatedHours)||1,
       tags: form.tags,
       subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed })),
     };
+    if(projectId){ payload.projectId = projectId; if(form.assignedTo) payload.assignedTo = form.assignedTo; }
     if(form.isRepeating && form.repeat){
       (payload as any).repeat = {
         frequency: form.repeat.frequency,
@@ -328,7 +373,7 @@ export default function CreateTaskScreen() {
           priority: t.priority || 'medium',
           importance: t.importance || 'medium',
           urgency: (t as any).urgency || 'medium',
-          type: t.type || 'personal',
+          type: t.type || (projectId? 'group':'personal'),
           estimatedHours: String(t.estimatedHours||1),
           tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id),
           subTasks: (t.subTasks||[]).map((st:any)=> ({ id: st._id || Math.random().toString(36).slice(2), title: st.title, completed: !!st.completed })),
@@ -338,7 +383,8 @@ export default function CreateTaskScreen() {
             endMode: t.repeat.endMode || 'never',
             endDate: t.repeat.endDate,
             count: t.repeat.count ? String(t.repeat.count) : undefined
-          } : undefined
+          } : undefined,
+          assignedTo: (t as any).assignedTo || (projectId ? ((user as any)?._id || (user as any)?.id) : undefined)
         }));
       } catch(e){
         Alert.alert('Lỗi','Không tải được tác vụ để sửa');
@@ -595,19 +641,84 @@ export default function CreateTaskScreen() {
             <View style={{ marginTop: 6 }}>
               <Text style={[styles.sub]}>Mức ưu tiên tính toán: <Text style={{ fontWeight:'700', color:'#16425b' }}>{priorityLabel(form.priority)}</Text></Text>
             </View>
-          <View style={[styles.typeRow, { opacity: isLeader ? 1 : 0.65 }]}>            
-            <View>
-              <Text style={styles.label}>{form.type === 'group' ? 'Tác vụ nhóm' : 'Tác vụ cá nhân'}</Text>
-              <Text style={styles.sub}>{form.type==='group'? 'Có thể giao thành viên khác':'Chỉ bạn thực hiện'}</Text>
+          {/* Task type: if under project, force group */}
+          {!projectId ? (
+            <View style={[styles.typeRow, { opacity: isLeader ? 1 : 0.65 }]}>            
+              <View>
+                <Text style={styles.label}>{form.type === 'group' ? 'Tác vụ nhóm' : 'Tác vụ cá nhân'}</Text>
+                <Text style={styles.sub}>{form.type==='group'? 'Có thể giao thành viên khác':'Chỉ bạn thực hiện'}</Text>
+              </View>
+              <Switch
+                value={form.type === 'group'}
+                disabled={!isLeader}
+                onValueChange={(v)=> update('type', v? 'group':'personal')}
+              />
             </View>
-            <Switch
-              value={form.type === 'group'}
-              disabled={!isLeader}
-              onValueChange={(v)=> update('type', v? 'group':'personal')}
-            />
-          </View>
+          ) : (
+            <View style={[styles.typeRow, { paddingVertical: 6 }]}>            
+              <View>
+                <Text style={styles.label}>Thuộc dự án</Text>
+                <Text style={styles.sub}>{projectInfo?.name || `ID: ${projectId}`}</Text>
+              </View>
+              <View style={{ alignItems:'flex-end' }}>
+                <Text style={[styles.label,{ marginBottom:0 }]}>Loại</Text>
+                <Text style={styles.sub}>Tác vụ nhóm (cố định)</Text>
+              </View>
+            </View>
+          )}
+          {/* Assignee selector when under a project */}
+          {projectId && (
+            <View style={styles.field}>
+              <Text style={styles.label}>Giao cho</Text>
+              <View style={styles.assignList}>
+                {(() => {
+                  const normalizeId = (val:any): string => {
+                    if(!val) return '';
+                    if(typeof val === 'string') return val;
+                    if(typeof val === 'object'){
+                      if(val._id) return String(val._id);
+                      if(val.id) return String(val.id);
+                      // Mongoose ObjectId or unknown object
+                      try { return String(val); } catch { return ''; }
+                    }
+                    return String(val);
+                  };
+                  const currentUserId = normalizeId((user as any)?._id || (user as any)?.id);
+                  const list: Array<{ id:string; label:string }> = [];
+                  const seen = new Set<string>();
+                  if(projectInfo){
+                    const ownerId = normalizeId(projectInfo.owner);
+                    if(ownerId && !seen.has(ownerId)){
+                      list.push({ id: ownerId, label: ownerId === currentUserId ? 'Chủ dự án (Bạn)' : 'Chủ dự án' });
+                      seen.add(ownerId);
+                    }
+                    (projectInfo.members||[]).forEach((m:any)=>{
+                      const id = normalizeId(m?.user);
+                      if(!id || seen.has(id)) return;
+                      const lbl = id === currentUserId ? 'Bạn' : `Thành viên ${m?.role||''}`.trim();
+                      list.push({ id, label: lbl });
+                      seen.add(id);
+                    });
+                  } else {
+                    // fallback: at least allow self
+                    if(currentUserId){ list.push({ id: currentUserId, label: 'Bạn' }); }
+                  }
+                  if(!form.assignedTo && list.length){ update('assignedTo', list[0].id as any); }
+                  return list.map((m, idx) => {
+                    const active = form.assignedTo === m.id;
+                    return (
+                      <Pressable key={`${m.id}-${idx}`} onPress={()=> update('assignedTo', m.id as any)} style={[styles.assignChip, active && styles.assignChipActive]}>
+                        <Text style={[styles.assignText, active && styles.assignTextActive]}>{m.label}</Text>
+                      </Pressable>
+                    );
+                  });
+                })()}
+              </View>
+              {loadingProject && <Text style={styles.sub}>Đang tải thành viên dự án...</Text>}
+            </View>
+          )}
           
-          {isLeader && form.type==='group' && (
+          {(!projectId && isLeader && form.type==='group') && (
             <View style={styles.field}>              
               <Text style={styles.label}>Thời gian ước tính (giờ)</Text>
               <TextInput
@@ -886,4 +997,10 @@ const styles = StyleSheet.create({
   subChkBtn:{ width:40, height:48, justifyContent:'center', alignItems:'center', marginRight:4 },
   subChkCircle:{ width:22, height:22, borderRadius:11, borderWidth:2, borderColor:'#3a7ca5', alignItems:'center', justifyContent:'center', backgroundColor:'#fff' },
   subChkCircleDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  // Assignee selector styles
+  assignList:{ flexDirection:'row', flexWrap:'wrap' },
+  assignChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  assignChipActive:{ backgroundColor:'#2f6690' },
+  assignText:{ color:'#2f6690', fontWeight:'600', fontSize:12 },
+  assignTextActive:{ color:'#fff' },
 });

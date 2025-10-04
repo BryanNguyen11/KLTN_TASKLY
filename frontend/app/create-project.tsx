@@ -1,11 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { View, Text, StyleSheet, TextInput, Pressable, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, ScrollView, Platform, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { DeviceEventEmitter } from 'react-native';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 interface InviteRow { id: string; email: string; }
 
@@ -17,6 +18,37 @@ export default function CreateProject(){
   const [description, setDescription] = useState('');
   const [invites, setInvites] = useState<InviteRow[]>([{ id: Math.random().toString(36).slice(2), email: '' }]);
   const [saving, setSaving] = useState(false);
+  // Dates
+  const todayISO = useMemo(()=>{
+    const d = new Date(); const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`;
+  },[]);
+  const [startDate, setStartDate] = useState<string>(todayISO);
+  const [dueDate, setDueDate] = useState<string>('');
+  const [showPicker, setShowPicker] = useState<{ mode:'date'; field:'start'|'due'|null }>({ mode:'date', field:null });
+  const [tempDate, setTempDate] = useState<Date | null>(null);
+
+  const toDisplay = (iso?:string) => {
+    if(!iso) return '';
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const [y,m,d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+  };
+  const parseISO = (iso?:string) => {
+    if(iso && /^\d{4}-\d{2}-\d{2}$/.test(iso)) return new Date(iso+'T00:00:00');
+    return new Date();
+  };
+  const toISO = (d:Date) => {
+    const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`;
+  };
+  const openDate = (field:'start'|'due') => { const base = field==='start'? parseISO(startDate): parseISO(dueDate); setTempDate(base); setShowPicker({ mode:'date', field }); };
+  const onNativeChange = (e:DateTimePickerEvent, selected?:Date) => {
+    if(Platform.OS !== 'android') return;
+    if(e.type==='dismissed'){ setShowPicker({ mode:'date', field:null }); return; }
+    if(selected && showPicker.field){ const iso = toISO(selected); if(showPicker.field==='start'){ setStartDate(iso);} else { setDueDate(iso);} }
+    setShowPicker({ mode:'date', field:null });
+  };
+  const confirmIOS = () => { if(tempDate && showPicker.field){ const iso = toISO(tempDate); if(showPicker.field==='start'){ setStartDate(iso);} else { setDueDate(iso);} } setShowPicker({ mode:'date', field:null }); setTempDate(null); };
+  const cancelIOS = () => { setShowPicker({ mode:'date', field:null }); setTempDate(null); };
 
   const addInvite = () => setInvites(p=> [...p, { id: Math.random().toString(36).slice(2), email: '' }]);
   const updateInvite = (id:string, email:string) => setInvites(p=> p.map(i=> i.id===id? { ...i, email }: i));
@@ -27,9 +59,11 @@ export default function CreateProject(){
   const save = async () => {
     if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
     if(!name.trim()){ Alert.alert('Thiếu thông tin','Tên dự án bắt buộc'); return; }
+    // Validate due >= start if due provided
+    if(dueDate && startDate && dueDate < startDate){ Alert.alert('Lỗi','Ngày kết thúc dự kiến phải >= ngày bắt đầu'); return; }
     setSaving(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/projects`, { name: name.trim(), description: description.trim(), inviteEmails: cleanEmails() }, { headers:{ Authorization: `Bearer ${token}` } });
+      const res = await axios.post(`${API_BASE}/api/projects`, { name: name.trim(), description: description.trim(), inviteEmails: cleanEmails(), startDate, dueDate: dueDate || undefined }, { headers:{ Authorization: `Bearer ${token}` } });
       DeviceEventEmitter.emit('projectCreated', res.data);
       Alert.alert('Thành công','Đã tạo dự án');
       router.back();
@@ -54,6 +88,20 @@ export default function CreateProject(){
           <TextInput style={styles.input} placeholder='VD: Nền tảng học nhóm' value={name} onChangeText={setName} />
           <Text style={[styles.label,{ marginTop:12 }]}>Mô tả</Text>
             <TextInput style={[styles.input, styles.textarea]} multiline placeholder='Mục tiêu, phạm vi...' value={description} onChangeText={setDescription} />
+          <View style={{ flexDirection:'row', gap:12, marginTop:12 }}>
+            <View style={{ flex:1 }}>
+              <Text style={styles.label}>Ngày bắt đầu</Text>
+              <Pressable onPress={()=>openDate('start')} style={styles.input}>
+                <Text style={{ color:'#16425b', fontWeight:'600' }}>{toDisplay(startDate)}</Text>
+              </Pressable>
+            </View>
+            <View style={{ flex:1 }}>
+              <Text style={styles.label}>Kết thúc dự kiến</Text>
+              <Pressable onPress={()=>openDate('due')} style={styles.input}>
+                <Text style={{ color:'#16425b', fontWeight:'600' }}>{toDisplay(dueDate)}</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Mời thành viên</Text>
@@ -90,6 +138,23 @@ export default function CreateProject(){
           <Text style={styles.saveText}>{saving? 'Đang lưu...' : 'Tạo dự án'}</Text>
         </Pressable>
       </View>
+      {/* Date pickers */}
+      {showPicker.field && Platform.OS==='android' && (
+        <DateTimePicker value={tempDate || new Date()} mode='date' display='default' onChange={onNativeChange} />
+      )}
+      {showPicker.field && Platform.OS==='ios' && (
+        <Modal transparent animationType='fade'>
+          <View style={{ flex:1, backgroundColor:'rgba(0,0,0,0.35)', justifyContent:'flex-end' }}>
+            <View style={{ backgroundColor:'#fff', borderTopLeftRadius:24, borderTopRightRadius:24, paddingTop:8, paddingBottom:20 }}>
+              <DateTimePicker value={tempDate || new Date()} mode='date' display='spinner' themeVariant='light' onChange={(e, d)=>{ if(d) setTempDate(d); }} />
+              <View style={{ flexDirection:'row', justifyContent:'space-between', paddingHorizontal:16, marginTop:4 }}>
+                <Pressable onPress={cancelIOS} style={{ flex:1, height:44, borderRadius:14, alignItems:'center', justifyContent:'center', marginHorizontal:6, backgroundColor:'#e2e8f0' }}><Text style={{ fontSize:15, fontWeight:'600', color:'#16425b' }}>Hủy</Text></Pressable>
+                <Pressable onPress={confirmIOS} style={{ flex:1, height:44, borderRadius:14, alignItems:'center', justifyContent:'center', marginHorizontal:6, backgroundColor:'#3a7ca5' }}><Text style={{ fontSize:15, fontWeight:'600', color:'#fff' }}>Chọn</Text></Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -120,3 +185,4 @@ const styles = StyleSheet.create({
   saveBtn:{ backgroundColor:'#3a7ca5' },
   saveText:{ color:'#fff', fontWeight:'600', fontSize:15 },
 });
+

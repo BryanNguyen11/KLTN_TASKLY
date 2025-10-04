@@ -3,7 +3,7 @@ const Task = require('../models/Task');
 exports.createTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[], repeat } = req.body;
+  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[], repeat, projectId, assignedTo } = req.body;
     if(!title || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     if(!startTime && !time) return res.status(400).json({ message: 'Cần startTime/endTime hoặc time' });
   if(endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
@@ -15,7 +15,10 @@ exports.createTask = async (req,res) => {
     if(endMode==='after' && count && count < 1) return res.status(400).json({ message:'repeat.count phải >= 1' });
   }
   const sanitizedSubTasks = Array.isArray(subTasks) ? subTasks.filter(st => st && st.title && st.title.trim()).map(st => ({ title: st.title.trim(), completed: !!st.completed })) : [];
-  const task = await Task.create({ userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks, repeat: repeat || undefined });
+  const payload = { userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks, repeat: repeat || undefined };
+  if(projectId){ payload.projectId = projectId; }
+  if(assignedTo){ payload.assignedTo = assignedTo; }
+  const task = await Task.create(payload);
     res.status(201).json(task);
   } catch(err){
     res.status(500).json({ message: 'Lỗi tạo task', error: err.message });
@@ -25,7 +28,8 @@ exports.createTask = async (req,res) => {
 exports.getTasks = async (req,res) => {
   try {
     const userId = req.user.userId;
-    const tasks = await Task.find({ userId }).sort({ createdAt: -1 }).lean();
+    // Return all tasks created by user, plus tasks assigned to user
+    const tasks = await Task.find({ $or: [ { userId }, { assignedTo: userId } ] }).sort({ createdAt: -1 }).lean();
     res.json(tasks);
   } catch(err){
     res.status(500).json({ message: 'Lỗi lấy danh sách', error: err.message });
@@ -35,7 +39,7 @@ exports.getTasks = async (req,res) => {
 exports.getTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-    const task = await Task.findOne({ _id: req.params.id, userId });
+    const task = await Task.findOne({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     res.json(task);
   } catch(err){
@@ -68,7 +72,7 @@ exports.updateTask = async (req,res) => {
         updates.completedAt = undefined; // remove when reverting
       }
     }
-    const task = await Task.findOneAndUpdate({ _id: req.params.id, userId }, updates, { new:true });
+    const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new:true });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     res.json(task);
   } catch(err){
@@ -79,7 +83,7 @@ exports.updateTask = async (req,res) => {
 exports.deleteTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-    const task = await Task.findOneAndDelete({ _id: req.params.id, userId });
+    const task = await Task.findOneAndDelete({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     res.json({ message:'Đã xóa', id: task._id });
   } catch(err){
@@ -92,7 +96,7 @@ exports.toggleSubTask = async (req,res) => {
     const userId = req.user.userId;
     const { id, index } = { id: req.params.id, index: parseInt(req.params.index,10) };
     if(Number.isNaN(index)) return res.status(400).json({ message:'Index không hợp lệ' });
-    const task = await Task.findOne({ _id:id, userId });
+    const task = await Task.findOne({ _id:id, $or: [ { userId }, { assignedTo: userId } ] });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     if(!task.subTasks || !task.subTasks[index]) return res.status(404).json({ message:'Subtask không tồn tại' });
 

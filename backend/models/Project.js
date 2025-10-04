@@ -16,6 +16,9 @@ const inviteSchema = new mongoose.Schema({
 const projectSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 120 },
   description: { type: String, trim: true, default: '' },
+  // Optional planned timeline (YYYY-MM-DD strings for consistency with tasks/events)
+  startDate: { type: String },
+  dueDate: { type: String },
   owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   members: { type: [memberSchema], default: [] },
   invites: { type: [inviteSchema], default: [] },

@@ -47,7 +47,7 @@ export default function DashboardScreen() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
-  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule };
+  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule; projectId?: string };
   const [events, setEvents] = useState<EventItem[]>([]);
   const [aiMode, setAiMode] = useState(false); // AI suggestion sorting active
   const [loading, setLoading] = useState(false);
@@ -68,8 +68,16 @@ export default function DashboardScreen() {
   const [inviting, setInviting] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
+  // Edit project info states
+  const [editingProject, setEditingProject] = useState(false);
+  const [projName, setProjName] = useState('');
+  const [projDescr, setProjDescr] = useState('');
+  const [projStart, setProjStart] = useState('');
+  const [projDue, setProjDue] = useState('');
+  const [savingProject, setSavingProject] = useState(false);
   const menuAnim = useSharedValue(0); // 0 closed, 1 open
   const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
+  const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
 
   useEffect(()=>{
     if(toast){
@@ -407,7 +415,8 @@ export default function DashboardScreen() {
         subTasks: t.subTasks,
         completionPercent: t.completionPercent,
         repeat: t.repeat,
-      }));
+        projectId: t.projectId,
+  } as any));
       setTasks(mapped);
     } catch(e:any){
       setError(e?.response?.data?.message || 'Không tải được tasks');
@@ -424,6 +433,12 @@ export default function DashboardScreen() {
     } catch(e){ /* silent */ }
   };
   useEffect(()=>{ fetchProjects(); },[token]);
+  // Quick lookup: projectId -> name
+  const projectNameById = React.useMemo(() => {
+    const m: Record<string,string> = {};
+    (projects||[]).forEach(p => { if(p && p._id) m[p._id] = p.name; });
+    return m;
+  }, [projects]);
   useEffect(()=> {
     const sub = DeviceEventEmitter.addListener('projectsUpdated', () => { fetchProjects(); });
     return () => sub.remove();
@@ -495,7 +510,8 @@ export default function DashboardScreen() {
         startTime: e.startTime,
         endTime: e.endTime,
         location: e.location,
-        repeat: e.repeat
+        repeat: e.repeat,
+        projectId: e.projectId
       }));
       setEvents(mapped);
     } catch(e){ /* silent for now */ }
@@ -557,6 +573,8 @@ export default function DashboardScreen() {
         subTasks: newTask.subTasks,
         completionPercent: newTask.completionPercent,
         repeat: newTask.repeat,
+        // @ts-ignore add projectId for project badge lookup
+        projectId: (newTask as any).projectId,
       };
       setTasks(prev => [adapted, ...prev]);
       setToast('Đã thêm tác vụ');
@@ -579,6 +597,8 @@ export default function DashboardScreen() {
         subTasks: uTask.subTasks,
         completionPercent: uTask.completionPercent,
         repeat: uTask.repeat,
+        // @ts-ignore add projectId for project badge lookup
+        projectId: (uTask as any).projectId,
       };
       setTasks(prev => prev.map(t=> t.id===adapted.id ? { ...t, ...adapted } : t));
       setToast('Đã cập nhật');
@@ -1145,7 +1165,11 @@ export default function DashboardScreen() {
                           <Text style={styles.metaText}>{item.time}</Text>
                         </>)}
                         {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
-                        {item.type === 'group' && <Text style={styles.groupBadge}>Nhóm</Text>}
+                        {item.type === 'group' && (() => {
+                          const pid = (item as any).projectId as string | undefined;
+                          const name = pid ? projectNameById[pid] : undefined;
+                          return <Text style={styles.groupBadge}>{name || 'Nhóm'}</Text>;
+                        })()}
                       </View>
                     </Pressable>
                   </View>
@@ -1309,7 +1333,7 @@ export default function DashboardScreen() {
         </Pressable>
       )}
       {activeProject && (
-        <SafeAreaView style={styles.projectFullContainer}>
+        <SafeAreaView style={styles.projectFullContainer} edges={['left','right','bottom']}>
           <View style={[styles.projectFullHeader, { paddingTop: insets.top + 4 }]}>
             <Pressable onPress={()=> setActiveProject(null)} style={styles.projectFullBack} hitSlop={10}>
               <Ionicons name='chevron-back' size={22} color='#16425b' />
@@ -1325,7 +1349,194 @@ export default function DashboardScreen() {
             keyboardShouldPersistTaps='handled'
             contentContainerStyle={styles.projectFullBody}
           >
-            {!!activeProject.description && <Text style={styles.projectDescr}>{activeProject.description}</Text>}
+            {/* Project scoped mini-dashboard */}
+            {(() => {
+              const projId = activeProject?._id;
+              const projTasksAll = tasks.filter(t => (t as any).projectId === projId || t.type === 'group');
+              const projEventsAll = events.filter(e => e.projectId === projId);
+              const projCompleted = projTasksAll.filter(t=> t.completed).length;
+              const projTotal = projTasksAll.length;
+              const projProgress = projTotal ? Math.round(projCompleted / projTotal * 100) : 0;
+              return (
+                <View style={{ marginBottom:16 }}>
+                  <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+                    <Text style={{ fontSize:14, fontWeight:'700', color:'#16425b' }}>Tổng quan dự án</Text>
+                    <Text style={{ fontSize:12, color:'#2f6690' }}>{projCompleted}/{projTotal} • {projProgress}%</Text>
+                  </View>
+                  <View style={[styles.progressBarBg,{ height:10 }]}> 
+                    <View style={[styles.progressBarFill,{ width: `${projProgress}%`, height:10 }]} />
+                  </View>
+                  <View style={[styles.tabs,{ marginTop:12 }]}>
+                    {(['Hôm nay','Tuần','Tháng'] as const).map(tab => (
+                      <Pressable key={tab} onPress={()=> setProjectSelectedTab(tab)} style={[styles.tabBtn, projectSelectedTab===tab && styles.tabBtnActive]}>
+                        <Text style={[styles.tabText, projectSelectedTab===tab && styles.tabTextActive]}>{tab}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  {/* Quick actions in project */}
+                  <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#2f6690' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ projectId: projId } }); }}>
+                      <Ionicons name='add-circle-outline' size={16} color='#fff' />
+                      <Text style={styles.inviteAcceptText}>Task mới</Text>
+                    </Pressable>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-event', params:{ projectId: projId } }); }}>
+                      <Ionicons name='calendar-outline' size={16} color='#fff' />
+                      <Text style={styles.inviteAcceptText}>Sự kiện mới</Text>
+                    </Pressable>
+                  </View>
+                  {/* Project view content */}
+                  {projectSelectedTab === 'Hôm nay' && (
+                    (()=>{
+                      const iso = todayISO;
+                      const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso));
+                      const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                      return (
+                        <View style={{ marginTop:12 }}>
+                          <Text style={{ fontSize:13, fontWeight:'700', color:'#16425b', marginBottom:6 }}>Hôm nay</Text>
+                          <View style={styles.eventList}>
+                            {dayEvents.map((ev, idx)=> (
+                              <View key={ev.id+idx} style={styles.eventChip}>
+                                <View style={styles.eventColorBar} />
+                                <View style={{ flex:1 }}>
+                                  <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
+                                </View>
+                              </View>
+                            ))}
+                          </View>
+                          <View style={styles.dayTaskChips}>
+                            {dayTasks.map((t, idx)=> (
+                              <View key={t.id+idx} style={styles.taskChip}>
+                                <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                              </View>
+                            ))}
+                          </View>
+                          {dayEvents.length===0 && dayTasks.length===0 && <Text style={styles.emptyHint}>Không có mục trong hôm nay</Text>}
+                        </View>
+                      );
+                    })()
+                  )}
+                  {projectSelectedTab !== 'Hôm nay' && (
+                    (()=>{
+                      const week = projectSelectedTab==='Tuần' ? weekISO : [];
+                      const daysToShow = projectSelectedTab==='Tuần' ? week : [selectedDateISO];
+                      return (
+                        <View style={{ marginTop:8 }}>
+                          {daysToShow.map((iso, i)=>{
+                            const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso));
+                            const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                            const w = weekdayVNFromISO(iso);
+                            const [y,m,d] = iso.split('-');
+                            return (
+                              <View key={iso} style={[styles.weekDayCard,{ marginBottom:8 }]}>
+                                <View style={styles.weekDayHeader}>
+                                  <Text style={styles.weekDayTitle}>{w}, {d}/{m}</Text>
+                                  <View style={styles.countsRow}>
+                                    <View style={[styles.countPill, styles.eventsCountPill]}>
+                                      <Ionicons name='calendar-outline' size={12} color='#2f6690' />
+                                      <Text style={[styles.countText, styles.eventsCountText]}>{dayEvents.length}</Text>
+                                    </View>
+                                    <View style={[styles.countPill, styles.tasksCountPill]}>
+                                      <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
+                                      <Text style={[styles.countText, styles.tasksCountText]}>{dayTasks.length}</Text>
+                                    </View>
+                                  </View>
+                                </View>
+                                {dayEvents.length>0 ? (
+                                  <View style={styles.eventList}>
+                                    {dayEvents.map((ev, idx)=> (
+                                      <View key={ev.id+idx} style={styles.eventChip}>
+                                        <View style={styles.eventColorBar} />
+                                        <View style={{ flex:1 }}>
+                                          <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                          {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
+                                        </View>
+                                      </View>
+                                    ))}
+                                  </View>
+                                ) : (
+                                  <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                                )}
+                                {dayTasks.length>0 ? (
+                                  <View style={styles.dayTaskChips}>
+                                    {dayTasks.map((t, idx)=> (
+                                      <View key={t.id+idx} style={styles.taskChip}>
+                                        <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                        <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                ) : (
+                                  <Text style={styles.emptyHint}>Không có tác vụ</Text>
+                                )}
+                              </View>
+                            );
+                          })}
+                        </View>
+                      );
+                    })()
+                  )}
+                </View>
+              );
+            })()}
+            {!!activeProject.description && !editingProject && <Text style={styles.projectDescr}>{activeProject.description}</Text>}
+            {(() => {
+              const userId = (user as any)?._id || (user as any)?.id;
+              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
+              if(!isAdmin) return null;
+              return (
+                <View style={{ marginBottom:12 }}>
+                  {!editingProject ? (
+                    <Pressable onPress={()=>{ setEditingProject(true); setProjName(activeProject.name||''); setProjDescr(activeProject.description||''); setProjStart((activeProject as any).startDate||''); setProjDue((activeProject as any).dueDate||''); }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b', alignSelf:'flex-start', marginBottom:10 }]}>
+                      <Ionicons name='create-outline' size={16} color='#fff' />
+                      <Text style={styles.inviteAcceptText}>Chỉnh sửa thông tin</Text>
+                    </Pressable>
+                  ) : (
+                    <View style={styles.editBox}>
+                      <Text style={styles.editLabel}>Tên dự án</Text>
+                      <TextInput style={styles.editInput} value={projName} onChangeText={setProjName} placeholder='Nhập tên dự án' />
+                      <Text style={styles.editLabel}>Mô tả</Text>
+                      <TextInput style={[styles.editInput,{ minHeight:70, textAlignVertical:'top' }]} value={projDescr} onChangeText={setProjDescr} placeholder='Mô tả...' multiline />
+                      <View style={{ flexDirection:'row', gap:12 }}>
+                        <View style={{ flex:1 }}>
+                          <Text style={styles.editLabel}>Ngày bắt đầu</Text>
+                          <TextInput style={styles.editInput} value={projStart} onChangeText={setProjStart} placeholder='YYYY-MM-DD' />
+                        </View>
+                        <View style={{ flex:1 }}>
+                          <Text style={styles.editLabel}>Kết thúc dự kiến</Text>
+                          <TextInput style={styles.editInput} value={projDue} onChangeText={setProjDue} placeholder='YYYY-MM-DD' />
+                        </View>
+                      </View>
+                      <View style={{ flexDirection:'row', gap:10, marginTop:12 }}>
+                        <Pressable disabled={savingProject} onPress={()=>{ setEditingProject(false); }} style={[styles.bottomBtn, { backgroundColor:'#e5e7eb', height:44 }]}>
+                          <Text style={[styles.cancelText,{ color:'#111827' }]}>Hủy</Text>
+                        </Pressable>
+                        <Pressable disabled={savingProject} onPress={async()=>{
+                          if(!token || !activeProject) return;
+                          const body:any = { name: projName.trim(), description: projDescr };
+                          if(projStart !== undefined) body.startDate = projStart.trim();
+                          if(projDue !== undefined) body.dueDate = projDue.trim();
+                          try{
+                            setSavingProject(true);
+                            const res = await axios.put(`${API_BASE}/api/projects/${activeProject._id}`, body, { headers:{ Authorization:`Bearer ${token}` } });
+                            const updated = res.data.project;
+                            setProjects(prev => prev.map(p=> p._id===updated._id? updated : p));
+                            setActiveProject(updated);
+                            setEditingProject(false);
+                            setToast('Đã cập nhật dự án');
+                          } catch(e:any){
+                            Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể cập nhật dự án');
+                          } finally { setSavingProject(false); }
+                        }} style={[styles.bottomBtn, { backgroundColor:'#3a7ca5', height:44 }]}>
+                          <Text style={styles.saveText}>{savingProject? 'Đang lưu...' : 'Lưu'}</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
             <Text style={styles.membersHeader}>Thành viên</Text>
             <View style={{ marginBottom:12 }}>
               <View style={styles.memberRow}>
@@ -1633,6 +1844,13 @@ const styles = StyleSheet.create({
   projectFullClose:{ padding:8, borderRadius:14, backgroundColor:'rgba(58,124,165,0.08)' },
   projectFullTitle:{ flex:1, textAlign:'center', fontSize:16, fontWeight:'700', color:'#16425b', paddingHorizontal:8 },
   projectFullBody:{ paddingHorizontal:20, paddingTop:16, paddingBottom:40 },
+  // Edit project form styles
+  editBox:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, padding:12, marginBottom:12 },
+  editLabel:{ fontSize:12, color:'#2f6690', marginTop:8, marginBottom:6, fontWeight:'600' },
+  editInput:{ backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0', borderRadius:12, paddingHorizontal:10, paddingVertical:10, fontSize:13, color:'#16425b' },
+  bottomBtn:{ flex:1, height:48, borderRadius:14, alignItems:'center', justifyContent:'center' },
+  cancelText:{ fontSize:14, fontWeight:'600', color:'#2f6690' },
+  saveText:{ color:'#fff', fontWeight:'600', fontSize:14 },
   // Extend styles for calendar & dots
   monthHeader: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:8 },
   monthTitle: { fontSize:16, fontWeight:'600', color:'#16425b' },

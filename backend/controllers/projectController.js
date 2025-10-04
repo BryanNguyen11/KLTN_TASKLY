@@ -6,11 +6,24 @@ const User = require('../models/User');
 exports.createProject = async (req,res) => {
   try {
     const userId = req.user.userId;
-    const { name, description='', inviteEmails=[] } = req.body;
+    const { name, description='', inviteEmails=[], startDate, dueDate } = req.body;
     if(!name) return res.status(400).json({ message:'Thiếu tên dự án' });
+    // Validate dates (YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    let start = startDate;
+    const today = new Date();
+  const toLocalISODate = (d) => {
+      const y = d.getFullYear(); const m = String(d.getMonth()+1).padStart(2,'0'); const day = String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`;
+    };
+    if(!start){ start = toLocalISODate(today); }
+    else if(start && !dateRegex.test(start)) return res.status(400).json({ message:'startDate không đúng định dạng YYYY-MM-DD' });
+    if(dueDate && !dateRegex.test(dueDate)) return res.status(400).json({ message:'dueDate không đúng định dạng YYYY-MM-DD' });
+    if(dueDate && start && dueDate < start) return res.status(400).json({ message:'Ngày kết thúc dự kiến phải >= ngày bắt đầu' });
     const project = await Project.create({
       name: name.trim(),
       description: description.trim(),
+      startDate: start,
+      dueDate: dueDate || undefined,
       owner: userId,
       members: [{ user: userId, role: 'admin' }]
     });
@@ -179,5 +192,44 @@ exports.deleteProject = async (req,res) => {
     res.json({ message:'Đã xóa dự án vĩnh viễn', id: project._id });
   } catch(err){
     res.status(500).json({ message:'Lỗi xóa dự án', error: err.message });
+  }
+};
+
+// Update project basic info: name, description, startDate, dueDate (owner/admin only)
+exports.updateProject = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    const { name, description, startDate, dueDate } = req.body;
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    const isAdmin = project.owner.equals(userId) || project.members.some(m=> m.user.equals(userId) && m.role==='admin');
+    if(!isAdmin) return res.status(403).json({ message:'Không có quyền' });
+    // Basic validation
+    if(name !== undefined){
+      const n = String(name).trim();
+      if(!n) return res.status(400).json({ message:'Tên dự án không được trống' });
+      if(n.length>120) return res.status(400).json({ message:'Tên quá dài (tối đa 120 ký tự)' });
+      project.name = n;
+    }
+    if(description !== undefined){ project.description = String(description); }
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if(startDate !== undefined){
+      if(startDate && !dateRegex.test(startDate)) return res.status(400).json({ message:'startDate không đúng định dạng YYYY-MM-DD' });
+      project.startDate = startDate || undefined;
+    }
+    if(dueDate !== undefined){
+      if(dueDate && !dateRegex.test(dueDate)) return res.status(400).json({ message:'dueDate không đúng định dạng YYYY-MM-DD' });
+      project.dueDate = dueDate || undefined;
+    }
+    if(project.startDate && project.dueDate && project.dueDate < project.startDate){
+      return res.status(400).json({ message:'Ngày kết thúc dự kiến phải >= ngày bắt đầu' });
+    }
+    await project.save();
+    const io = req.app.get('io');
+    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    res.json({ message:'Đã cập nhật dự án', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi cập nhật dự án', error: err.message });
   }
 };

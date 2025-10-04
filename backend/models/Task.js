@@ -2,6 +2,10 @@ const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  // Optional project context
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },
+  // Optional assignee (for group/project tasks); when absent, treated as self-assigned
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   title: { type: String, required: true, trim: true },
   description: { type: String, default: '' },
   date: { type: String, required: true }, // YYYY-MM-DD
