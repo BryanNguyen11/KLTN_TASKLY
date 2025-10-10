@@ -432,6 +432,24 @@ export default function DashboardScreen() {
       setProjects(res.data || []);
     } catch(e){ /* silent */ }
   };
+  const fetchProjectDetail = async (id:string) => {
+    if(!token) return;
+    try{
+      const res = await axios.get(`${API_BASE}/api/projects/${id}`, { headers:{ Authorization:`Bearer ${token}` } });
+      const proj = res.data;
+      setProjects(prev => prev.map(p=> p._id===proj._id? proj : p));
+      setActiveProject(proj);
+      // Prefill edit fields in DD/MM/YYYY for better UX
+      const toDDMMYYYY = (iso?: string) => {
+        if(!iso) return '';
+        const [y,m,d] = String(iso).split('-');
+        if(!y||!m||!d) return '';
+        return `${d}/${m}/${y}`;
+      };
+      setProjStart(toDDMMYYYY((proj as any).startDate));
+      setProjDue(toDDMMYYYY((proj as any).dueDate));
+    }catch(e){ /* silent */ }
+  };
   useEffect(()=>{ fetchProjects(); },[token]);
   // Quick lookup: projectId -> name
   const projectNameById = React.useMemo(() => {
@@ -443,6 +461,20 @@ export default function DashboardScreen() {
     const sub = DeviceEventEmitter.addListener('projectsUpdated', () => { fetchProjects(); });
     return () => sub.remove();
   }, [token]);
+
+  // Allow returning from members screen to open project detail directly
+  useEffect(()=>{
+    const sub = DeviceEventEmitter.addListener('openProjectDetail', (payload:any) => {
+      const pid = payload?.id || payload;
+      if(!pid) return;
+      setShowProjectsModal(true);
+      // set a minimal active project to switch modal view immediately
+      const existing = projects.find(p=> p._id===pid);
+      setActiveProject(existing || { _id: pid, name: 'Dự án' } as any);
+      fetchProjectDetail(pid);
+    });
+    return () => sub.remove();
+  }, [projects]);
 
   // Realtime socket connection
   useEffect(()=>{
@@ -456,9 +488,9 @@ export default function DashboardScreen() {
       projects.forEach(p => s.emit('joinProject', p._id));
     });
     s.on('project:updated', (payload:any) => {
-      setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, invites: payload.invites || p.invites } : p));
+      setProjects(prev => prev.map(p=> p._id===payload.projectId ? (payload.project ? payload.project : { ...p, invites: payload.invites ?? p.invites }) : p));
       if(activeProject && activeProject._id===payload.projectId){
-        setActiveProject((p:any)=> p? { ...p, invites: payload.invites || p.invites }: p);
+        setActiveProject((p:any)=> payload.project ? payload.project : (p? { ...p, invites: payload.invites ?? p.invites } : p));
       }
     });
     s.on('project:invited', (payload:any) => {
@@ -710,6 +742,25 @@ export default function DashboardScreen() {
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tham gia');
     } finally { setAcceptingInvite(null); }
+  };
+
+  const leaveProject = async () => {
+    if(!activeProject || !token) return;
+    Alert.alert('Rời dự án','Bạn chắc chắn muốn rời dự án này?',[
+      { text:'Hủy', style:'cancel' },
+      { text:'Rời', style:'destructive', onPress: async ()=>{
+        try{
+          await axios.post(`${API_BASE}/api/projects/${activeProject._id}/leave`, {}, { headers:{ Authorization:`Bearer ${token}` } });
+          setProjects(prev => prev.filter(p=> p._id!==activeProject._id));
+          setActiveProject(null);
+          setShowProjectsModal(false);
+          DeviceEventEmitter.emit('projectsUpdated');
+          setToast('Đã rời dự án');
+        }catch(e:any){
+          Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể rời dự án');
+        }
+      } }
+    ]);
   };
 
   return (
@@ -1220,7 +1271,7 @@ export default function DashboardScreen() {
                   // Backend already includes owner in members as admin on creation
                   const membersCount = (p.members?.length || 0);
                   return (
-                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); }}>
+                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                         <Text style={styles.projectName}>{p.name}</Text>
                         <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
@@ -1247,7 +1298,7 @@ export default function DashboardScreen() {
                 {participating.map(p => {
                   const membersCount = (p.members?.length || 0);
                   return (
-                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); }}>
+                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                         <Text style={styles.projectName}>{p.name}</Text>
                         <Text style={[styles.leaderBadge,{ backgroundColor:'#2f6690' }]}>Thành viên</Text>
@@ -1516,7 +1567,14 @@ export default function DashboardScreen() {
               return (
                 <View style={{ marginBottom:12 }}>
                   {!editingProject ? (
-                    <Pressable onPress={()=>{ setEditingProject(true); setProjName(activeProject.name||''); setProjDescr(activeProject.description||''); setProjStart((activeProject as any).startDate||''); setProjDue((activeProject as any).dueDate||''); }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b', alignSelf:'flex-start', marginBottom:10 }]}>
+                    <Pressable onPress={()=>{ 
+                      const toDDMMYYYY = (iso?: string) => { if(!iso) return ''; const [y,m,d] = String(iso).split('-'); if(!y||!m||!d) return ''; return `${d}/${m}/${y}`; };
+                      setEditingProject(true); 
+                      setProjName(activeProject.name||''); 
+                      setProjDescr(activeProject.description||''); 
+                      setProjStart(toDDMMYYYY((activeProject as any).startDate)); 
+                      setProjDue(toDDMMYYYY((activeProject as any).dueDate)); 
+                    }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b', alignSelf:'flex-start', marginBottom:10 }]}>
                       <Ionicons name='create-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Chỉnh sửa thông tin</Text>
                     </Pressable>
@@ -1529,11 +1587,11 @@ export default function DashboardScreen() {
                       <View style={{ flexDirection:'row', gap:12 }}>
                         <View style={{ flex:1 }}>
                           <Text style={styles.editLabel}>Ngày bắt đầu</Text>
-                          <TextInput style={styles.editInput} value={projStart} onChangeText={setProjStart} placeholder='YYYY-MM-DD' />
+                          <TextInput style={styles.editInput} value={projStart} onChangeText={setProjStart} placeholder='DD/MM/YYYY' keyboardType='numbers-and-punctuation' />
                         </View>
                         <View style={{ flex:1 }}>
                           <Text style={styles.editLabel}>Kết thúc dự kiến</Text>
-                          <TextInput style={styles.editInput} value={projDue} onChangeText={setProjDue} placeholder='YYYY-MM-DD' />
+                          <TextInput style={styles.editInput} value={projDue} onChangeText={setProjDue} placeholder='DD/MM/YYYY' keyboardType='numbers-and-punctuation' />
                         </View>
                       </View>
                       <View style={{ flexDirection:'row', gap:10, marginTop:12 }}>
@@ -1543,8 +1601,26 @@ export default function DashboardScreen() {
                         <Pressable disabled={savingProject} onPress={async()=>{
                           if(!token || !activeProject) return;
                           const body:any = { name: projName.trim(), description: projDescr };
-                          if(projStart !== undefined) body.startDate = projStart.trim();
-                          if(projDue !== undefined) body.dueDate = projDue.trim();
+                          const parseToISO = (v?: string) => {
+                            if(!v) return '';
+                            const s = v.trim();
+                            const m = s.match(/^([0-3]?\d)\/(0?\d|1[0-2])\/(\d{4})$/);
+                            if(!m) return 'INVALID';
+                            const dd = m[1].padStart(2,'0');
+                            const mm = m[2].padStart(2,'0');
+                            const yyyy = m[3];
+                            return `${yyyy}-${mm}-${dd}`;
+                          };
+                          const sISO = parseToISO(projStart);
+                          const dISO = parseToISO(projDue);
+                          if(projStart !== undefined){
+                            if(sISO==='INVALID') { Alert.alert('Lỗi','Ngày bắt đầu không đúng định dạng DD/MM/YYYY'); return; }
+                            body.startDate = sISO || undefined;
+                          }
+                          if(projDue !== undefined){
+                            if(dISO==='INVALID') { Alert.alert('Lỗi','Ngày kết thúc dự kiến không đúng định dạng DD/MM/YYYY'); return; }
+                            body.dueDate = dISO || undefined;
+                          }
                           try{
                             setSavingProject(true);
                             const res = await axios.put(`${API_BASE}/api/projects/${activeProject._id}`, body, { headers:{ Authorization:`Bearer ${token}` } });
@@ -1565,19 +1641,30 @@ export default function DashboardScreen() {
                 </View>
               );
             })()}
-            <Text style={styles.membersHeader}>Thành viên</Text>
+            <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+              <Text style={styles.membersHeader}>Thành viên</Text>
+              <Pressable onPress={()=> { setShowProjectsModal(false); if(activeProject?._id){ router.push({ pathname:'/project-members/[id]', params:{ id: activeProject._id } }); } }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b' }]}> 
+                <Ionicons name='person-add-outline' size={16} color='#fff' />
+                <Text style={styles.inviteAcceptText}>Quản lý</Text>
+              </Pressable>
+            </View>
             <View style={{ marginBottom:12 }}>
               <View style={styles.memberRow}>
                 <Ionicons name='person-circle-outline' size={22} color='#3a7ca5' />
                 <Text style={styles.memberName}>Chủ dự án (Bạn hoặc Owner)</Text>
               </View>
-              {(activeProject.members||[]).map((m:any, idx:number) => (
-                <View key={idx} style={styles.memberRow}>
-                  <Ionicons name='person-outline' size={20} color='#2f6690' />
-                  <Text style={styles.memberName}>Thành viên: {m.user?.slice?.(0,6) || m.user}</Text>
-                  <Text style={styles.memberRole}>{m.role}</Text>
-                </View>
-              ))}
+              {(activeProject.members||[]).map((m:any, idx:number) => {
+                const uid = (m.user?._id) || m.user;
+                const display = typeof m.user === 'object' ? (m.user.name || m.user.email || String(uid).slice(0,6)) : (String(m.user).slice(0,6));
+                const isOwner = String(activeProject.owner) === String(uid);
+                return (
+                  <View key={idx} style={styles.memberRow}>
+                    <Ionicons name='person-outline' size={20} color='#2f6690' />
+                    <Text style={styles.memberName}>{display}</Text>
+                    <Text style={styles.memberRole}>{isOwner? 'owner' : m.role}</Text>
+                  </View>
+                );
+              })}
             </View>
             <Text style={styles.inviteHeader}>Lời mời</Text>
             <View>
@@ -1637,19 +1724,19 @@ export default function DashboardScreen() {
             })()}
             {(() => {
               const userId = (user as any)?._id || (user as any)?.id;
-              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
-              if(!isAdmin) return null;
-              return (
-                <View style={{ marginTop:32 }}>
-                  <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Xóa dự án</Text>
-                  <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Thao tác này vĩnh viễn và cần xác nhận bằng mật khẩu.</Text>
-                  <Pressable
-                    disabled={deletingProject}
-                    onPress={() => {
-                      Alert.prompt?.('Xóa dự án','Nhập mật khẩu tài khoản admin để xác nhận', [
-                        { text:'Hủy', style:'cancel' },
-            { text:'Xóa', style:'destructive', onPress: async (pwd?: string) => {
-              if(!pwd) return;
+              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId) && m.role==='admin');
+              if(isAdmin){
+                return (
+                  <View style={{ marginTop:32 }}>
+                    <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Xóa dự án</Text>
+                    <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Thao tác này vĩnh viễn và cần xác nhận bằng mật khẩu.</Text>
+                    <Pressable
+                      disabled={deletingProject}
+                      onPress={() => {
+                        Alert.prompt?.('Xóa dự án','Nhập mật khẩu tài khoản admin để xác nhận', [
+                          { text:'Hủy', style:'cancel' },
+                          { text:'Xóa', style:'destructive', onPress: async (pwd?: string) => {
+                            if(!pwd) return;
                             setDeletingProject(true);
                             try {
                               await axios.delete(`${API_BASE}/api/projects/${activeProject._id}`, { data:{ password: pwd }, headers:{ Authorization: token?`Bearer ${token}`:'' } });
@@ -1660,20 +1747,36 @@ export default function DashboardScreen() {
                             } catch(e:any){
                               Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa');
                             } finally { setDeletingProject(false); }
-                        }}
-                      ], 'secure-text');
-                      if(!Alert.prompt){
-                        // Fallback for Android: manual flow using another Alert and prompt via simple input not available -> ask user to implement separate screen
-                        Alert.alert('Nhắc nhở','Thiết bị không hỗ trợ nhập trực tiếp. Vui lòng triển khai màn hình xác nhận riêng.');
-                      }
-                    }}
-                    style={[styles.deleteProjectBtn, deletingProject && { opacity:0.5 }]}
-                  >
-                    <Ionicons name='trash-outline' size={16} color='#fff' />
-                    <Text style={styles.deleteProjectText}>{deletingProject? 'Đang xóa...' : 'Xóa dự án'}</Text>
-                  </Pressable>
-                </View>
-              );
+                          }}
+                        ], 'secure-text');
+                        if(!Alert.prompt){
+                          Alert.alert('Nhắc nhở','Thiết bị không hỗ trợ nhập trực tiếp. Vui lòng triển khai màn hình xác nhận riêng.');
+                        }
+                      }}
+                      style={[styles.deleteProjectBtn, deletingProject && { opacity:0.5 }]}
+                    >
+                      <Ionicons name='trash-outline' size={16} color='#fff' />
+                      <Text style={styles.deleteProjectText}>{deletingProject? 'Đang xóa...' : 'Xóa dự án'}</Text>
+                    </Pressable>
+                  </View>
+                );
+              }
+              // Not admin: if user is a member (not owner/admin), show Leave Project
+              const isMember = (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId));
+              const isOwner = String(activeProject.owner) === String(userId);
+              if(isMember && !isOwner){
+                return (
+                  <View style={{ marginTop:32 }}>
+                    <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Rời dự án</Text>
+                    <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Bạn sẽ không còn thấy nhiệm vụ/sự kiện của dự án này.</Text>
+                    <Pressable onPress={leaveProject} style={[styles.deleteProjectBtn,{ backgroundColor:'#ef4444' }]}>
+                      <Ionicons name='log-out-outline' size={16} color='#fff' />
+                      <Text style={styles.deleteProjectText}>Rời dự án</Text>
+                    </Pressable>
+                  </View>
+                );
+              }
+              return null;
             })()}
             <View style={{ height: Platform.OS==='ios'? 40: 20 }} />
           </KeyboardAwareScrollView>

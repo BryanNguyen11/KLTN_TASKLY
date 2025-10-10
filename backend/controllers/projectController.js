@@ -64,11 +64,101 @@ exports.getProject = async (req,res) => {
   try {
     const userId = req.user.userId;
     const email = (req.user.email || '').toLowerCase();
-    const p = await Project.findOne({ _id: req.params.id, $or:[ { owner: userId }, { 'members.user': userId }, { 'invites.email': email } ] });
+    const p = await Project.findOne({ _id: req.params.id, $or:[ { owner: userId }, { 'members.user': userId }, { 'invites.email': email } ] })
+      .populate('members.user', 'name email avatar');
     if(!p) return res.status(404).json({ message:'Không tìm thấy dự án' });
     res.json(p);
   } catch(err){
     res.status(500).json({ message:'Lỗi lấy dự án', error: err.message });
+  }
+};
+
+// Update member role (admin only)
+exports.updateMemberRole = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const { id, userId: targetId } = { id: req.params.id, userId: req.params.userId };
+    const { role } = req.body; // 'admin' | 'member'
+    if(!['admin','member'].includes(role)) return res.status(400).json({ message:'Role không hợp lệ' });
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    const isAdmin = project.owner.equals(userId) || project.members.some(m=> m.user.equals(userId) && m.role==='admin');
+    if(!isAdmin) return res.status(403).json({ message:'Không có quyền' });
+    // không đổi role của owner
+    if(project.owner.equals(targetId)) return res.status(400).json({ message:'Không thể đổi quyền của Owner' });
+    const m = project.members.find(m=> String(m.user) === String(targetId));
+    if(!m) return res.status(404).json({ message:'Không tìm thấy thành viên' });
+    m.role = role;
+    await project.save();
+    const io = req.app.get('io');
+    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    res.json({ message:'Đã cập nhật quyền', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi cập nhật quyền', error: err.message });
+  }
+};
+
+// Remove member (admin only)
+exports.removeMember = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const { id, userId: targetId } = { id: req.params.id, userId: req.params.userId };
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    const isAdmin = project.owner.equals(userId) || project.members.some(m=> m.user.equals(userId) && m.role==='admin');
+    if(!isAdmin) return res.status(403).json({ message:'Không có quyền' });
+    if(project.owner.equals(targetId)) return res.status(400).json({ message:'Không thể xóa Owner' });
+    const before = project.members.length;
+    project.members = project.members.filter(m=> String(m.user) !== String(targetId));
+    if(project.members.length === before) return res.status(404).json({ message:'Không tìm thấy thành viên' });
+    await project.save();
+    const io = req.app.get('io');
+    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    res.json({ message:'Đã xóa thành viên', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi xóa thành viên', error: err.message });
+  }
+};
+
+// Revoke invite (admin only)
+exports.revokeInvite = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const { id, inviteId } = { id: req.params.id, inviteId: req.params.inviteId };
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    const isAdmin = project.owner.equals(userId) || project.members.some(m=> m.user.equals(userId) && m.role==='admin');
+    if(!isAdmin) return res.status(403).json({ message:'Không có quyền' });
+    const inv = project.invites.id(inviteId);
+    if(!inv) return res.status(404).json({ message:'Không tìm thấy lời mời' });
+    if(inv.status !== 'pending') return res.status(400).json({ message:'Chỉ có thể hủy lời mời đang chờ' });
+    inv.deleteOne();
+    await project.save();
+    const io = req.app.get('io');
+    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    res.json({ message:'Đã hủy lời mời', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi hủy lời mời', error: err.message });
+  }
+};
+
+// Leave project (self remove, not owner)
+exports.leaveProject = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    if(project.owner.equals(userId)) return res.status(400).json({ message:'Owner không thể rời dự án' });
+    const before = project.members.length;
+    project.members = project.members.filter(m=> !m.user.equals(userId));
+    if(project.members.length === before) return res.status(400).json({ message:'Bạn không phải là thành viên của dự án' });
+    await project.save();
+    const io = req.app.get('io');
+    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    res.json({ message:'Đã rời dự án', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi rời dự án', error: err.message });
   }
 };
 
