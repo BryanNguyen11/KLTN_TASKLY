@@ -1208,7 +1208,7 @@ export default function DashboardScreen() {
               )}
             </View>
           )}
-          {/* Projects (show leader projects) */}
+          {/* Projects (show leader/admin projects) */}
           {(() => {
             const userId = (user as any)?._id || (user as any)?.id;
             const managed = projects.filter(p => p.owner === userId || (p.members||[]).some((m:any)=> m.user === userId && m.role==='admin'));
@@ -1217,12 +1217,40 @@ export default function DashboardScreen() {
               <View style={{ marginTop: 8 }}>
                 <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
                 {managed.map(p => {
-                  const membersCount = (p.members?.length || 0) + 1; // include owner
+                  // Backend already includes owner in members as admin on creation
+                  const membersCount = (p.members?.length || 0);
                   return (
                     <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); }}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                         <Text style={styles.projectName}>{p.name}</Text>
                         <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
+                      </View>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                        <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
+                        <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            );
+          })()}
+
+          {/* Projects (show participating but not admin) */}
+          {(() => {
+            const userId = (user as any)?._id || (user as any)?.id;
+            const participating = projects.filter(p => p.owner !== userId && (p.members||[]).some((m:any)=> m.user === userId && m.role !== 'admin'));
+            if(!participating.length) return null;
+            return (
+              <View style={{ marginTop: 16 }}>
+                <Text style={styles.projectsTitle}>Dự án tham gia</Text>
+                {participating.map(p => {
+                  const membersCount = (p.members?.length || 0);
+                  return (
+                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); }}>
+                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                        <Text style={styles.projectName}>{p.name}</Text>
+                        <Text style={[styles.leaderBadge,{ backgroundColor:'#2f6690' }]}>Thành viên</Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
                         <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
@@ -1312,7 +1340,7 @@ export default function DashboardScreen() {
                   <Text style={{ color:'#607d8b', fontSize:12 }}>Chưa có dự án nào.</Text>
                 )}
                 {projects.map(p => {
-                  const membersCount = (p.members?.length || 0) + 1;
+                  const membersCount = (p.members?.length || 0);
                   return (
                     <Pressable key={p._id} style={styles.projectRow} onPress={()=> setActiveProject(p)}>
                       <View style={{ flex:1 }}>
