@@ -47,6 +47,13 @@ const projectRoutes = require('./routes/projectRoutes');
 // Middleware
 app.use(cors());
 app.use(express.json());
+// Debug: minimal request logger (method, path)
+app.use((req, res, next) => {
+  try {
+    console.log(`[REQ] ${req.method} ${req.url}`);
+  } catch(_) {}
+  next();
+});
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
@@ -114,8 +121,10 @@ mongoose.connect(process.env.MONGO_URI)
         console.warn('⚠️ Seed defaults failed:', e.message);
       }
     })();
-    server.listen(process.env.PORT, () => {
-      console.log(`🚀 Server + Socket.IO running on port ${process.env.PORT}`);
+    const PORT = process.env.PORT || 5000;
+    app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`🚀 Server + Socket.IO running on port ${PORT}`);
     });
   })
   .catch(err => console.error(err));

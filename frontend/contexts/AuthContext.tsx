@@ -46,6 +46,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setLoading(true);
     try {
       if(!API_AUTH) throw new Error('Chưa cấu hình EXPO_PUBLIC_API_BASE');
+      // Debug log base URL (printed once per session typically)
+      if (typeof (global as any).__AUTH_BASE_LOGGED === 'undefined') {
+        // eslint-disable-next-line no-console
+        console.log('[AUTH] API_AUTH =', API_AUTH);
+        (global as any).__AUTH_BASE_LOGGED = true;
+      }
       const res = await axios.post(`${API_AUTH}/login`, { email, password });
       const { token, user } = res.data;
       setUser(user);
@@ -54,7 +60,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // ensure freshest profile (including avatar)
   await refreshProfile();
     } catch (err: any) {
-      throw new Error(err.response?.data?.message || 'Đăng nhập thất bại');
+      // Detailed debug
+      // eslint-disable-next-line no-console
+      console.log('[AUTH][LOGIN][ERROR]', err?.response?.status, err?.response?.data, err?.message);
+      throw new Error(err.response?.data?.message || err.message || 'Đăng nhập thất bại');
     } finally { setLoading(false); }
   };
 

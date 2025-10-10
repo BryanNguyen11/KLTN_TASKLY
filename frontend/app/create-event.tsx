@@ -115,7 +115,7 @@ export default function CreateEventScreen(){
           repeat: e.repeat || undefined,
         }));
       } catch(err){
-        Alert.alert('Lỗi','Không tải được sự kiện để sửa');
+        Alert.alert('Lỗi','Không tải được lịch để sửa');
       }
     };
     load();
@@ -207,8 +207,8 @@ export default function CreateEventScreen(){
 
   const save = async () => {
     if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
-    if(!form.title.trim()){ Alert.alert('Thiếu thông tin','Vui lòng nhập tiêu đề'); return; }
-    if(!form.typeId){ Alert.alert('Thiếu thông tin','Vui lòng chọn loại sự kiện'); return; }
+  if(!form.title.trim()){ Alert.alert('Thiếu thông tin','Vui lòng nhập tiêu đề'); return; }
+  if(!form.typeId){ Alert.alert('Thiếu thông tin','Vui lòng chọn loại lịch'); return; }
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) { Alert.alert('Lỗi','Ngày bắt đầu không hợp lệ'); return; }
     if(form.endDate){
       if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
@@ -237,17 +237,17 @@ export default function CreateEventScreen(){
         // Notify listeners
         // @ts-ignore
         DeviceEventEmitter.emit('eventUpdated', res.data);
-        Alert.alert('Thành công','Đã lưu sự kiện');
+        Alert.alert('Thành công','Đã lưu lịch');
       } else {
         const res = await axios.post(`${API_BASE}/api/events`, payload, authHeader());
         // Notify listeners
         // @ts-ignore
         DeviceEventEmitter.emit('eventCreated', res.data);
-        Alert.alert('Thành công','Đã tạo sự kiện');
+        Alert.alert('Thành công','Đã tạo lịch');
       }
       router.back();
     } catch(e:any){
-      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể lưu sự kiện');
+      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể lưu lịch');
     } finally { setSaving(false); }
   };
 
@@ -257,10 +257,10 @@ export default function CreateEventScreen(){
     if(!editId || !token){ Alert.alert('Lỗi','Không thể xóa'); return; }
     const hasRepeat = !!form.repeat;
     if(!hasRepeat){
-      Alert.alert('Xóa sự kiện','Bạn có chắc muốn xóa sự kiện này?',[
+      Alert.alert('Xóa lịch','Bạn có chắc muốn xóa lịch này?',[
         { text:'Hủy', style:'cancel' },
         { text:'Xóa', style:'destructive', onPress: async ()=>{
-          try { await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader()); DeviceEventEmitter.emit('eventDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa sự kiện'); router.back(); }
+          try { await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader()); DeviceEventEmitter.emit('eventDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa lịch'); router.back(); }
           catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
         } }
       ]);
@@ -270,16 +270,16 @@ export default function CreateEventScreen(){
     const delMsg = [
       'Bạn muốn xóa:',
       '• Chỉ lần xuất hiện này',
-      '• Hay sự kiện này và tất cả các sự kiện trong tương lai?'
+      '• Hay lịch này và tất cả các lịch trong tương lai?'
     ].join('\n');
-    Alert.alert('Xóa sự kiện lặp', delMsg, [
+    Alert.alert('Xóa lịch lặp', delMsg, [
       { text:'Hủy', style:'cancel' },
       { text:'Chỉ lần này', onPress: async ()=>{
           try {
             if(!occDate){
               await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
               DeviceEventEmitter.emit('eventDeleted', editId);
-              DeviceEventEmitter.emit('toast','Đã xóa sự kiện');
+              DeviceEventEmitter.emit('toast','Đã xóa lịch');
               router.back();
               return;
             }
@@ -337,7 +337,7 @@ export default function CreateEventScreen(){
               router.back();
             } else {
               await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
-              DeviceEventEmitter.emit('toast','Đã xóa sự kiện');
+              DeviceEventEmitter.emit('toast','Đã xóa lịch');
               router.back();
             }
           } catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
@@ -350,7 +350,7 @@ export default function CreateEventScreen(){
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Ionicons name='arrow-back' size={22} color='#16425b' /></Pressable>
-        <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa sự kiện':'Tạo sự kiện mới'}</Text>
+  <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa lịch':'Tạo lịch mới'}</Text>
         <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
           {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
         </Pressable>
@@ -371,7 +371,7 @@ export default function CreateEventScreen(){
           </View>
 
           <View style={styles.field}>
-            <Text style={styles.label}>Loại sự kiện *</Text>
+            <Text style={styles.label}>Loại lịch *</Text>
             {loadingTypes ? (
               <ActivityIndicator color='#3a7ca5' />
             ) : (
@@ -439,7 +439,7 @@ export default function CreateEventScreen(){
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Lặp lại</Text>
           <View style={[styles.field, { flexDirection:'row', alignItems:'center', justifyContent:'space-between' }]}>
-            <Text style={styles.label}>Lặp lại sự kiện</Text>
+            <Text style={styles.label}>Lặp lại lịch</Text>
             <Switch value={!!form.isRepeating} onValueChange={(v)=> setForm(prev => ({ ...prev, isRepeating: v, repeat: v? (prev.repeat || { frequency:'weekly', endMode:'never' }): undefined }))} />
           </View>
           {!!form.isRepeating && (
@@ -540,7 +540,7 @@ export default function CreateEventScreen(){
       <View style={styles.bottomBar}>
         <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>router.back()}><Text style={styles.cancelText}>Hủy</Text></Pressable>
         <Pressable style={[styles.bottomBtn, !form.title.trim()||!form.typeId||saving ? styles.disabledBtn: styles.saveBtn]} disabled={!form.title.trim()||!form.typeId||saving} onPress={save}>
-          <Text style={styles.saveText}>{saving? (editId? 'Đang lưu...' : 'Đang lưu...') : (editId? 'Lưu thay đổi':'Tạo sự kiện')}</Text>
+          <Text style={styles.saveText}>{saving? (editId? 'Đang lưu...' : 'Đang lưu...') : (editId? 'Lưu thay đổi':'Tạo lịch')}</Text>
         </Pressable>
       </View>
 

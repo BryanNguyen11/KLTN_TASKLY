@@ -75,10 +75,10 @@ export default function CreateEventType(){
     setSaving(true);
     try {
       await axios.post(`${API_BASE}/api/event-types`, { name: name.trim(), slug: slug.trim(), fields: cleanFields, isDefault }, authHeader());
-      Alert.alert('Thành công','Đã tạo loại sự kiện');
+      Alert.alert('Thành công','Đã tạo loại lịch');
       router.back();
     } catch(e:any){
-      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tạo loại sự kiện');
+      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tạo loại lịch');
     } finally { setSaving(false); }
   };
 
@@ -100,7 +100,7 @@ export default function CreateEventType(){
           { key:'linkZoom', label:'Link Zoom', type:'url' },
         ]);
       } else {
-        setName('Sự kiện'); setSlugTouched(false); setSlug(toSlug('Sự kiện'));
+        setName('Lịch'); setSlugTouched(false); setSlug(toSlug('Lịch'));
         setFields([
           { key:'diaDiem', label:'Địa điểm', type:'text' },
           { key:'ghiChu', label:'Ghi chú', type:'text' },
@@ -119,7 +119,7 @@ export default function CreateEventType(){
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Text style={styles.backText}>{'<'} Quay lại</Text></Pressable>
-        <Text style={styles.headerTitle}>Loại sự kiện mới</Text>
+        <Text style={styles.headerTitle}>Loại lịch mới</Text>
         <View style={{ width:40 }} />
       </View>
       <KeyboardAwareScrollView
@@ -139,7 +139,7 @@ export default function CreateEventType(){
           <View style={[styles.row,{ alignItems:'center' }]}>
             <View style={{ flex:1 }}>
               <Text style={styles.label}>Đặt làm mặc định</Text>
-              <Text style={styles.hint}>Tự chọn loại này khi tạo sự kiện mới.</Text>
+              <Text style={styles.hint}>Tự chọn loại này khi tạo lịch mới.</Text>
             </View>
             <Switch value={isDefault} onValueChange={setIsDefault} />
           </View>

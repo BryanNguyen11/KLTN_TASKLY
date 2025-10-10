@@ -1,0 +1,6 @@
+# Ignore local env in backend
+.env
+.env*.local
+
+# Dependencies
+node_modules/

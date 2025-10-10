@@ -9,7 +9,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "update:ip": "node ./scripts/update-env-ip.js"
+    "update:ip": "node ./scripts/update-env-ip.js",
+    "start:mac": "npm run update:ip -- 5050 && expo start",
+    "start:win": "npm run update:ip -- 5000 && expo start"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

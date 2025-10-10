@@ -856,7 +856,7 @@ export default function DashboardScreen() {
                           })}
                         </View>
                       ) : (
-                        <Text style={styles.emptyHint}>Không có sự kiện còn lại trong hôm nay</Text>
+                        <Text style={styles.emptyHint}>Không có lịch còn lại trong hôm nay</Text>
                       )}
                     </Animated.View>
                   );
@@ -942,7 +942,7 @@ export default function DashboardScreen() {
                           })}
                         </View>
                       ) : (
-                        <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                        <Text style={styles.emptyHint}>Không có lịch</Text>
                       )}
                       {dayTasks.length>0 ? (
                         <View style={styles.dayTaskChips}>
@@ -1069,7 +1069,7 @@ export default function DashboardScreen() {
                             })}
                           </View>
                         ) : (
-                          <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                          <Text style={styles.emptyHint}>Không có lịch</Text>
                         )}
                         {dayTasks.length>0 ? (
                           <View style={styles.dayTaskChips}>
@@ -1259,7 +1259,7 @@ export default function DashboardScreen() {
           </Pressable>
           <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-event'); }}>
             <Ionicons name='calendar-outline' size={22} color='#fff' />
-            <Text style={styles.fabActionText}>Sự kiện mới</Text>
+            <Text style={styles.fabActionText}>Lịch mới</Text>
           </Pressable>
           <Pressable style={[styles.fabAction,{ backgroundColor:'#16425b' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-project'); }}>
             <Ionicons name='briefcase-outline' size={22} color='#fff' />
@@ -1381,7 +1381,7 @@ export default function DashboardScreen() {
                     </Pressable>
                     <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-event', params:{ projectId: projId } }); }}>
                       <Ionicons name='calendar-outline' size={16} color='#fff' />
-                      <Text style={styles.inviteAcceptText}>Sự kiện mới</Text>
+                      <Text style={styles.inviteAcceptText}>Lịch mới</Text>
                     </Pressable>
                   </View>
                   {/* Project view content */}
@@ -1456,7 +1456,7 @@ export default function DashboardScreen() {
                                     ))}
                                   </View>
                                 ) : (
-                                  <Text style={styles.emptyHint}>Không có sự kiện</Text>
+                                  <Text style={styles.emptyHint}>Không có lịch</Text>
                                 )}
                                 {dayTasks.length>0 ? (
                                   <View style={styles.dayTaskChips}>
