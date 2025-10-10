@@ -949,11 +949,11 @@ export default function DashboardScreen() {
                           {dayTasks.map((t, idx) => {
                             const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
                             return (
-                              <View key={t.id+idx} style={styles.taskChip}>
+                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } })}>
                                 <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                 <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                 {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
-                              </View>
+                              </Pressable>
                             );
                           })}
                         </View>
@@ -1076,11 +1076,11 @@ export default function DashboardScreen() {
                             {dayTasks.map((t, idx) => { 
                               const ttime = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || null);
                               return (
-                                <View key={t.id+idx} style={styles.taskChip}>
+                                <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } })}>
                                   <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                   <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                   {!!ttime && <Text style={styles.taskChipTime}>{ttime}</Text>}
-                                </View>
+                                </Pressable>
                               )})}
                           </View>
                         ) : (
@@ -1406,10 +1406,10 @@ export default function DashboardScreen() {
                           </View>
                           <View style={styles.dayTaskChips}>
                             {dayTasks.map((t, idx)=> (
-                              <View key={t.id+idx} style={styles.taskChip}>
+                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { const occ = iso; setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: occ } }); }}>
                                 <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                 <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                              </View>
+                              </Pressable>
                             ))}
                           </View>
                           {dayEvents.length===0 && dayTasks.length===0 && <Text style={styles.emptyHint}>Không có mục trong hôm nay</Text>}
@@ -1461,10 +1461,10 @@ export default function DashboardScreen() {
                                 {dayTasks.length>0 ? (
                                   <View style={styles.dayTaskChips}>
                                     {dayTasks.map((t, idx)=> (
-                                      <View key={t.id+idx} style={styles.taskChip}>
+                                      <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
                                         <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                         <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                                      </View>
+                                      </Pressable>
                                     ))}
                                   </View>
                                 ) : (
