@@ -67,20 +67,7 @@ export default function ProjectMembersScreen(){
     ]);
   };
 
-  const leaveProject = async () => {
-    Alert.alert('Rời dự án','Bạn chắc chắn muốn rời dự án này?',[
-      { text:'Hủy', style:'cancel' },
-      { text:'Rời', style:'destructive', onPress: async ()=>{
-        try{
-          const res = await axios.post(`${API_BASE}/api/projects/${id}/leave`, {}, auth());
-          DeviceEventEmitter.emit('projectsUpdated');
-          // Quay lại chi tiết dự án không còn phù hợp vì user đã rời; quay về dashboard
-          router.back();
-          DeviceEventEmitter.emit('toast','Đã rời dự án');
-        }catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể rời dự án'); }
-      } }
-    ]);
-  };
+  // nút Rời dự án đã được chuyển sang trang chi tiết dự án (dashboard modal)
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
@@ -144,22 +131,7 @@ export default function ProjectMembersScreen(){
               <Text style={styles.addBtnText}>Gửi lời mời</Text>
             </Pressable>
 
-            {(() => {
-              const myId = (user as any)?._id || (user as any)?.id;
-              const isOwner = String(project.owner) === String(myId);
-              const myMember = (project.members||[]).find((m:any)=> String(m.user?._id || m.user)===String(myId));
-              const isAdmin = !!myMember && myMember.role==='admin';
-              // Member (không phải owner, không phải admin) mới có nút Rời dự án
-              if(!isOwner && myMember && !isAdmin){
-                return (
-                  <Pressable onPress={leaveProject} style={[styles.addBtn,{ backgroundColor:'#ef4444', marginTop:16 }]}> 
-                    <Ionicons name='log-out-outline' size={16} color='#fff' />
-                    <Text style={styles.addBtnText}>Rời dự án</Text>
-                  </Pressable>
-                );
-              }
-              return null;
-            })()}
+            {/* Nút "Rời dự án" được hiển thị trong modal chi tiết dự án (dashboard), không còn ở đây */}
           </>
         )}
       </ScrollView>

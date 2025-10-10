@@ -51,7 +51,11 @@ exports.listProjects = async (req,res) => {
   try {
     const userId = req.user.userId;
     const email = (req.user.email || '').toLowerCase();
-    const projects = await Project.find({ $or:[ { owner: userId }, { 'members.user': userId }, { 'invites.email': email } ] })
+    const projects = await Project.find({ $or:[
+      { owner: userId },
+      { 'members.user': userId },
+      { invites: { $elemMatch: { email, status: 'pending' } } }
+    ] })
       .sort({ updatedAt:-1 })
       .lean();
     res.json(projects);
@@ -64,7 +68,11 @@ exports.getProject = async (req,res) => {
   try {
     const userId = req.user.userId;
     const email = (req.user.email || '').toLowerCase();
-    const p = await Project.findOne({ _id: req.params.id, $or:[ { owner: userId }, { 'members.user': userId }, { 'invites.email': email } ] })
+    const p = await Project.findOne({ _id: req.params.id, $or:[
+      { owner: userId },
+      { 'members.user': userId },
+      { invites: { $elemMatch: { email, status: 'pending' } } }
+    ] })
       .populate('members.user', 'name email avatar');
     if(!p) return res.status(404).json({ message:'Không tìm thấy dự án' });
     res.json(p);

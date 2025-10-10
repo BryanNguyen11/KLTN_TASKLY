@@ -64,8 +64,7 @@ export default function DashboardScreen() {
   const [projects, setProjects] = useState<any[]>([]);
   const [showProjectsModal, setShowProjectsModal] = useState(false);
   const [activeProject, setActiveProject] = useState<any|null>(null);
-  const [inviteInput, setInviteInput] = useState('');
-  const [inviting, setInviting] = useState(false);
+  // Đã bỏ phần mời thành viên trực tiếp trong chi tiết dự án; dùng trang quản lý thành viên
   const [deletingProject, setDeletingProject] = useState(false);
   const [acceptingInvite, setAcceptingInvite] = useState<string | null>(null);
   // Edit project info states
@@ -78,6 +77,7 @@ export default function DashboardScreen() {
   const menuAnim = useSharedValue(0); // 0 closed, 1 open
   const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
   const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
+  const [celebrateId, setCelebrateId] = useState<string|null>(null);
 
   useEffect(()=>{
     if(toast){
@@ -368,11 +368,17 @@ export default function DashboardScreen() {
 
   const toggleTask = (id: string) => {
     const nowISO = new Date().toISOString();
+    const before = tasks.find(t=> t.id===id);
+    const willCompleteFlag = before ? !before.completed : false;
     setTasks(prev => prev.map(t => {
       if(t.id !== id) return t;
       const willComplete = !t.completed;
       return { ...t, completed: willComplete, status: willComplete? 'completed':'todo', completedAt: willComplete? nowISO: undefined };
     }));
+    if(willCompleteFlag){
+      setCelebrateId(id);
+      setTimeout(()=> setCelebrateId(null), 1200);
+    }
     // optimistic API
     const target = tasks.find(t=>t.id===id);
     if(!target) return;
@@ -751,9 +757,12 @@ export default function DashboardScreen() {
       { text:'Rời', style:'destructive', onPress: async ()=>{
         try{
           await axios.post(`${API_BASE}/api/projects/${activeProject._id}/leave`, {}, { headers:{ Authorization:`Bearer ${token}` } });
+          // Sau khi xác nhận rời dự án mới xóa khỏi danh sách
           setProjects(prev => prev.filter(p=> p._id!==activeProject._id));
           setActiveProject(null);
           setShowProjectsModal(false);
+          // Đồng bộ lại danh sách từ server để chắc chắn không còn dự án vừa rời
+          fetchProjects();
           DeviceEventEmitter.emit('projectsUpdated');
           setToast('Đã rời dự án');
         }catch(e:any){
@@ -837,7 +846,7 @@ export default function DashboardScreen() {
             {/* Dynamic date pickers */}
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
-                <Text style={styles.sectionSub}>Chỉ hiển thị tác vụ của hôm nay ({(() => { const [y,m,d] = todayISO.split('-'); const w = weekdayVNFromISO(todayISO); return `${w}, ${d}/${m}/${y}`; })()})</Text>
+                {/* bỏ chú thích header theo yêu cầu */}
                 {(() => {
                   // Build today's events and filter out those already ended today
                   const todaysAll = events.filter(ev => occursOnDate(ev, todayISO));
@@ -857,6 +866,7 @@ export default function DashboardScreen() {
                   };
                   const todaysEvents = todaysAll.filter(ev => !isEndedForToday(ev))
                     .sort((a,b) => (a.startTime||'99:99').localeCompare(b.startTime||'99:99'));
+                  const todaysTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, todayISO));
                   const [y,m,d] = todayISO.split('-');
                   const display = `${d}/${m}/${y}`;
                   const w = weekdayVNFromISO(todayISO);
@@ -875,6 +885,10 @@ export default function DashboardScreen() {
                           <View style={[styles.countPill, styles.eventsCountPill]}>
                             <Ionicons name='calendar-outline' size={12} color='#2f6690' />
                             <Text style={[styles.countText, styles.eventsCountText]}>{todaysEvents.length}</Text>
+                          </View>
+                          <View style={[styles.countPill, styles.tasksCountPill]}>
+                            <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
+                            <Text style={[styles.countText, styles.tasksCountText]}>{todaysTasks.length}</Text>
                           </View>
                         </View>
                       </View>
@@ -908,6 +922,22 @@ export default function DashboardScreen() {
                         </View>
                       ) : (
                         <Text style={styles.emptyHint}>Không có lịch còn lại trong hôm nay</Text>
+                      )}
+                      {todaysTasks.length>0 ? (
+                        <View style={[styles.dayTaskChips,{ marginTop:8 }]}>
+                          {todaysTasks.map((t, idx) => {
+                            const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
+                            return (
+                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
+                                <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      ) : (
+                        <Text style={styles.emptyHint}>Không có tác vụ chưa hoàn thành hôm nay</Text>
                       )}
                     </Animated.View>
                   );
@@ -1193,7 +1223,8 @@ export default function DashboardScreen() {
                     </Pressable>
                   )}
                 >
-                  <View style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle]}>          
+                  <View style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle, { position:'relative' }]}>          
+                    {celebrateId === item.id && <ConfettiBurst />}
                     <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:12 }}>
                       <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
                         {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
@@ -1666,62 +1697,7 @@ export default function DashboardScreen() {
                 );
               })}
             </View>
-            <Text style={styles.inviteHeader}>Lời mời</Text>
-            <View>
-              {(activeProject.invites||[]).filter((i:any)=> i.status==='pending').map((inv:any)=> (
-                <View key={inv._id} style={styles.inviteRowProj}>
-                  <Ionicons name='mail-outline' size={18} color='#2f6690' />
-                  <Text style={styles.inviteEmail}>{inv.email}</Text>
-                  <Text style={styles.inviteStatus}>Đang chờ</Text>
-                </View>
-              ))}
-              {(!(activeProject.invites||[]).some((i:any)=> i.status==='pending')) && (
-                <Text style={styles.emptyInvite}>Không có lời mời chờ.</Text>
-              )}
-            </View>
-            {(() => {
-              const userId = (user as any)?._id || (user as any)?.id;
-              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
-              if(!isAdmin) return null;
-              return (
-                <View style={{ marginTop:16 }}>
-                  <Text style={styles.inviteHeader}>Mời thêm</Text>
-                  <Text style={{ fontSize:11, color:'#607d8b', marginBottom:6 }}>Nhập nhiều email, phân tách bằng dấu phẩy.</Text>
-                  <View style={styles.inviteInputWrap}>
-                    <TextInput
-                      style={styles.inviteTextInput}
-                      placeholder='vd: a@gmail.com, b@domain.com'
-                      autoCapitalize='none'
-                      value={inviteInput}
-                      onChangeText={setInviteInput}
-                      multiline
-                    />
-                  </View>
-                  <Pressable
-                    disabled={inviting || !inviteInput.trim()}
-                    onPress={async ()=>{
-                      if(!inviteInput.trim()) return;
-                      setInviting(true);
-                      try {
-                        const emails = inviteInput.split(/[,;\n]/).map(e=> e.trim()).filter(e=> e);
-                        const res = await axios.post(`${API_BASE}/api/projects/${activeProject._id}/invite`, { emails }, { headers:{ Authorization: token?`Bearer ${token}`:'' } });
-                        setProjects(prev => prev.map(p=> p._id===activeProject._id ? { ...p, invites: res.data.invites } : p));
-                        setActiveProject((p: any)=> p ? { ...p, invites: res.data.invites } : p);
-                        DeviceEventEmitter.emit('projectsUpdated');
-                        setInviteInput('');
-                        setToast('Đã gửi lời mời');
-                      } catch(e:any){
-                        Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể mời');
-                      } finally { setInviting(false); }
-                    }}
-                    style={[styles.inviteAddBtn, (inviting || !inviteInput.trim()) && { opacity:0.5 }]}
-                  >
-                    <Ionicons name='send-outline' size={16} color='#fff' />
-                    <Text style={styles.inviteAddText}>{inviting? 'Đang gửi...' : 'Gửi lời mời'}</Text>
-                  </Pressable>
-                </View>
-              );
-            })()}
+            {/* Đã bỏ phần "Lời mời" và "Mời thêm" tại đây; hãy dùng trang Quản lý để thao tác */}
             {(() => {
               const userId = (user as any)?._id || (user as any)?.id;
               const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId) && m.role==='admin');
@@ -1844,6 +1820,30 @@ const QuickAction = ({ iconName, label, bg, color, onPress }: QuickActionProps) 
   );
 };
 
+// Hiệu ứng confetti đơn giản khi hoàn thành task
+const ConfettiBurst = () => {
+  const pieces = Array.from({ length: 12 });
+  const colors = ['#ef4444','#f59e0b','#10b981','#3b82f6','#a855f7','#ec4899'];
+  return (
+    <View pointerEvents="none" style={{ position:'absolute', left:0, top:0, right:0, bottom:0 }}>
+      {pieces.map((_, i) => {
+        const theta = (Math.PI * 2) * (i / pieces.length);
+        const dist = 42 + (i%3)*12;
+        const x = Math.cos(theta) * dist;
+        const y = Math.sin(theta) * dist * -1; // bay lên trên
+        const delay = i * 18;
+        return (
+          <Animated.View
+            key={i}
+            entering={FadeInDown.delay(delay)}
+            style={{ position:'absolute', left:'50%', top:'50%', width:6, height:6, borderRadius:3, backgroundColor: colors[i % colors.length], transform:[{ translateX: x }, { translateY: y }] }}
+          />
+        );
+      })}
+    </View>
+  );
+};
+
 
 const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
@@ -1950,15 +1950,7 @@ const styles = StyleSheet.create({
   memberRow:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'rgba(217,220,214,0.35)', padding:10, borderRadius:12, marginBottom:8 },
   memberName:{ fontSize:12, color:'#16425b', flex:1 },
   memberRole:{ fontSize:11, color:'#2f6690', fontWeight:'600' },
-  inviteHeader:{ fontSize:13, fontWeight:'700', color:'#16425b', marginTop:8, marginBottom:6 },
-  inviteRowProj:{ flexDirection:'row', alignItems:'center', gap:8, paddingVertical:6 },
-  inviteEmail:{ fontSize:12, color:'#16425b', flex:1 },
-  inviteStatus:{ fontSize:11, color:'#2f6690', fontWeight:'600' },
-  emptyInvite:{ fontSize:11, color:'#607d8b', fontStyle:'italic' },
-  inviteInputWrap:{ backgroundColor:'#f1f5f9', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, padding:10 },
-  inviteTextInput:{ minHeight:60, fontSize:12, color:'#16425b' },
-  inviteAddBtn:{ marginTop:10, backgroundColor:'#3a7ca5', flexDirection:'row', alignItems:'center', gap:8, paddingVertical:12, borderRadius:14, justifyContent:'center' },
-  inviteAddText:{ color:'#fff', fontSize:13, fontWeight:'600' },
+  // styles cho lời mời đã được loại bỏ tại modal chi tiết dự án
   inviteBanner:{ backgroundColor:'#fff', borderRadius:18, padding:14, marginBottom:18, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:1, borderWidth:1, borderColor:'rgba(0,0,0,0.04)' },
   inviteBannerTitle:{ fontSize:14, fontWeight:'700', color:'#16425b', marginBottom:10 },
   inviteBannerRow:{ flexDirection:'row', alignItems:'center', marginBottom:10 },
