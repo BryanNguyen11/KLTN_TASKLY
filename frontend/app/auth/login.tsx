@@ -1,15 +1,17 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
+import { validateEmail } from '@/utils/validation';
 
 const PLACEHOLDER_COLOR = '#64748b';
 
 export default function LoginScreen() {
   const router = useRouter();
   const { login } = useAuth();
+  const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -20,10 +22,8 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
-    if (!email || !password) {
-      setError('Vui lòng nhập đầy đủ thông tin');
-      return;
-    }
+    if (!email || !password) { setError('Vui lòng nhập đầy đủ thông tin'); return; }
+    if (!validateEmail(email)) { setError('Chỉ chấp nhận email @gmail.com'); return; }
 
     setError(null);
     setLoading(true);
@@ -39,10 +39,13 @@ export default function LoginScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#f1f5f9' }} edges={['top']}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView style={{ flex:1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+        <ScrollView
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          automaticallyAdjustKeyboardInsets
+        >
         <View style={styles.card}>
           <View style={styles.logoWrapper}>
             <View style={styles.logoCircle}>
@@ -59,7 +62,7 @@ export default function LoginScreen() {
             <View style={styles.inputWrapper}>
               <Ionicons name="mail" size={18} color="#666" style={styles.inputIcon} />
               <TextInput
-                placeholder="student@example.com"
+                placeholder="student@gmail.com"
                 placeholderTextColor={PLACEHOLDER_COLOR}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -109,18 +112,14 @@ export default function LoginScreen() {
             </Text>
           </Text>
         </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f1f5f9',
-    padding: 20,
-    justifyContent: 'center'
-  },
+  container: { flexGrow: 1, backgroundColor: '#f1f5f9', padding: 20, justifyContent: 'center' },
   card: {
     backgroundColor: 'rgba(255,255,255,0.95)',
     borderRadius: 24,

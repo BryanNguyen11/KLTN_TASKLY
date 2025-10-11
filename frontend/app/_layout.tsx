@@ -19,7 +19,7 @@ export default function RootLayout() {
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="index" />
               <Stack.Screen name="auth/login" />
-              <Stack.Screen name="auth/register" options={{ headerShown: true, headerTitle: 'Đăng ký' }} />
+              <Stack.Screen name="auth/register" options={{ headerShown: false }} />
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="create-task" options={{ headerShown:false }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />

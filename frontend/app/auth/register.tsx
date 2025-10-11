@@ -1,16 +1,18 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Ionicons } from '@expo/vector-icons';
 import { validateEmail, validatePassword } from '@/utils/validation';
+// Removed KeyboardAwareScrollView to avoid overscroll; use ScrollView + KeyboardAvoidingView
 
 const PLACEHOLDER_COLOR = '#64748b';
 
 export default function RegisterScreen() {
   const router = useRouter();
   const { register } = useAuth();
+  const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -23,11 +25,11 @@ export default function RegisterScreen() {
     return;
   }
   if (!validateEmail(email)) {
-    setError('Email không hợp lệ');
+    setError('Chỉ chấp nhận email @gmail.com');
     return;
   }
   if (!validatePassword(password)) {
-    setError('Mật khẩu tối thiểu 6 ký tự');
+    setError('Mật khẩu tối thiểu 8 ký tự');
     return;
   }
   if (password !== confirm) {
@@ -56,7 +58,13 @@ export default function RegisterScreen() {
 
   return (
   <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
-  <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+  <KeyboardAvoidingView style={{ flex:1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        automaticallyAdjustKeyboardInsets
+      >
       <View style={styles.card}>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="arrow-back" size={22} color="#1f2937" />
@@ -69,7 +77,7 @@ export default function RegisterScreen() {
           <Text style={styles.subtitle}>Bắt đầu trải nghiệm Taskly</Text>
         </View>
 
-        <Field label="Email" icon="mail" value={email} onChangeText={setEmail} placeholder="student@example.com" keyboardType="email-address" />
+  <Field label="Email" icon="mail" value={email} onChangeText={setEmail} placeholder="student@gmail.com" keyboardType="email-address" />
         <Field label="Mật khẩu" icon="lock-closed" value={password} onChangeText={setPassword} placeholder="••••••" secureTextEntry />
         <Field label="Nhập lại mật khẩu" icon="repeat" value={confirm} onChangeText={setConfirm} placeholder="••••••" secureTextEntry />
 
@@ -81,6 +89,7 @@ export default function RegisterScreen() {
 
         <Text style={styles.footerText}>Đã có tài khoản? <Text style={styles.link} onPress={() => router.push('/auth/login' as any)}>Đăng nhập</Text></Text>
       </View>
+      </ScrollView>
   </KeyboardAvoidingView>
   </SafeAreaView>
   );
@@ -107,22 +116,22 @@ const Field = ({ label, icon, value, onChangeText, placeholder, secureTextEntry,
 );
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f1f5f9', padding: 20, justifyContent: 'center' },
-  card: { backgroundColor: 'rgba(255,255,255,0.97)', borderRadius: 28, padding: 26, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 14, shadowOffset: { width: 0, height: 6 }, elevation: 5 },
+  container: { flexGrow: 1, backgroundColor: '#f1f5f9', padding: 20, justifyContent: 'center' },
+  card: { backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 24, padding: 24, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   backBtn: { position: 'absolute', top: 16, left: 16, zIndex: 10, backgroundColor: '#fff', padding: 8, borderRadius: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowOffset: { width:0, height:2 }, shadowRadius: 4 },
   logoWrapper: { alignItems: 'center', marginBottom: 24 },
-  logoCircle: { width: 86, height: 86, borderRadius: 26, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
-  brand: { fontSize: 26, fontWeight: '600', color: '#111827' },
+  logoCircle: { width: 90, height: 90, borderRadius: 28, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  brand: { fontSize: 30, fontWeight: '600', color: '#111827' },
   subtitle: { fontSize: 13, color: '#4b5563', textAlign: 'center' },
   field: { marginBottom: 16 },
   label: { fontSize: 14, fontWeight: '500', marginBottom: 6, color: '#111827' },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: 14, borderWidth: 1, borderColor: '#e2e8f0', paddingHorizontal: 12 },
   inputIcon: { marginRight: 6 },
   input: { flex: 1, height: 48, fontSize: 16 },
-  button: { backgroundColor: '#2563eb', height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 4 },
+  button: { backgroundColor: '#2563eb', height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   buttonPressed: { opacity: 0.85 },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  footerText: { textAlign: 'center', marginTop: 22, fontSize: 13, color: '#374151' },
+  footerText: { textAlign: 'center', marginTop: 18, fontSize: 13, color: '#374151' },
   link: { color: '#2563eb', fontWeight: '600' },
   error: { color: '#dc2626', textAlign: 'center', marginBottom: 8, fontSize: 13 },
 });

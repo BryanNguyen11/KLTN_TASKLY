@@ -6,6 +6,17 @@ exports.register = async (req, res) => {
   try {
     console.log('req.body:', req.body);
     const { name, email, password } = req.body;
+    if(!email || !password || !name){
+      return res.status(400).json({ message: 'Thiếu thông tin' });
+    }
+    // Validate Gmail-only and password length >= 8
+    const isGmail = /^[A-Za-z0-9._%+-]+@gmail\.com$/i.test(String(email).trim());
+    if(!isGmail){
+      return res.status(400).json({ message: 'Chỉ chấp nhận email @gmail.com' });
+    }
+    if(String(password).length < 8){
+      return res.status(400).json({ message: 'Mật khẩu tối thiểu 8 ký tự' });
+    }
 
     // Kiểm tra email đã tồn tại
     const existingUser = await User.findOne({ email });
