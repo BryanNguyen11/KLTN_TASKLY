@@ -11,6 +11,7 @@ import io from 'socket.io-client';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence, interpolate } from 'react-native-reanimated';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
+import { useNotifications, type NotificationItem as NotiItemCtx } from '@/contexts/NotificationContext';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 // Helper to color dots by importance
@@ -78,6 +79,8 @@ export default function DashboardScreen() {
   const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
   const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [celebrateId, setCelebrateId] = useState<string|null>(null);
+  // Notifications (global)
+  const { addNotification, addMany, unreadCount } = useNotifications();
 
   useEffect(()=>{
     if(toast){
@@ -498,12 +501,17 @@ export default function DashboardScreen() {
       if(activeProject && activeProject._id===payload.projectId){
         setActiveProject((p:any)=> payload.project ? payload.project : (p? { ...p, invites: payload.invites ?? p.invites } : p));
       }
+      // Push notification for project update
+      const title = payload.project?.name ? `Cập nhật dự án: ${payload.project.name}` : 'Dự án đã được cập nhật';
+      addNotification({ id: `pupd_${Date.now()}`, type:'project-update', title, at: Date.now(), projectId: payload.projectId } as NotiItemCtx);
     });
     s.on('project:invited', (payload:any) => {
       // If the invite email matches current user email, refetch to show new pending invite
       if((user as any)?.email?.toLowerCase && (user as any).email.toLowerCase() === payload.email){
         fetchProjects();
       }
+      // Push invite notification
+      addNotification({ id: `pinv_${Date.now()}`, type:'project-invite', title:`Lời mời tham gia dự án`, meta: payload.email, at: Date.now(), projectId: payload.projectId } as NotiItemCtx);
     });
     s.on('project:memberJoined', (payload:any) => {
       setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, members: payload.project.members, invites: payload.project.invites } : p));
@@ -516,6 +524,21 @@ export default function DashboardScreen() {
       if(activeProject && activeProject._id===payload.projectId){
         setActiveProject(null); setShowProjectsModal(false);
       }
+    });
+    // Task notifications in project rooms
+    s.on('task:created', (t:any) => {
+      if(!t) return;
+      const mine = String((user as any)?.id || (user as any)?._id || '') === String(t.assignedTo || '');
+      const meta = t.startTime && t.date ? `${t.startTime} • ${t.date}` : (t.date||'');
+      addNotification({ id:`tcrt_${t._id||Date.now()}`, type: (mine? 'task-assigned':'task-created'), title: mine? `Bạn được giao: ${t.title}`: `Tác vụ mới: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||'') } as NotiItemCtx);
+    });
+    s.on('task:updated', (t:any) => {
+      if(!t) return;
+      const meta = t.status ? `Trạng thái: ${t.status}` : undefined;
+      addNotification({ id:`tupd_${t._id||Date.now()}`, type:'task-updated', title:`Cập nhật tác vụ: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||'') } as NotiItemCtx);
+    });
+    s.on('task:deleted', (p:any) => {
+      addNotification({ id:`tdel_${Date.now()}`, type:'task-updated', title:`Đã xóa một tác vụ`, at: Date.now(), projectId: String(p?.projectId||'') } as NotiItemCtx);
     });
     return () => { s.disconnect(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -670,6 +693,32 @@ export default function DashboardScreen() {
   }, []);
   const fabStyle = useAnimatedStyle(()=>({ transform:[{ scale: fabScale.value }] }));
 
+  // Build upcoming notifications from local data (tasks/events)
+  useEffect(()=>{
+    // today upcoming in next 2 hours
+    const nowD = new Date();
+    const cutoff = new Date(nowD.getTime() + 2*60*60*1000);
+    const nlist: NotiItemCtx[] = [];
+    const toHM = (h:number,m:number)=> `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+    const nowHM = toHM(nowD.getHours(), nowD.getMinutes());
+    // tasks occurring today with startTime after now
+    tasks.forEach(t => {
+      if(!t.date) return;
+      if(t.completed) return;
+      if(t.date === toLocalISODate(nowD) && t.startTime && t.startTime > nowHM){
+        nlist.push({ id:`up_t_${t.id}`, type:'upcoming-task', title:`Sắp tới: ${t.title}`, meta: t.startTime, at: Date.now(), projectId: (t as any).projectId } as NotiItemCtx);
+      }
+    });
+    // events starting today after now
+    events.forEach(e => {
+      if(e.date === toLocalISODate(nowD) && e.startTime && e.startTime > nowHM){
+        nlist.push({ id:`up_e_${e.id}`, type:'upcoming-event', title:`Lịch sắp diễn ra: ${e.title}`, meta: e.startTime, at: Date.now() } as NotiItemCtx);
+      }
+    });
+    if(nlist.length){ addMany(nlist); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks.length, events.length]);
+
   const openSubModal = (task:Task) => { setSubModalTask(task); setShowSubModal(true); };
   const closeSubModal = () => { setShowSubModal(false); setSubModalTask(null); };
   const toggleSubTask = (tId:string, index:number) => {
@@ -796,10 +845,16 @@ export default function DashboardScreen() {
                   </Text>
                 </View>
               </View>
-              <Pressable onPress={()=> setAiMode(m=>!m)} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
-                <Ionicons name='sparkles' size={18} color={aiMode? '#fff':'#2f6690'} />
-                <Text style={[styles.aiTopText, aiMode && styles.aiTopTextActive]}>AI</Text>
-              </Pressable>
+              <View style={{ flexDirection:'row', alignItems:'center', gap:10 }}>
+                <Pressable onPress={()=> router.push('/notifications')} style={styles.notifBtn}>
+                  <Ionicons name='notifications-outline' size={18} color='#2f6690' />
+                  {unreadCount>0 && <View style={styles.notifDot}><Text style={styles.notifDotText}>{Math.min(unreadCount,9)}</Text></View>}
+                </Pressable>
+                <Pressable onPress={()=> setAiMode(m=>!m)} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
+                  <Ionicons name='sparkles' size={18} color={aiMode? '#fff':'#2f6690'} />
+                  <Text style={[styles.aiTopText, aiMode && styles.aiTopTextActive]}>AI</Text>
+                </Pressable>
+              </View>
             </View>
 
             <View style={styles.progressCard}>
@@ -1928,6 +1983,14 @@ const styles = StyleSheet.create({
   toastText:{ color:'#fff', fontWeight:'500', fontSize:13 },
   undoInline:{ marginLeft:12, paddingHorizontal:10, paddingVertical:6, backgroundColor:'#3a7ca5', borderRadius:16 },
   undoInlineText:{ color:'#fff', fontSize:12, fontWeight:'600' },
+  // Notifications UI
+  notifBtn:{ width:32, height:32, borderRadius:16, backgroundColor:'rgba(58,124,165,0.12)', alignItems:'center', justifyContent:'center', position:'relative' },
+  notifDot:{ position:'absolute', top:-4, right:-4, minWidth:16, height:16, paddingHorizontal:3, borderRadius:8, backgroundColor:'#dc2626', alignItems:'center', justifyContent:'center' },
+  notifDotText:{ color:'#fff', fontSize:10, fontWeight:'700' },
+  notifSheet:{ backgroundColor:'#fff', padding:16, borderTopLeftRadius:24, borderTopRightRadius:24, maxHeight:'70%' },
+  notifRow:{ flexDirection:'row', alignItems:'center', gap:10, paddingVertical:10 },
+  notifTitle:{ color:'#16425b', fontSize:13, fontWeight:'600' },
+  notifMeta:{ color:'#607d8b', fontSize:11, marginTop:2 },
   subModalBox:{ backgroundColor:'#fff', margin:20, borderRadius:24, padding:20 },
   subModalTitle:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
   subList:{ maxHeight:300 },

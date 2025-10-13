@@ -362,12 +362,44 @@ export default function CreateTaskScreen() {
       try {
         const res = await axios.get(`${API_BASE}/api/tasks/${editId}`, authHeader());
         const t = res.data;
+        // Base mapping from API
+  const origStart = t.date?.split('T')[0] || toLocalISODate(new Date());
+  const origEnd = t.endDate || '';
+  let baseStart = origStart;
+  let baseEnd = origEnd;
+        // If user navigated from a specific occurrence (occDate) and task is repeating,
+        // reflect that occurrence span for display: shift the shown start/end to the occurrence date
+        if(occDate && t.repeat){
+          // Compute span using original values to preserve whether there was an endDate
+          const spanDays = (() => {
+            if(!origEnd) return 0;
+            const isoToDate = (iso:string)=>{ const [y,m,d]=iso.split('-').map(n=>parseInt(String(n),10)); return new Date(y,(m||1)-1,d||1); };
+            const d0 = isoToDate(origStart); const d1 = isoToDate(origEnd);
+            const ms = d1.getTime() - d0.getTime();
+            const days = Math.round(ms/86400000);
+            return days < 0 ? 0 : days;
+          })();
+          baseStart = String(occDate);
+          if(origEnd){
+            if(spanDays>0){
+              const [y,m,d] = String(occDate).split('-').map(n=>parseInt(String(n),10));
+              const dt = new Date(y,(m||1)-1,d||1); dt.setDate(dt.getDate()+spanDays);
+              baseEnd = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+            } else {
+              // Single-day span: keep endDate present and equal to start occurrence
+              baseEnd = String(occDate);
+            }
+          } else {
+            // Original had no endDate -> keep it empty
+            baseEnd = '';
+          }
+        }
         setForm(prev => ({
           ...prev,
           title: t.title,
           description: t.description||'',
-          date: t.date?.split('T')[0] || prev.date,
-          endDate: t.endDate || '',
+          date: baseStart,
+          endDate: baseEnd,
           startTime: t.startTime || prev.startTime,
           endTime: t.endTime || '',
           priority: t.priority || 'medium',
@@ -391,7 +423,7 @@ export default function CreateTaskScreen() {
       }
     };
     load();
-  },[editId, token]);
+  },[editId, token, occDate]);
 
   const generateAI = () => {
     setShowAI(true);

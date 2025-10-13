@@ -19,6 +19,11 @@ exports.createTask = async (req,res) => {
   if(projectId){ payload.projectId = projectId; }
   if(assignedTo){ payload.assignedTo = assignedTo; }
   const task = await Task.create(payload);
+    // Socket emit: notify project room about new task
+    try {
+      const io = req.app.get('io');
+      if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:created', task.toObject ? task.toObject() : task); }
+    } catch(_e){}
     res.status(201).json(task);
   } catch(err){
     res.status(500).json({ message: 'Lỗi tạo task', error: err.message });
@@ -72,8 +77,13 @@ exports.updateTask = async (req,res) => {
         updates.completedAt = undefined; // remove when reverting
       }
     }
-    const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new:true });
+    const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new: true });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
+    // Socket emit: notify project room about task update
+    try {
+      const io = req.app.get('io');
+      if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:updated', task.toObject ? task.toObject() : task); }
+    } catch(_e){}
     res.json(task);
   } catch(err){
     res.status(500).json({ message:'Lỗi cập nhật', error: err.message });
@@ -85,6 +95,10 @@ exports.deleteTask = async (req,res) => {
     const userId = req.user.userId;
     const task = await Task.findOneAndDelete({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
+    try {
+      const io = req.app.get('io');
+      if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:deleted', { id: String(task._id), projectId: String(task.projectId) }); }
+    } catch(_e){}
     res.json({ message:'Đã xóa', id: task._id });
   } catch(err){
     res.status(500).json({ message:'Lỗi xóa', error: err.message });
@@ -109,6 +123,11 @@ exports.toggleSubTask = async (req,res) => {
     await task.save();
     // Ensure we send virtuals (already enabled with toJSON) but refetch lean for consistency
     const fresh = await Task.findById(task._id).lean();
+    // Socket emit: subtask toggled
+    try {
+      const io = req.app.get('io');
+      if(io && fresh?.projectId){ io.to(`project:${fresh.projectId}`).emit('task:updated', fresh); }
+    } catch(_e){}
     res.json(fresh);
   } catch(err){
     res.status(500).json({ message:'Lỗi toggle subtask', error: err.message });
