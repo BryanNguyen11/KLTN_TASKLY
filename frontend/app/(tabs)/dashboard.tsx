@@ -323,6 +323,71 @@ export default function DashboardScreen() {
     return false;
   };
 
+  // Determine if the OCCURRENCE of a task (considering repeat and multi-day span) ends exactly on iso
+  const occurrenceEndsOn = (t: Task, iso: string): boolean => {
+    // span in days for each occurrence (>=1)
+    const span = t.endDate ? (diffDays(t.date, t.endDate) + 1) : 1;
+    const occEndFromStart = (occStart: string) => {
+      if (span <= 1) return occStart; // single-day occurrence
+      return addDaysISO(occStart, span - 1);
+    };
+    // Non-repeating: ends on iso if either single day equals date, or endDate equals iso
+    if (!t.repeat) {
+      if (span <= 1) return t.date === iso;
+      return t.endDate === iso;
+    }
+    const r = t.repeat;
+    const start = t.date;
+    if (iso < start) return false;
+    const endMode = r?.endMode || 'never';
+
+    // Daily recurrence
+    if (r?.frequency === 'daily') {
+      const k = diffDays(start, iso);
+      if (k < 0) return false;
+      const occStart = addDaysISO(start, k);
+      const n = k + 1;
+      if (endMode === 'after' && r.count && n > r.count) return false;
+      if (endMode === 'onDate' && r.endDate && occStart > r.endDate) return false;
+      return occEndFromStart(occStart) === iso;
+    }
+    // Weekly recurrence (every 7 days from start)
+    if (r?.frequency === 'weekly') {
+      const k = Math.floor(diffDays(start, iso) / 7);
+      if (k < 0) return false;
+      const occStart = addDaysISO(start, k * 7);
+      if (occStart > iso) return false;
+      const n = k + 1;
+      if (endMode === 'after' && r.count && n > r.count) return false;
+      if (endMode === 'onDate' && r.endDate && occStart > r.endDate) return false;
+      return occEndFromStart(occStart) === iso;
+    }
+    // Monthly recurrence (same day-of-month when valid)
+    if (r?.frequency === 'monthly') {
+      const m = diffMonths(start, iso);
+      if (m < 0) return false;
+      const occStart = addMonthsISO(start, m);
+      if (!occStart || occStart > iso) return false;
+      const n = m + 1;
+      if (endMode === 'after' && r.count && n > r.count) return false;
+      if (endMode === 'onDate' && r.endDate && occStart > r.endDate) return false;
+      return occEndFromStart(occStart) === iso;
+    }
+    // Yearly recurrence (same month/day when valid)
+    if (r?.frequency === 'yearly') {
+      const a = isoToDate(start), b = isoToDate(iso);
+      const years = b.getFullYear() - a.getFullYear();
+      if (years < 0) return false;
+      const occStart = toLocalISODate(new Date(a.getFullYear() + years, a.getMonth(), a.getDate()));
+      if (occStart > iso) return false;
+      const n = years + 1;
+      if (endMode === 'after' && r.count && n > r.count) return false;
+      if (endMode === 'onDate' && r.endDate && occStart > r.endDate) return false;
+      return occEndFromStart(occStart) === iso;
+    }
+    return false;
+  };
+
   // Filter tasks based on tab + selected date (include recurring)
   const filteredTasks = React.useMemo(()=>{
     const today = todayISO;
@@ -1117,8 +1182,8 @@ export default function DashboardScreen() {
                       if(!iso) return <View key={c} style={styles.monthCellEmpty} />;
                       const active = iso === selectedDateISO;
                       const dayNum = parseInt(iso.split('-')[2],10);
-                      // Build dot info from tasks that occur on that iso (recurring aware)
-                      const occTasks = tasks.filter(t => occursTaskOnDate(t, iso));
+                      // Build dot info: show dot only if at least one occurrence ends on this day (supports repeats)
+                      const occTasks = tasks.filter(t => occurrenceEndsOn(t, iso));
                       const info = (() => {
                         if(!occTasks.length) return undefined;
                         const total = occTasks.length;
