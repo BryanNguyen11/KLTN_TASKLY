@@ -1,4 +1,32 @@
 const Task = require('../models/Task');
+const User = require('../models/User');
+
+async function sendExpoPush(tokens, title, body, data){
+  if(!Array.isArray(tokens) || tokens.length===0) return;
+  const list = tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title, body, data }));
+  if(list.length===0) return;
+  try {
+    const doFetch = globalThis.fetch ? globalThis.fetch : (await import('node-fetch')).default;
+    await doFetch('https://exp.host/--/api/v2/push/send', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(list) });
+  } catch(_){}
+}
+
+const occursToday = (t) => {
+  const now = new Date();
+  const todayISO = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString().slice(0,10);
+  const start = t.date;
+  const end = t.endDate || t.date;
+  if(start && start <= todayISO && todayISO <= end) return true;
+  const r = t.repeat;
+  if(!r || !start || todayISO < start) return false;
+  const diffDays = (a,b)=> Math.round((new Date(b)-new Date(a))/86400000);
+  const diffMonths = (a,b)=> { const A=new Date(a), B=new Date(b); return (B.getFullYear()-A.getFullYear())*12 + (B.getMonth()-A.getMonth()); };
+  if(r.frequency==='daily'){ const k = diffDays(start, todayISO); return k>=0; }
+  if(r.frequency==='weekly'){ const k = Math.floor(diffDays(start, todayISO)/7); return k>=0; }
+  if(r.frequency==='monthly'){ const m = diffMonths(start, todayISO); return m>=0; }
+  if(r.frequency==='yearly'){ const A=new Date(start), B=new Date(todayISO); const years=B.getFullYear()-A.getFullYear(); return years>=0; }
+  return false;
+};
 
 exports.createTask = async (req,res) => {
   try {
@@ -23,6 +51,17 @@ exports.createTask = async (req,res) => {
     try {
       const io = req.app.get('io');
       if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:created', task.toObject ? task.toObject() : task); }
+    } catch(_e){}
+    // Push notify owner/assignee if task occurs today
+    try {
+      if(occursToday(task)){
+        const targets = new Set();
+        if(task.userId) targets.add(String(task.userId));
+        if(task.assignedTo) targets.add(String(task.assignedTo));
+        const users = await User.find({ _id: { $in: Array.from(targets) } }).select('expoPushTokens');
+        const tokens = users.flatMap(u => u.expoPushTokens || []);
+        await sendExpoPush(tokens, 'Tác vụ hôm nay', task.title, { type:'task-today', id: String(task._id) });
+      }
     } catch(_e){}
     res.status(201).json(task);
   } catch(err){

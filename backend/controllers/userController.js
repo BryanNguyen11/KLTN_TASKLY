@@ -1,6 +1,50 @@
 const User = require('../models/User');
 const Task = require('../models/Task');
 
+// PATCH /api/users/me/push-token { token }
+exports.savePushToken = async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
+    const u = await User.findById(req.user.userId);
+    if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
+    if (!u.expoPushTokens.includes(token)) {
+      u.expoPushTokens.push(token);
+      await u.save();
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: 'Lỗi lưu token', error: err.message });
+  }
+};
+
+// POST /api/users/me/push-test
+// Sends a simple test push to the current user's registered Expo push tokens
+exports.testPush = async (req, res) => {
+  try {
+    const u = await User.findById(req.user.userId).select('name expoPushTokens');
+    if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
+    const tokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
+    const list = tokens
+      .filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))
+      .map(to => ({ to, sound: 'default', title: 'Test thông báo', body: `Xin chào${u.name? ', ' + u.name : ''}! Đây là thông báo thử.`, data: { type: 'test' } }));
+    if (list.length === 0) {
+      return res.status(200).json({ ok: true, sent: 0, message: 'Chưa có Expo Push Token hợp lệ' });
+    }
+    try {
+      const r = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(list)
+      });
+      await r.json().catch(()=>null);
+    } catch (_) { /* ignore network error in test */ }
+    return res.json({ ok: true, sent: list.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Lỗi gửi test push', error: err.message });
+  }
+};
+
 // GET /api/users/me
 exports.getMe = async (req, res) => {
   try {

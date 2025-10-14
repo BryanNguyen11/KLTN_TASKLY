@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -323,6 +324,35 @@ export default function DashboardScreen() {
     return false;
   };
 
+  // Local notification scheduler for Expo Go fallback (lock-screen alerts without remote push)
+  const scheduleLocalTaskNotifications = async (list: Task[]) => {
+    if (typeof Notifications?.setNotificationChannelAsync === 'function' && Platform.OS === 'android') {
+      try { await Notifications.setNotificationChannelAsync('default', { name: 'default', importance: Notifications.AndroidImportance.MAX }); } catch {}
+    }
+    // Cancel previous schedules from this screen (simple approach: cancel all)
+    try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch {}
+    const now = new Date();
+    const todayISO = toLocalISODate(now);
+    const toDate = (iso:string, hm?:string) => {
+      const [y,m,d] = iso.split('-').map(n=>parseInt(n,10));
+      const [hh,mm] = (hm||'09:00').split(':').map(n=>parseInt(n,10));
+      return new Date(y, (m||1)-1, d||1, hh||9, mm||0, 0);
+    };
+    const todays = list.filter(t => !t.completed && occursTaskOnDate(t, todayISO));
+    for(const t of todays){
+      // pick the earliest available time to schedule; fall back to 09:00 if none
+      const hm = t.startTime || (t.time && t.time.includes('-') ? t.time.split('-')[0] : undefined) || '09:00';
+      const when = toDate(todayISO, hm);
+      if(when.getTime() <= Date.now()) continue; // don't schedule past events
+      try{
+        await Notifications.scheduleNotificationAsync({
+          content: { title: 'Tác vụ hôm nay', body: t.title, sound: 'default', data: { id: t.id, type:'local-task' } },
+          trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when }
+        });
+      }catch{}
+    }
+  };
+
   // Determine if the OCCURRENCE of a task (considering repeat and multi-day span) ends exactly on iso
   const occurrenceEndsOn = (t: Task, iso: string): boolean => {
     // span in days for each occurrence (>=1)
@@ -491,7 +521,9 @@ export default function DashboardScreen() {
         repeat: t.repeat,
         projectId: t.projectId,
   } as any));
-      setTasks(mapped);
+  setTasks(mapped);
+  // Schedule local notifications for today's tasks (Expo Go fallback)
+  try { if(Platform.OS !== 'web'){ await scheduleLocalTaskNotifications(mapped); } } catch(_){}
     } catch(e:any){
       setError(e?.response?.data?.message || 'Không tải được tasks');
     } finally { setLoading(false); }

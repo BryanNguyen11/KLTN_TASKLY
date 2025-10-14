@@ -31,7 +31,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: ''
-  }
+  },
+  // Push notifications
+  expoPushTokens: { type: [String], default: [] },
+  lastDailyPushDate: { type: String } // YYYY-MM-DD to avoid sending duplicate daily summaries
 }, { timestamps: true });
 
 // Hash password before save

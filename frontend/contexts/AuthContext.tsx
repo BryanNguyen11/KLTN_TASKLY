@@ -6,6 +6,8 @@ import React, {
   ReactNode
 } from 'react';
 import axios from 'axios';
+import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 
 interface User {
   id: string;
@@ -42,6 +44,26 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     axios.defaults.headers.common['Authorization'] = `Bearer ${tk}`;
   };
 
+  const registerPushToken = async () => {
+    try {
+      // Ask permission
+      const settings = await Notifications.getPermissionsAsync();
+      let granted = settings.granted || settings.ios?.status === Notifications.IosAuthorizationStatus.AUTHORIZED;
+      if(!granted){
+        const req = await Notifications.requestPermissionsAsync();
+        granted = req.granted || req.ios?.status === Notifications.IosAuthorizationStatus.AUTHORIZED;
+      }
+      if(!granted) return;
+      // Get token
+      const pid = (Constants as any)?.expoConfig?.extra?.eas?.projectId || (Constants as any)?.easConfig?.projectId;
+      const expoToken = pid
+        ? (await Notifications.getExpoPushTokenAsync({ projectId: pid })).data
+        : (await Notifications.getExpoPushTokenAsync()).data;
+      const API_USERS = BASE ? `${BASE}/api/users` : undefined;
+      if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken }); }
+    } catch { /* silent */ }
+  };
+
   const login = async (email: string, password: string) => {
     setLoading(true);
     try {
@@ -57,8 +79,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(user);
       setToken(token);
       applyToken(token);
-  // ensure freshest profile (including avatar)
-  await refreshProfile();
+      // ensure freshest profile (including avatar)
+      await refreshProfile();
+      // try to register push token
+      await registerPushToken();
     } catch (err: any) {
       // Detailed debug
       // eslint-disable-next-line no-console
@@ -76,7 +100,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setUser(user);
       setToken(token);
       applyToken(token);
-  await refreshProfile();
+      await refreshProfile();
+      await registerPushToken();
     } catch (err: any) {
       throw new Error(err.response?.data?.message || 'Đăng ký thất bại');
     } finally { setLoading(false); }

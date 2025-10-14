@@ -576,6 +576,7 @@ export default function CreateTaskScreen() {
     setForm(prev => ({ ...prev, subTasks: prev.subTasks.map(st => st.id===id? { ...st, completed: !st.completed }: st) }));
   };
 
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>      
       <View style={styles.header}>        
