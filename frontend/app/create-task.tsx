@@ -28,6 +28,7 @@ interface FormState {
   isRepeating?: boolean;
   repeat?: { frequency: 'daily'|'weekly'|'monthly'|'yearly'; endMode: 'never'|'onDate'|'after'; endDate?: string; count?: string };
   assignedTo?: string; // user id of assignee (for project tasks)
+  reminders?: Array<{ type:'relative'; minutes:number } | { type:'absolute'; at:string }>; // absolute at in ISO string
 }
 
 type Tag = { _id: string; name: string; slug: string };
@@ -67,6 +68,7 @@ export default function CreateTaskScreen() {
     isRepeating: false,
     repeat: undefined,
     assignedTo: undefined,
+    reminders: [],
   });
   const [projectInfo, setProjectInfo] = useState<any | null>(null);
   const [loadingProject, setLoadingProject] = useState(false);
@@ -213,6 +215,7 @@ export default function CreateTaskScreen() {
       estimatedHours: parseFloat(form.estimatedHours)||1,
       tags: form.tags,
       subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed })),
+      reminders: form.reminders,
     };
     if(projectId){ payload.projectId = projectId; if(form.assignedTo) payload.assignedTo = form.assignedTo; }
     if(form.isRepeating && form.repeat){
@@ -595,6 +598,8 @@ export default function CreateTaskScreen() {
         extraScrollHeight={100}
         keyboardShouldPersistTaps='handled'
       >
+        
+        {/* Thông tin cơ bản */}
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Thông tin cơ bản</Text>
           <View style={styles.field}>            
@@ -647,7 +652,7 @@ export default function CreateTaskScreen() {
             </View>
           </View>
         </View>
-          <View style={styles.card}>
+        <View style={styles.card}>
             <Text style={styles.sectionTitle}>Tầm quan trọng & Khẩn cấp</Text>
             <Text style={styles.sub}>Mức độ quan trọng</Text>
             <View style={styles.priorityRow}>
@@ -881,6 +886,49 @@ export default function CreateTaskScreen() {
           </View>
         )}
 
+        {/* Reminders moved near the end, before summary */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Nhắc nhở</Text>
+          <View style={styles.remindRow}>
+            {[
+              { label:'Trước 1 ngày', minutes: 24*60 },
+              { label:'Trước 1 giờ', minutes: 60 },
+              { label:'Trước 30 phút', minutes: 30 },
+            ].map(p => {
+              const exists = (form.reminders||[]).some(r => r.type==='relative' && r.minutes===p.minutes);
+              return (
+                <Pressable key={p.minutes} onPress={()=> setForm(prev=> ({ ...prev, reminders: exists ? (prev.reminders||[]).filter(r => !(r.type==='relative' && r.minutes===p.minutes)) : [ ...(prev.reminders||[]), { type:'relative', minutes:p.minutes } ] }))} style={[styles.remindChip, exists && styles.remindChipActive]}>
+                  <Text style={[styles.remindChipText, exists && styles.remindChipTextActive]}>{p.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.field}>
+            <Text style={styles.label}>Giờ nhắc nhở cụ thể</Text>
+            <Pressable onPress={()=> openTime('startTime')} style={styles.pickerBtn}>
+              <Text style={styles.pickerText}>{form.startTime}</Text>
+            </Pressable>
+            <Text style={styles.sub}>Bạn có thể thêm 1 thời điểm nhắc riêng bằng cách chọn giờ bắt đầu phù hợp rồi bấm “Thêm thời điểm cụ thể”.</Text>
+            <Pressable onPress={()=>{
+              const at = `${form.date}T${form.startTime||'09:00'}:00`;
+              const exists = (form.reminders||[]).some(r => r.type==='absolute' && r.at===at);
+              if(!exists){ setForm(prev => ({ ...prev, reminders: [ ...(prev.reminders||[]), { type:'absolute', at } ] })); }
+            }} style={[styles.addTagBtn, { marginTop:8, alignSelf:'flex-start' }]}>
+              <Text style={styles.addTagText}>Thêm thời điểm cụ thể</Text>
+            </Pressable>
+            {(form.reminders||[]).filter(r => r.type==='absolute').length>0 && (
+              <View style={{ marginTop:8 }}>
+                {form.reminders!.filter(r=>r.type==='absolute').map((r:any, idx:number)=> (
+                  <View key={idx} style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                    <Text style={styles.sub}>{r.at.replace('T',' ')}</Text>
+                    <Pressable onPress={()=> setForm(prev => ({ ...prev, reminders: (prev.reminders||[]).filter((x,i)=> i!==idx) }))}><Text style={[styles.sub,{ color:'#b91c1c' }]}>Xóa</Text></Pressable>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </View>
+
         <View style={styles.card}>          
           <Text style={styles.sectionTitle}>Tóm tắt</Text>
           <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Ưu tiên (tính):</Text><Text style={styles.summaryValue}>{priorityLabel(form.priority)}</Text></View>
@@ -994,6 +1042,11 @@ const styles = StyleSheet.create({
   newTagRow:{ flexDirection:'row', alignItems:'center', gap:12, marginTop:8 },
   addTagBtn:{ backgroundColor:'#3a7ca5', paddingHorizontal:16, paddingVertical:12, borderRadius:14 },
   addTagText:{ color:'#fff', fontWeight:'600', fontSize:13 },
+  remindRow:{ flexDirection:'row', flexWrap:'wrap', gap:8 },
+  remindChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  remindChipActive:{ backgroundColor:'#3a7ca5' },
+  remindChipText:{ color:'#2f6690', fontWeight:'600' },
+  remindChipTextActive:{ color:'#fff' },
   aiBox:{ backgroundColor:'rgba(58,124,165,0.08)', borderRadius:18, padding:14, marginBottom:16 },
   aiTitle:{ fontSize:14, fontWeight:'600', color:'#16425b', marginBottom:6 },
   aiLine:{ fontSize:12, color:'#2f6690', marginBottom:2 },

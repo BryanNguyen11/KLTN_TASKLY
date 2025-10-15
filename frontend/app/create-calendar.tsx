@@ -7,7 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
-import { EventTypeDoc, EventTypeField, EventDoc, toDisplayDate } from '@/utils/events';
+import { EventTypeDoc, EventTypeField, EventDoc, toDisplayDate } from '@/utils/calendar';
 import { Platform } from 'react-native';
 
 interface FormState {
@@ -21,7 +21,6 @@ interface FormState {
   notes: string;
   link: string;
   props: Record<string, string>;
-  // repeat rule (optional)
   isRepeating?: boolean;
   repeat?: {
     frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
@@ -29,6 +28,7 @@ interface FormState {
     endDate?: string;
     count?: number;
   };
+  reminders?: Array<{ type:'relative'; minutes:number } | { type:'absolute'; at:string }>;
 }
 
 export default function CreateEventScreen(){
@@ -37,7 +37,6 @@ export default function CreateEventScreen(){
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
-  // Helper: format Date -> local YYYY-MM-DD to avoid UTC shift from toISOString
   const toLocalISODate = (d: Date) => {
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -65,6 +64,7 @@ export default function CreateEventScreen(){
     props: {},
     isRepeating: false,
     repeat: undefined,
+    reminders: [],
   });
 
   const authHeader = () => ({ headers: { Authorization: token ? `Bearer ${token}` : '' } });
@@ -76,7 +76,6 @@ export default function CreateEventScreen(){
       const res = await axios.get(`${API_BASE}/api/event-types`, authHeader());
       const list: EventTypeDoc[] = res.data;
       setTypes(list);
-      // Default select a type similar to Google Calendar (first default type if exists)
       setForm(prev => {
         if(prev.typeId) return prev;
         const preferred = list.find(t=> t.isDefault) || list[0];
@@ -91,7 +90,6 @@ export default function CreateEventScreen(){
     setForm(prev => ({ ...prev, [key]: value }));
   }, []);
 
-  // Load event details when editing
   useEffect(() => {
     const load = async () => {
       if(!editId || !token) return;
@@ -121,7 +119,6 @@ export default function CreateEventScreen(){
     load();
   }, [editId, token]);
 
-  // When event type changes, prune props to only fields of that type to avoid duplicates
   useEffect(() => {
     const t = types.find(tt=> tt._id === form.typeId);
     if(!t) return;
@@ -228,20 +225,17 @@ export default function CreateEventScreen(){
       location: form.location || undefined,
       notes: form.notes || undefined,
       link: form.link || undefined,
-      props: form.props
+      props: form.props,
+      reminders: form.reminders,
     };
     if(form.isRepeating && form.repeat){ payload.repeat = form.repeat; }
     try {
       if(editId){
         const res = await axios.put(`${API_BASE}/api/events/${editId}`, payload, authHeader());
-        // Notify listeners
-        // @ts-ignore
         DeviceEventEmitter.emit('eventUpdated', res.data);
         Alert.alert('Thành công','Đã lưu lịch');
       } else {
         const res = await axios.post(`${API_BASE}/api/events`, payload, authHeader());
-        // Notify listeners
-        // @ts-ignore
         DeviceEventEmitter.emit('eventCreated', res.data);
         Alert.alert('Thành công','Đã tạo lịch');
       }
@@ -266,7 +260,6 @@ export default function CreateEventScreen(){
       ]);
       return;
     }
-    // Repeating event: ask scope (avoid multiline single-quote string issues)
     const delMsg = [
       'Bạn muốn xóa:',
       '• Chỉ lần xuất hiện này',
@@ -294,17 +287,14 @@ export default function CreateEventScreen(){
             const nextStartISO = toLocalISODate(next);
             const seriesStart = form.date;
             if(occDate === seriesStart){
-              // Xóa occurrence đầu tiên: dời ngày bắt đầu chuỗi sang lần kế tiếp
               const res = await axios.put(`${API_BASE}/api/events/${editId}`, { date: nextStartISO }, authHeader());
               DeviceEventEmitter.emit('eventUpdated', res.data);
               DeviceEventEmitter.emit('toast','Đã bỏ lần xuất hiện đầu tiên');
               router.back();
               return;
             }
-            // Cắt chuỗi hiện tại đến trước occDate
             const dayBefore = (()=>{ const d0 = new Date(base); d0.setDate(d0.getDate()-1); return toLocalISODate(d0); })();
             await axios.put(`${API_BASE}/api/events/${editId}`, { repeat: { ...(form.repeat||{}), endMode: 'onDate', endDate: dayBefore } }, authHeader());
-            // Tạo chuỗi mới bắt đầu từ lần kế tiếp, giữ nguyên repeat rule
             const newPayload: any = {
               title: form.title.trim(),
               typeId: form.typeId,
@@ -319,7 +309,6 @@ export default function CreateEventScreen(){
               repeat: form.repeat || undefined,
             };
             const created = await axios.post(`${API_BASE}/api/events`, newPayload, authHeader());
-            // Notify
             DeviceEventEmitter.emit('eventCreated', created.data);
             DeviceEventEmitter.emit('toast','Đã xóa lần này và giữ các lần khác');
             router.back();
@@ -327,9 +316,7 @@ export default function CreateEventScreen(){
         } },
       { text:'Từ lần này trở đi', style:'destructive', onPress: async ()=>{
           try {
-            // If backend supported, we'd call a special endpoint. Fallback: update repeat endDate to day before occDate
             if(occDate){
-              // set repeat end before occDate
               const dayBefore = (()=>{ const [y,m,d] = occDate.split('-').map(n=>parseInt(n,10)); const dt = new Date(y,(m||1)-1,d||1); dt.setDate(dt.getDate()-1); return toLocalISODate(dt); })();
               const res = await axios.put(`${API_BASE}/api/events/${editId}`, { repeat: { ...(form.repeat||{}), endMode: 'onDate', endDate: dayBefore } }, authHeader());
               DeviceEventEmitter.emit('eventUpdated', res.data);
@@ -384,7 +371,7 @@ export default function CreateEventScreen(){
                     </Pressable>
                   );
                 })}
-                <Pressable onPress={()=>router.push('/create-event-type')} style={[styles.typeChip, { borderWidth:1, borderColor:'#3a7ca5', backgroundColor:'transparent' }]}>
+                <Pressable onPress={()=>router.push('/create-calendar-type')} style={[styles.typeChip, { borderWidth:1, borderColor:'#3a7ca5', backgroundColor:'transparent' }]}> 
                   <Text style={[styles.typeChipText, { color:'#3a7ca5' }]}>+ Tạo loại mới</Text>
                 </Pressable>
               </View>
@@ -404,7 +391,7 @@ export default function CreateEventScreen(){
                 <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{form.startTime}</Text>
               </Pressable>
             </View>
-          </View>
+        </View>
 
           <View style={styles.row}>
             <View style={[styles.field, styles.half]}>
@@ -433,7 +420,7 @@ export default function CreateEventScreen(){
             <Text style={styles.label}>Link</Text>
             <TextInput style={styles.input} placeholder='https://' value={form.link} onChangeText={t=>update('link', t)} autoCapitalize='none' />
           </View>
-        </View>
+          </View>
 
         {/* Repeat rule */}
         <View style={styles.card}>
@@ -490,27 +477,45 @@ export default function CreateEventScreen(){
           )}
         </View>
 
-        {selectedType && (
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Thuộc tính ({selectedType.name})</Text>
-            {selectedType.fields.map((f:EventTypeField)=>{
-              const v = form.props[f.key] ?? '';
+        {/* Reminders moved near the end, before summary */}
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Nhắc nhở</Text>
+          <View style={styles.typeList}>
+            {[
+              { label:'Trước 1 ngày', minutes: 24*60 },
+              { label:'Trước 1 giờ', minutes: 60 },
+              { label:'Trước 30 phút', minutes: 30 },
+            ].map(p => {
+              const exists = (form.reminders||[]).some(r => r.type==='relative' && r.minutes===p.minutes);
               return (
-                <View key={f.key} style={styles.field}>
-                  <Text style={styles.label}>{f.label}{f.required? ' *':''}</Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder={f.label}
-                    value={v}
-                    onChangeText={(t)=> setForm(prev => ({ ...prev, props: { ...prev.props, [f.key]: t } }))}
-                    keyboardType={f.type==='url'? 'url':'default'}
-                    autoCapitalize='none'
-                  />
-                </View>
+                <Pressable key={p.minutes} onPress={()=> setForm(prev => ({ ...prev, reminders: exists ? (prev.reminders||[]).filter(r => !(r.type==='relative' && r.minutes===p.minutes)) : [ ...(prev.reminders||[]), { type:'relative', minutes:p.minutes } ] }))} style={[styles.typeChip, exists && styles.typeChipActive]}>
+                  <Text style={[styles.typeChipText, exists && styles.typeChipTextActive]}>{p.label}</Text>
+                </Pressable>
               );
             })}
           </View>
-        )}
+          <View style={styles.field}>
+            <Text style={styles.label}>Thời điểm nhắc cụ thể</Text>
+            <Pressable onPress={()=> openTime('startTime')} style={styles.pickerBtn}><Text style={styles.pickerText}>{form.startTime}</Text></Pressable>
+            <Pressable onPress={()=>{
+              const at = `${form.date}T${form.startTime||'09:00'}:00`;
+              const exists = (form.reminders||[]).some(r => r.type==='absolute' && r.at===at);
+              if(!exists){ setForm(prev => ({ ...prev, reminders: [ ...(prev.reminders||[]), { type:'absolute', at } ] })); }
+            }} style={[styles.typeChip, { alignSelf:'flex-start', marginTop:8 }]}>
+              <Text style={[styles.typeChipText]}>+ Thêm thời điểm cụ thể</Text>
+            </Pressable>
+            {(form.reminders||[]).filter(r => r.type==='absolute').length>0 && (
+              <View style={{ marginTop:8 }}>
+                {form.reminders!.filter(r=> r.type==='absolute').map((r:any, idx:number)=> (
+                  <View key={idx} style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                    <Text style={styles.sub}>{r.at.replace('T',' ')}</Text>
+                    <Pressable onPress={()=> setForm(prev => ({ ...prev, reminders: (prev.reminders||[]).filter((_,i)=> i!==idx) }))}><Text style={[styles.sub,{ color:'#b91c1c' }]}>Xóa</Text></Pressable>
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </View>
 
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>Tóm tắt</Text>
@@ -572,6 +577,7 @@ const styles = StyleSheet.create({
   card:{ backgroundColor:'#fff', borderRadius:20, padding:16, marginBottom:16, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:2 },
   sectionTitle:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
   field:{ marginBottom:14 },
+  sub:{ fontSize:12, color:'#16425b' },
   label:{ fontSize:13, fontWeight:'500', color:'#2f6690', marginBottom:6 },
   input:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, paddingHorizontal:12, paddingVertical:12, fontSize:14, color:'#16425b' },
   textarea:{ minHeight:90, textAlignVertical:'top' },

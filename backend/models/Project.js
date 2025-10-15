@@ -10,7 +10,8 @@ const inviteSchema = new mongoose.Schema({
   token: { type: String, required: true },
   status: { type: String, enum: ['pending','accepted','expired','declined'], default: 'pending' },
   invitedAt: { type: Date, default: Date.now },
-  expiresAt: { type: Date }
+  expiresAt: { type: Date },
+  invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { _id: true });
 
 const projectSchema = new mongoose.Schema({

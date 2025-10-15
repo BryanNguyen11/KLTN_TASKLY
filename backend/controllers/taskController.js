@@ -47,7 +47,7 @@ const occursToday = (t) => {
 exports.createTask = async (req,res) => {
   try {
     const userId = req.user.userId;
-  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[], repeat, projectId, assignedTo } = req.body;
+  const { title, description='', date, endDate, startTime, endTime, time, priority='medium', importance='medium', urgency='medium', type='personal', estimatedHours=1, tags=[], subTasks=[], repeat, projectId, assignedTo, reminders } = req.body;
     if(!title || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     if(!startTime && !time) return res.status(400).json({ message: 'Cần startTime/endTime hoặc time' });
   if(endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
@@ -62,6 +62,27 @@ exports.createTask = async (req,res) => {
   const payload = { userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks, repeat: repeat || undefined };
   if(projectId){ payload.projectId = projectId; }
   if(assignedTo){ payload.assignedTo = assignedTo; }
+  // Compute reminders -> array of absolute Date objects
+  if(Array.isArray(reminders) && (startTime || endTime || time)){
+    const targetDate = endDate || date;
+    const baseTime = endTime || startTime || time || '09:00';
+    const toDateTime = (isoDate, hhmm) => new Date(`${isoDate}T${hhmm}:00`);
+    const baseAt = toDateTime(targetDate, baseTime);
+    const calc = (r) => {
+      if(!r) return null;
+      if(r.type==='relative'){
+        const at = new Date(baseAt.getTime() - (r.minutes||0)*60000);
+        return at;
+      }
+      if(r.type==='absolute' && r.at){
+        const at = new Date(r.at);
+        return at;
+      }
+      return null;
+    };
+    const rems = reminders.map(calc).filter(Boolean).map(at => ({ at, sent:false }));
+    if(rems.length){ payload.reminders = rems; }
+  }
   const task = await Task.create(payload);
     // Socket emit: notify project room about new task
     try {
@@ -133,6 +154,21 @@ exports.updateTask = async (req,res) => {
       }
     }
     const before = await Task.findOne({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }).lean();
+    // Recompute reminders if provided
+    if(Array.isArray(req.body.reminders)){
+      const baseDate = updates.endDate || updates.date || before?.endDate || before?.date;
+      const baseTime = updates.endTime || updates.startTime || before?.endTime || before?.startTime || before?.time || '09:00';
+      const toDateTime = (isoDate, hhmm) => new Date(`${isoDate}T${hhmm}:00`);
+      if(baseDate && baseTime){
+        const baseAt = toDateTime(baseDate, baseTime);
+        const rems = req.body.reminders.map((r)=>{
+          if(r?.type==='relative') return { at: new Date(baseAt.getTime() - (r.minutes||0)*60000), sent:false };
+          if(r?.type==='absolute' && r.at) return { at: new Date(r.at), sent:false };
+          return null;
+        }).filter(Boolean);
+        updates.reminders = rems;
+      }
+    }
     const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new: true });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     // Socket emit: notify project room about task update

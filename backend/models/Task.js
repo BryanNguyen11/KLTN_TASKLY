@@ -25,6 +25,11 @@ const taskSchema = new mongoose.Schema({
     title: { type: String, required: true, trim: true },
     completed: { type: Boolean, default: false }
   }],
+  // reminders for push notifications
+  reminders: [{
+    at: { type: Date, required: true },
+    sent: { type: Boolean, default: false }
+  }],
   // optional repeat rule similar to events
   repeat: {
     frequency: { type: String, enum: ['daily','weekly','monthly','yearly'] },

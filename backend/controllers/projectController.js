@@ -60,7 +60,8 @@ exports.createProject = async (req,res) => {
         const invites = uniqueEmails.map(email => ({
           email: email.toLowerCase(),
           token: crypto.randomBytes(16).toString('hex'),
-          expiresAt: new Date(Date.now()+ 1000*60*60*24*7) // 7 days
+          expiresAt: new Date(Date.now()+ 1000*60*60*24*7), // 7 days
+          invitedBy: userId
         }));
         project.invites.push(...invites);
         await project.save();
@@ -208,9 +209,23 @@ exports.declineInvite = async (req,res) => {
     if(io){
       // Update admins/members in project room
       io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project });
-      // Optional: explicit event for analytics/UI
+      // Optional: explicit event for admin UIs (no in-app notifications should be attached client-side)
       io.to(`project:${project._id}`).emit('project:inviteDeclined', { projectId: project._id, email });
     }
+    // Notify inviter or owner/admins
+    try {
+      let targetUserIds = [];
+      if(inv.invitedBy){ targetUserIds = [ String(inv.invitedBy) ]; }
+      if(targetUserIds.length === 0){
+        // Fallback to a single recipient (owner) to avoid notifying multiple admins
+        targetUserIds = [ String(project.owner) ];
+      }
+      const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
+      const tokens = targets.flatMap(u => u.expoPushTokens||[]);
+      // Send a single push to the inviter (or fallback admins). Avoid emitting a socket notify to the whole room
+      // to prevent the invitee (who might join via pending invites) from seeing this announcement.
+      await sendExpoPush(tokens, 'Lời mời bị từ chối', `${email} đã từ chối tham gia ${project.name}`, { type:'project-invite-declined', projectId: String(project._id) });
+    } catch(_e){}
     return res.json({ message:'Đã từ chối lời mời', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi từ chối lời mời', error: err.message });
@@ -253,13 +268,13 @@ exports.inviteMembers = async (req,res) => {
     const existingInvites = new Set(project.invites.filter(i=> i.status==='pending').map(i=> i.email));
     const userDocs = await User.find({ email: { $in: valid.map(v=> v.toLowerCase()) } });
     const emailToUserId = new Map(userDocs.map(u=> [u.email.toLowerCase(), String(u._id)]));
-    const newInvites = [];
+  const newInvites = [];
     for(const raw of valid){
       const email = raw.toLowerCase();
       const uid = emailToUserId.get(email);
       if(uid && existingMembers.has(uid)) continue; // already member
       if(existingInvites.has(email)) continue;       // already invited
-      newInvites.push({ email, token: crypto.randomBytes(16).toString('hex'), expiresAt: new Date(Date.now()+ 1000*60*60*24*7) });
+  newInvites.push({ email, token: crypto.randomBytes(16).toString('hex'), expiresAt: new Date(Date.now()+ 1000*60*60*24*7), invitedBy: userId });
     }
     if(newInvites.length){
       project.invites.push(...newInvites);
@@ -302,7 +317,7 @@ exports.acceptInvite = async (req,res) => {
     const { token } = req.body;
     const project = await Project.findById(id);
     if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
-    const invite = project.invites.find(i=> i.email===email && i.token===token && i.status==='pending');
+  const invite = project.invites.find(i=> i.email===email && i.token===token && i.status==='pending');
     if(!invite) return res.status(400).json({ message:'Lời mời không hợp lệ hoặc đã hết hạn' });
     if(invite.expiresAt && invite.expiresAt < new Date()){
       invite.status='expired';
@@ -319,12 +334,19 @@ exports.acceptInvite = async (req,res) => {
     if(io){
       io.to(`project:${project._id}`).emit('project:memberJoined', { projectId: project._id, memberId: userId, project });
     }
-    // Notify owner/admins that a member joined
+    // Notify inviter (preferred) or owner/admins that a member joined
     try {
-      const adminIds = [ String(project.owner), ...project.members.filter(m=> m.role==='admin').map(m=> String(m.user)) ];
-      const admins = await User.find({ _id: { $in: adminIds } }).select('expoPushTokens');
-      const tokens = admins.flatMap(u => u.expoPushTokens||[]);
-      await sendExpoPush(tokens, 'Thành viên đã tham gia', `Một thành viên đã tham gia dự án: ${project.name}`, { type:'project-member-joined', projectId: String(project._id) });
+      let targetUserIds = [];
+      // notify the specific inviter captured on the matched invite
+      if(invite?.invitedBy){ targetUserIds = [ String(invite.invitedBy) ]; }
+      if(targetUserIds.length === 0){
+        // Fallback to a single recipient (owner) to avoid notifying multiple admins
+        targetUserIds = [ String(project.owner) ];
+      }
+      const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
+      const tokens = targets.flatMap(u => u.expoPushTokens||[]);
+      await sendExpoPush(tokens, 'Lời mời đã được chấp nhận', `${email} đã tham gia ${project.name}`, { type:'project-invite-accepted', projectId: String(project._id) });
+      // Do not broadcast a separate socket notification here; push is sufficient and project:memberJoined updates the UI
     } catch(_e){}
     res.json({ message:'Đã tham gia dự án', project });
   } catch(err){

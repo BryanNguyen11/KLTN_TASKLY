@@ -44,6 +44,7 @@ const EventType = require('./models/EventType');
 const projectRoutes = require('./routes/projectRoutes');
 const User = require('./models/User');
 const Task = require('./models/Task');
+const Event = require('./models/Event');
 
 
 // Middleware
@@ -139,6 +140,49 @@ async function runDailySummary(){
 }
 
 setInterval(runDailySummary, 60*1000);
+
+// Reminders scheduler: check every minute for due reminders in tasks/events
+async function runReminders(){
+  try{
+    const now = new Date();
+    const windowMs = 60*1000; // 1 minute window
+    const from = new Date(now.getTime() - windowMs);
+    // Tasks
+    const tasks = await Task.find({ 'reminders.sent': false, 'reminders.at': { $lte: now } }).select('title userId assignedTo reminders projectId');
+    for(const t of tasks){
+      const due = (t.reminders||[]).filter(r => !r.sent && r.at <= now);
+      if(due.length===0) continue;
+      const users = await User.find({ _id: { $in: Array.from(new Set([ String(t.userId), t.assignedTo? String(t.assignedTo): null ].filter(Boolean))) } }).select('expoPushTokens');
+      const tokens = users.flatMap(u => Array.isArray(u.expoPushTokens)? u.expoPushTokens: []);
+      if(tokens.length){
+        try{
+          const messages = tokens.filter(to => typeof to==='string' && to.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title:'Nhắc nhở tác vụ', body: t.title, data:{ type:'task-reminder', id: String(t._id) } }));
+          if(messages.length){ await fetch('https://exp.host/--/api/v2/push/send',{ method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(messages) }); }
+        }catch(_e){}
+      }
+      // mark due reminders as sent
+      (t.reminders||[]).forEach(r => { if(!r.sent && r.at <= now) r.sent = true; });
+      await t.save();
+    }
+    // Events
+    const events = await Event.find({ 'reminders.sent': false, 'reminders.at': { $lte: now } }).select('title userId reminders');
+    for(const e of events){
+      const due = (e.reminders||[]).filter(r => !r.sent && r.at <= now);
+      if(due.length===0) continue;
+      const u = await User.findById(e.userId).select('expoPushTokens');
+      const tokens = u?.expoPushTokens || [];
+      if(tokens.length){
+        try{
+          const messages = tokens.filter(to => typeof to==='string' && to.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title:'Nhắc nhở lịch', body: e.title, data:{ type:'event-reminder', id: String(e._id) } }));
+          if(messages.length){ await fetch('https://exp.host/--/api/v2/push/send',{ method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(messages) }); }
+        }catch(_e){}
+      }
+      (e.reminders||[]).forEach(r => { if(!r.sent && r.at <= now) r.sent = true; });
+      await e.save();
+    }
+  }catch(_e){ /* ignore */ }
+}
+setInterval(runReminders, 60*1000);
         const defaults = [
           { name: 'Học tập', slug: 'hoc-tap' },
           { name: 'Công việc', slug: 'cong-viec' },

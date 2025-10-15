@@ -669,6 +669,8 @@ export default function DashboardScreen() {
         setActiveProject(payload.project);
       }
     });
+    // Do not generate client-side in-app notifications for invite accepted/declined
+    // to avoid duplication with remote push. UI updates rely on project:updated/memberJoined.
     s.on('project:deleted', (payload:any) => {
       setProjects(prev => prev.filter(p=> p._id!==payload.projectId));
       if(activeProject && activeProject._id===payload.projectId){
@@ -1141,7 +1143,7 @@ export default function DashboardScreen() {
                           {todaysEvents.map((ev, idx) => {
                             const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                             return (
-                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: todayISO } })}>
+                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-calendar', params:{ editId: ev.id, occDate: todayISO } })}>
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <View style={styles.eventMetaRow}>
@@ -1243,7 +1245,7 @@ export default function DashboardScreen() {
                           {dayEvents.map((ev, idx) => {
                             const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                             return (
-                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: iso } })}>
+                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-calendar', params:{ editId: ev.id, occDate: iso } })}>
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <View style={styles.eventMetaRow}>
@@ -1370,7 +1372,7 @@ export default function DashboardScreen() {
                             {dayEvents.map((ev, idx) => {
                               const time = ev.startTime && (ev.endTime ? `${ev.startTime}–${ev.endTime}` : ev.startTime);
                               return (
-                                <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-event', params:{ editId: ev.id, occDate: iso } })}>
+                                <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> router.push({ pathname:'/create-calendar', params:{ editId: ev.id, occDate: iso } })}>
                                   <View style={styles.eventColorBar} />
                                   <View style={{ flex:1 }}>
                                     <View style={styles.eventMetaRow}>
@@ -1611,7 +1613,7 @@ export default function DashboardScreen() {
             <Ionicons name='add-circle-outline' size={22} color='#fff' />
             <Text style={styles.fabActionText}>Tác vụ mới</Text>
           </Pressable>
-          <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-event'); }}>
+          <Pressable style={[styles.fabAction,{ backgroundColor:'#2f6690' }]} onPress={()=>{ setShowFabMenu(false); router.push('/create-calendar'); }}>
             <Ionicons name='calendar-outline' size={22} color='#fff' />
             <Text style={styles.fabActionText}>Lịch mới</Text>
           </Pressable>
@@ -1733,7 +1735,7 @@ export default function DashboardScreen() {
                       <Ionicons name='add-circle-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Task mới</Text>
                     </Pressable>
-                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-event', params:{ projectId: projId } }); }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ projectId: projId } }); }}>
                       <Ionicons name='calendar-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Lịch mới</Text>
                     </Pressable>

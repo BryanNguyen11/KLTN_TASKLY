@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, TextInput, Alert, ScrollView, DeviceEventEmitter } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Pressable, TextInput, Alert, ScrollView, DeviceEventEmitter, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import axios from 'axios';
@@ -14,6 +14,8 @@ export default function ProjectMembersScreen(){
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
   const [project, setProject] = useState<any|null>(null);
   const [emails, setEmails] = useState('');
+  const [inputFocused, setInputFocused] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
   const auth = () => ({ headers:{ Authorization: token? `Bearer ${token}`:'' } });
 
   const fetchProject = async () => {
@@ -102,7 +104,8 @@ export default function ProjectMembersScreen(){
         <Text style={styles.headerTitle}>Thành viên & Lời mời</Text>
         <View style={{ width:40 }} />
       </View>
-      <ScrollView contentContainerStyle={styles.body}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex:1 }}>
+      <ScrollView ref={scrollRef} keyboardShouldPersistTaps='handled' contentContainerStyle={styles.body}>
         {project && (
           <>
             <Text style={styles.sectionTitle}>Thành viên ({project.members?.length||0})</Text>
@@ -129,29 +132,44 @@ export default function ProjectMembersScreen(){
               );
             })}
 
-            <Text style={[styles.sectionTitle,{ marginTop:16 }]}>Lời mời</Text>
-            {(project.invites||[]).length===0 && (
-              <Text style={styles.empty}>Không có lời mời.</Text>
-            )}
-            {(project.invites||[]).map((inv:any)=> {
+            <Text style={[styles.sectionTitle,{ marginTop:16 }]}>Lời mời đang chờ</Text>
+            {(() => {
               const myId = (user as any)?._id || (user as any)?.id;
               const isAdmin = String(project.owner) === String(myId) || (project.members||[]).some((mm:any)=> String(mm.user?._id || mm.user)===String(myId) && mm.role==='admin');
-              return (
-              <View key={inv._id} style={styles.inviteRow}>
-                <Text style={styles.inviteEmail}>{inv.email}</Text>
-                <Text style={styles.inviteStatus}>{inv.status==='pending'? 'Đang chờ': inv.status}</Text>
-                {inv.status==='pending' && isAdmin && (
-                  <Pressable onPress={()=> revokeInvite(inv._id)} style={[styles.smallBtn,{ backgroundColor:'#e11d48' }]}>
-                    <Text style={[styles.smallBtnText,{ color:'#fff' }]}>Hủy</Text>
-                  </Pressable>
-                )}
-              </View>
-            );
-            })}
+              // Only show pending invites; ensure one row per email (pick the most recent pending)
+              const pendings = (project.invites||[]).filter((i:any)=> i.status==='pending');
+              // Pick the most recent pending per email
+              const sorted = [...pendings].sort((a:any,b:any)=> new Date(b.invitedAt||0).getTime() - new Date(a.invitedAt||0).getTime());
+              const seen = new Set<string>();
+              const list: any[] = [];
+              for(const inv of sorted){ if(!seen.has(inv.email)){ seen.add(inv.email); list.push(inv); } }
+              if(list.length===0){ return <Text style={styles.empty}>Không có lời mời đang chờ.</Text>; }
+              return list.map((inv:any)=> (
+                <View key={inv._id} style={styles.inviteRow}>
+                  <Text style={styles.inviteEmail}>{inv.email}</Text>
+                  <Text style={styles.inviteStatus}>Đang chờ</Text>
+                  {isAdmin && (
+                    <Pressable accessibilityLabel={`Hủy lời mời ${inv.email}`} onPress={()=> revokeInvite(inv._id)} style={styles.iconBtn}>
+                      <Ionicons name='close-outline' size={18} color='#e11d48' />
+                    </Pressable>
+                  )}
+                </View>
+              ));
+            })()}
 
             <Text style={[styles.sectionTitle,{ marginTop:16 }]}>Mời thêm</Text>
             <Text style={styles.hint}>Nhập nhiều email, phân tách bằng dấu phẩy.</Text>
-            <TextInput value={emails} onChangeText={setEmails} placeholder='vd: a@gmail.com, b@domain.com' style={styles.input} autoCapitalize='none' multiline />
+            <TextInput
+              value={emails}
+              onChangeText={(t)=>{ setEmails(t); if(inputFocused){ setTimeout(()=> scrollRef.current?.scrollToEnd({ animated:true }), 0); } }}
+              onFocus={()=>{ setInputFocused(true); setTimeout(()=> scrollRef.current?.scrollToEnd({ animated:true }), 0); }}
+              onBlur={()=> setInputFocused(false)}
+              placeholder='vd: a@gmail.com, b@domain.com'
+              style={styles.input}
+              autoCapitalize='none'
+              multiline
+              textAlignVertical='top'
+            />
             <Pressable onPress={invite} disabled={!emails.trim()} style={[styles.addBtn, !emails.trim() && { opacity:0.5 }]}> 
               <Ionicons name='send-outline' size={16} color='#fff' />
               <Text style={styles.addBtnText}>Gửi lời mời</Text>
@@ -161,6 +179,7 @@ export default function ProjectMembersScreen(){
           </>
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -179,8 +198,9 @@ const styles = StyleSheet.create({
   inviteRow:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'#f8fafc', padding:10, borderRadius:10, marginBottom:8 },
   inviteEmail:{ flex:1, color:'#16425b' },
   inviteStatus:{ color:'#2f6690', fontSize:12, fontWeight:'700' },
+  iconBtn:{ padding:6, borderRadius:8, backgroundColor:'rgba(225,29,72,0.08)' },
   hint:{ fontSize:11, color:'#607d8b', marginBottom:6 },
-  input:{ backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0', borderRadius:12, paddingHorizontal:12, paddingVertical:10, fontSize:13, color:'#16425b', minHeight:56 },
+  input:{ backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0', borderRadius:12, paddingHorizontal:12, paddingVertical:10, fontSize:13, color:'#16425b', minHeight:80 },
   addBtn:{ marginTop:10, backgroundColor:'#3a7ca5', flexDirection:'row', alignItems:'center', gap:8, paddingVertical:12, borderRadius:14, justifyContent:'center' },
   addBtnText:{ color:'#fff', fontSize:13, fontWeight:'700' },
   empty:{ color:'#607d8b', fontStyle:'italic' }

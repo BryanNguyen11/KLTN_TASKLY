@@ -4,13 +4,25 @@ const EventType = require('../models/EventType');
 exports.createEvent = async (req, res) => {
   try {
     const userId = req.user.userId;
-  const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {}, repeat } = req.body;
+  const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {}, repeat, reminders } = req.body;
     if (!title || !typeId || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     // check type exists
     const et = await EventType.findById(typeId);
     if (!et) return res.status(400).json({ message: 'Loại sự kiện không hợp lệ' });
     if (endDate && endDate < date) return res.status(400).json({ message: 'endDate phải >= date' });
-  const doc = await Event.create({ userId, title, typeId, date, endDate, startTime, endTime, location, notes, link, tags, props, repeat });
+  const payload = { userId, title, typeId, date, endDate, startTime, endTime, location, notes, link, tags, props, repeat };
+  if(Array.isArray(reminders) && (startTime || endTime)){
+    const targetDate = endDate || date;
+    const baseTime = endTime || startTime || '09:00';
+    const baseAt = new Date(`${targetDate}T${baseTime}:00`);
+    const rems = reminders.map((r)=>{
+      if(r?.type==='relative') return { at: new Date(baseAt.getTime() - (r.minutes||0)*60000), sent:false };
+      if(r?.type==='absolute' && r.at) return { at: new Date(r.at), sent:false };
+      return null;
+    }).filter(Boolean);
+  if(rems.length) payload.reminders = rems;
+  }
+  const doc = await Event.create(payload);
     res.status(201).json(doc);
   } catch (e) {
     res.status(500).json({ message: 'Lỗi tạo sự kiện', error: e.message });
@@ -44,6 +56,20 @@ exports.updateEvent = async (req, res) => {
     const updates = { ...req.body };
     if (updates.endDate && updates.date && updates.endDate < updates.date) {
       return res.status(400).json({ message: 'endDate phải >= date' });
+    }
+    // Recompute reminders if provided
+    if(Array.isArray(req.body.reminders)){
+      const before = await Event.findOne({ _id: req.params.id, userId }).lean();
+      const baseDate = updates.endDate || updates.date || before?.endDate || before?.date;
+      const baseTime = updates.endTime || updates.startTime || before?.endTime || before?.startTime || '09:00';
+      if(baseDate && baseTime){
+        const baseAt = new Date(`${baseDate}T${baseTime}:00`);
+        updates.reminders = req.body.reminders.map((r)=>{
+          if(r?.type==='relative') return { at: new Date(baseAt.getTime() - (r.minutes||0)*60000), sent:false };
+          if(r?.type==='absolute' && r.at) return { at: new Date(r.at), sent:false };
+          return null;
+        }).filter(Boolean);
+      }
     }
     const doc = await Event.findOneAndUpdate({ _id: req.params.id, userId }, updates, { new: true });
     if (!doc) return res.status(404).json({ message: 'Không tìm thấy sự kiện' });
