@@ -1,10 +1,10 @@
 const User = require('../models/User');
 const Task = require('../models/Task');
 
-// PATCH /api/users/me/push-token { token, replace?: boolean }
+// PATCH /api/users/me/push-token { token, replace?: boolean, timezone?: string }
 exports.savePushToken = async (req, res) => {
   try {
-    const { token, replace } = req.body;
+    const { token, replace, timezone } = req.body;
     if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
     const u = await User.findById(req.user.userId);
     if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
@@ -19,11 +19,16 @@ exports.savePushToken = async (req, res) => {
       u.expoPushTokens = Array.from(new Set(u.expoPushTokens));
       await u.save();
     }
-    res.json({ ok: true });
+    if (timezone && typeof timezone === 'string' && timezone.length <= 80) {
+      u.timezone = timezone;
+      await u.save();
+    }
+    res.json({ ok: true, timezone: u.timezone || null });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi lưu token', error: err.message });
-  }
+
 };
+}
 
 // POST /api/users/me/push-test
 // Sends a simple test push to the current user's registered Expo push tokens
@@ -39,7 +44,7 @@ exports.testPush = async (req, res) => {
       return res.status(200).json({ ok: true, sent: 0, message: 'Chưa có Expo Push Token hợp lệ' });
     }
     try {
-      const r = await fetch('https://exp.host/--/api/v2/push/send', {
+      const r = await globalThis.fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(list)
@@ -51,6 +56,7 @@ exports.testPush = async (req, res) => {
     res.status(500).json({ message: 'Lỗi gửi test push', error: err.message });
   }
 };
+
 
 // GET /api/users/me
 exports.getMe = async (req, res) => {

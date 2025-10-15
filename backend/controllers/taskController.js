@@ -22,9 +22,9 @@ async function sendExpoPush(tokens, title, body, data){
   });
   if(list.length===0) return;
   try {
-    const doFetch = globalThis.fetch ? globalThis.fetch : (await import('node-fetch')).default;
+    const doFetch = globalThis.fetch;
     await doFetch('https://exp.host/--/api/v2/push/send', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(list) });
-  } catch(_){}
+  } catch(_){ }
 }
 
 const occursToday = (t) => {

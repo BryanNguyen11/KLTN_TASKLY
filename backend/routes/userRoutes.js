@@ -10,5 +10,6 @@ router.get('/me/stats', getStats);
 router.patch('/me/avatar', updateAvatar);
 router.patch('/me/push-token', savePushToken);
 router.post('/me/push-test', testPush);
+// removed: intraday test endpoint after feature stabilized
 
 module.exports = router;

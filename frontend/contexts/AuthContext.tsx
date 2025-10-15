@@ -76,8 +76,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         expoToken = null;
       }
       setPushToken(expoToken);
-      const API_USERS = BASE ? `${BASE}/api/users` : undefined;
-  if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken, replace: true }); }
+    const API_USERS = BASE ? `${BASE}/api/users` : undefined;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken, replace: true, timezone: tz }); }
       // If we successfully obtained a push token, do not simulate local push to avoid duplicates
       setShouldSimulatePush(!expoToken && isExpoGo);
     } catch { /* silent */ }

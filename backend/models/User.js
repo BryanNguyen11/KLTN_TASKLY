@@ -34,7 +34,11 @@ const userSchema = new mongoose.Schema({
   },
   // Push notifications
   expoPushTokens: { type: [String], default: [] },
-  lastDailyPushDate: { type: String } // YYYY-MM-DD to avoid sending duplicate daily summaries
+  lastDailyPushDate: { type: String }, // YYYY-MM-DD (user-local) to avoid duplicate daily summaries
+  timezone: { type: String, default: '' }, // IANA timezone from device, e.g., 'Asia/Ho_Chi_Minh'
+  // Intraday digest tracking per day to avoid duplicates across restarts
+  intradayDigestDate: { type: String, default: '' }, // YYYY-MM-DD of last digest day
+  intradayDigestSlots: { type: [Number], default: [] } // e.g., [9,12,16] for sent slots in intradayDigestDate
 }, { timestamps: true });
 
 // Hash password before save
