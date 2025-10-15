@@ -1,9 +1,25 @@
 const Task = require('../models/Task');
 const User = require('../models/User');
 
+// In-memory dedupe for identical pushes in a small time window
+const __PUSH_RECENT = new Map();
+function __shouldSend(key, windowMs=20000){
+  const now = Date.now();
+  const last = __PUSH_RECENT.get(key) || 0;
+  if(now - last < windowMs) return false;
+  __PUSH_RECENT.set(key, now);
+  return true;
+}
 async function sendExpoPush(tokens, title, body, data){
   if(!Array.isArray(tokens) || tokens.length===0) return;
-  const list = tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title, body, data }));
+  const unique = Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))));
+  const list = [];
+  unique.forEach(to => {
+    const key = `${to}|${data?.type||''}|${data?.projectId||data?.id||''}|${title||''}|${body||''}`;
+    if(__shouldSend(key, 20000)){
+      list.push({ to, sound:'default', title, body, data });
+    }
+  });
   if(list.length===0) return;
   try {
     const doFetch = globalThis.fetch ? globalThis.fetch : (await import('node-fetch')).default;
@@ -116,12 +132,38 @@ exports.updateTask = async (req,res) => {
         updates.completedAt = undefined; // remove when reverting
       }
     }
+    const before = await Task.findOne({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }).lean();
     const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new: true });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     // Socket emit: notify project room about task update
     try {
       const io = req.app.get('io');
       if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:updated', task.toObject ? task.toObject() : task); }
+    } catch(_e){}
+    // Push notifications for changes
+    try {
+      // Assignment changed
+      const beforeAssignee = before?.assignedTo ? String(before.assignedTo) : undefined;
+      const afterAssignee = task.assignedTo ? String(task.assignedTo) : undefined;
+      const assignmentChanged = beforeAssignee !== afterAssignee && !!afterAssignee;
+      if(assignmentChanged){
+        const assignee = await User.findById(afterAssignee).select('expoPushTokens');
+        await sendExpoPush(assignee?.expoPushTokens||[], 'Bạn được giao tác vụ', `${task.title}`, { type:'task-assigned', id: String(task._id) });
+      }
+      // Status changed to completed (notify owner if different)
+      if(before?.status !== task.status && task.status === 'completed'){
+        const targetUsers = [];
+        if(task.userId && String(task.userId) !== afterAssignee) targetUsers.push(String(task.userId));
+        const users = await User.find({ _id: { $in: targetUsers } }).select('expoPushTokens');
+        const tokens = users.flatMap(u => u.expoPushTokens||[]);
+        await sendExpoPush(tokens, 'Tác vụ đã hoàn thành', `${task.title}`, { type:'task-completed', id: String(task._id) });
+      }
+      // General update notify assignee (if exists), but avoid sending in the same update when assignment just changed to prevent duplicate pushes
+      if(afterAssignee && !assignmentChanged){
+        const users = await User.find({ _id: { $in: [afterAssignee] } }).select('expoPushTokens');
+        const tokens = users.flatMap(u => u.expoPushTokens||[]);
+        await sendExpoPush(tokens, 'Cập nhật tác vụ', `${task.title}`, { type:'task-updated', id: String(task._id) });
+      }
     } catch(_e){}
     res.json(task);
   } catch(err){

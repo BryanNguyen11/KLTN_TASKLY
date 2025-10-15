@@ -2,6 +2,32 @@ const crypto = require('crypto');
 const Project = require('../models/Project');
 const User = require('../models/User');
 
+// In-memory dedupe for identical pushes in a small time window
+const __PUSH_RECENT = new Map(); // key -> timestamp
+function __shouldSend(key, windowMs=20000){
+  const now = Date.now();
+  const last = __PUSH_RECENT.get(key) || 0;
+  if(now - last < windowMs) return false;
+  __PUSH_RECENT.set(key, now);
+  return true;
+}
+async function sendExpoPush(tokens, title, body, data){
+  try{
+    if(!Array.isArray(tokens) || tokens.length===0) return;
+    const unique = Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))));
+    const list = [];
+    unique.forEach(to => {
+      const key = `${to}|${data?.type||''}|${data?.projectId||data?.id||''}|${title||''}|${body||''}`;
+      if(__shouldSend(key, 20000)){
+        list.push({ to, sound:'default', title, body, data });
+      }
+    });
+    if(list.length===0) return;
+    const doFetch = globalThis.fetch ? globalThis.fetch : (await import('node-fetch')).default;
+    await doFetch('https://exp.host/--/api/v2/push/send', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(list) });
+  }catch(_){ /* ignore */ }
+}
+
 // Create project: requester becomes owner + admin member
 exports.createProject = async (req,res) => {
   try {
@@ -100,6 +126,11 @@ exports.updateMemberRole = async (req,res) => {
     await project.save();
     const io = req.app.get('io');
     if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    // Push notify target user
+    try {
+      const target = await User.findById(targetId).select('expoPushTokens');
+      await sendExpoPush(target?.expoPushTokens||[], 'Cập nhật quyền dự án', `Quyền của bạn trong ${project.name} đã được cập nhật: ${role}`, { type:'project-role', projectId: String(project._id), role });
+    } catch(_e){}
     res.json({ message:'Đã cập nhật quyền', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi cập nhật quyền', error: err.message });
@@ -122,6 +153,10 @@ exports.removeMember = async (req,res) => {
     await project.save();
     const io = req.app.get('io');
     if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    try {
+      const target = await User.findById(targetId).select('expoPushTokens');
+      await sendExpoPush(target?.expoPushTokens||[], 'Bạn đã bị xóa khỏi dự án', `Bạn đã bị gỡ khỏi dự án: ${project.name}`, { type:'project-removed', projectId: String(project._id) });
+    } catch(_e){}
     res.json({ message:'Đã xóa thành viên', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi xóa thành viên', error: err.message });
@@ -140,13 +175,45 @@ exports.revokeInvite = async (req,res) => {
     const inv = project.invites.id(inviteId);
     if(!inv) return res.status(404).json({ message:'Không tìm thấy lời mời' });
     if(inv.status !== 'pending') return res.status(400).json({ message:'Chỉ có thể hủy lời mời đang chờ' });
+    const targetEmail = inv.email;
     inv.deleteOne();
     await project.save();
     const io = req.app.get('io');
-    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    if(io){
+      // Update members/admins in project room
+      io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project });
+      // Notify invitee (by email) so they can remove pending invite notification
+      io.emit('project:inviteRevoked', { projectId: project._id, email: targetEmail });
+    }
     res.json({ message:'Đã hủy lời mời', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi hủy lời mời', error: err.message });
+  }
+};
+
+// Decline invite (by invitee)
+exports.declineInvite = async (req,res) => {
+  try {
+    const userId = req.user.userId;
+    const email = (req.user.email||'').toLowerCase();
+    const { id } = req.params;
+    const { token } = req.body;
+    const project = await Project.findById(id);
+    if(!project) return res.status(404).json({ message:'Không tìm thấy dự án' });
+    const inv = project.invites.find(i=> i.email === email && i.token === token && i.status === 'pending');
+    if(!inv) return res.status(400).json({ message:'Lời mời không hợp lệ hoặc đã xử lý' });
+    inv.status = 'declined';
+    await project.save();
+    const io = req.app.get('io');
+    if(io){
+      // Update admins/members in project room
+      io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project });
+      // Optional: explicit event for analytics/UI
+      io.to(`project:${project._id}`).emit('project:inviteDeclined', { projectId: project._id, email });
+    }
+    return res.json({ message:'Đã từ chối lời mời', project });
+  } catch(err){
+    res.status(500).json({ message:'Lỗi từ chối lời mời', error: err.message });
   }
 };
 
@@ -201,12 +268,22 @@ exports.inviteMembers = async (req,res) => {
       // Emit realtime invite updates to each invited email token room if you later map email->user
       const io = req.app.get('io');
       if(io){
+        // Emit only a targeted event payload; clients filter by email
         newInvites.forEach(inv => {
-          // Without user id mapping, broadcast a generic update channel
-          io.emit('project:invited', { projectId: project._id, email: inv.email, invites: project.invites });
+          io.emit('project:invited', { projectId: project._id, email: inv.email });
         });
+        // Update current project room for members/admins
         io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, invites: project.invites });
       }
+      // Push notify invited users who already have accounts (exclude the inviter)
+      try {
+        const inviterId = String(userId);
+        const invitedExistingUsers = userDocs
+          .filter(u => newInvites.some(inv => inv.email === (u.email||'').toLowerCase()))
+          .filter(u => String(u._id) !== inviterId);
+        const tokens = invitedExistingUsers.flatMap(u => Array.isArray(u.expoPushTokens) ? u.expoPushTokens : []);
+        await sendExpoPush(tokens, 'Lời mời tham gia dự án', `Bạn được mời vào dự án: ${project.name}`, { type: 'project-invite', projectId: String(project._id) });
+      } catch(_e){}
     }
     console.log('[inviteMembers] final invite count', project.invites.length);
     res.json({ message:'Đã tạo lời mời', invites: project.invites });
@@ -242,6 +319,13 @@ exports.acceptInvite = async (req,res) => {
     if(io){
       io.to(`project:${project._id}`).emit('project:memberJoined', { projectId: project._id, memberId: userId, project });
     }
+    // Notify owner/admins that a member joined
+    try {
+      const adminIds = [ String(project.owner), ...project.members.filter(m=> m.role==='admin').map(m=> String(m.user)) ];
+      const admins = await User.find({ _id: { $in: adminIds } }).select('expoPushTokens');
+      const tokens = admins.flatMap(u => u.expoPushTokens||[]);
+      await sendExpoPush(tokens, 'Thành viên đã tham gia', `Một thành viên đã tham gia dự án: ${project.name}`, { type:'project-member-joined', projectId: String(project._id) });
+    } catch(_e){}
     res.json({ message:'Đã tham gia dự án', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi chấp nhận lời mời', error: err.message });

@@ -13,6 +13,7 @@ import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInD
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
 import { useNotifications, type NotificationItem as NotiItemCtx } from '@/contexts/NotificationContext';
+import Constants from 'expo-constants';
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 // Helper to color dots by importance
@@ -45,7 +46,7 @@ export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   // NEW: date filtering enhancement plan
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
-  const { user, token } = useAuth();
+  const { user, token, shouldSimulatePush } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
@@ -81,7 +82,40 @@ export default function DashboardScreen() {
   const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [celebrateId, setCelebrateId] = useState<string|null>(null);
   // Notifications (global)
-  const { addNotification, addMany, unreadCount } = useNotifications();
+  const { addNotification, addMany, upsertById, unreadCount, removeById } = useNotifications() as any;
+
+  // Local push simulator for Expo Go: show lock-screen-like notifications for key events
+  const lastNotiRef = React.useRef<Record<string, number>>({});
+  const isExpoGo = Constants.appOwnership === 'expo';
+  const ensurePermission = async () => {
+    try {
+      const st = await Notifications.getPermissionsAsync();
+      if (!st.granted) {
+        const req = await Notifications.requestPermissionsAsync();
+        if (!req.granted) return false;
+      }
+      return true;
+    } catch { return false; }
+  };
+  const localNotify = async (title: string, body?: string, data?: any, throttleKey?: string) => {
+    if (Platform.OS === 'web') return; // skip web
+    // Only simulate when explicitly allowed by auth context (no valid remote push token)
+    if (!shouldSimulatePush) return;
+    const ok = await ensurePermission();
+    if (!ok) return;
+    // simple throttle to avoid spamming same item repeatedly within 6s
+    const now = Date.now();
+    const key = throttleKey || `${title}|${body||''}`;
+    const last = lastNotiRef.current[key] || 0;
+    if (now - last < 6000) return;
+    lastNotiRef.current[key] = now;
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: { title, body: body || '', sound: 'default', data },
+        trigger: null
+      });
+    } catch {}
+  };
 
   useEffect(()=>{
     if(toast){
@@ -326,6 +360,8 @@ export default function DashboardScreen() {
 
   // Local notification scheduler for Expo Go fallback (lock-screen alerts without remote push)
   const scheduleLocalTaskNotifications = async (list: Task[]) => {
+    // Only schedule local notifications if we are simulating push
+    if (!shouldSimulatePush) return;
     if (typeof Notifications?.setNotificationChannelAsync === 'function' && Platform.OS === 'android') {
       try { await Notifications.setNotificationChannelAsync('default', { name: 'default', importance: Notifications.AndroidImportance.MAX }); } catch {}
     }
@@ -352,6 +388,13 @@ export default function DashboardScreen() {
       }catch{}
     }
   };
+
+  // If simulation gets disabled (e.g., after registering a remote push token), cancel any previously scheduled local notifications
+  useEffect(() => {
+    if (!shouldSimulatePush && Platform.OS !== 'web') {
+      try { Notifications.cancelAllScheduledNotificationsAsync(); } catch {}
+    }
+  }, [shouldSimulatePush]);
 
   // Determine if the OCCURRENCE of a task (considering repeat and multi-day span) ends exactly on iso
   const occurrenceEndsOn = (t: Task, iso: string): boolean => {
@@ -598,17 +641,27 @@ export default function DashboardScreen() {
       if(activeProject && activeProject._id===payload.projectId){
         setActiveProject((p:any)=> payload.project ? payload.project : (p? { ...p, invites: payload.invites ?? p.invites } : p));
       }
-      // Push notification for project update
-      const title = payload.project?.name ? `Cập nhật dự án: ${payload.project.name}` : 'Dự án đã được cập nhật';
-      addNotification({ id: `pupd_${Date.now()}`, type:'project-update', title, at: Date.now(), projectId: payload.projectId } as NotiItemCtx);
+      // Do not add generic project update notifications to reduce noise
     });
     s.on('project:invited', (payload:any) => {
-      // If the invite email matches current user email, refetch to show new pending invite
-      if((user as any)?.email?.toLowerCase && (user as any).email.toLowerCase() === payload.email){
+      const myEmail = (user as any)?.email?.toLowerCase?.();
+      const isMe = myEmail && myEmail === payload.email;
+      if(isMe){
         fetchProjects();
+        // Stable id per project invite to avoid duplicates when reinvited
+        upsertById({ id: `pinv_${payload.projectId}`, type:'project-invite', title:`Lời mời tham gia dự án`, meta: payload.email, at: Date.now(), projectId: payload.projectId } as NotiItemCtx);
+        // Local simulate invite for Expo Go
+        localNotify('Lời mời tham gia dự án', 'Bạn được mời tham gia một dự án mới', { type:'project-invite', projectId: payload.projectId }, `pinv_${payload.projectId}`);
       }
-      // Push invite notification
-      addNotification({ id: `pinv_${Date.now()}`, type:'project-invite', title:`Lời mời tham gia dự án`, meta: payload.email, at: Date.now(), projectId: payload.projectId } as NotiItemCtx);
+      // Do not notify others (including sender) to reduce noise and avoid duplicates
+    });
+    // When the inviter revokes, remove the invite for that email and drop the notification
+    s.on('project:inviteRevoked', (payload:any) => {
+      const myEmail = (user as any)?.email?.toLowerCase?.();
+      if(myEmail && myEmail === payload.email){
+        setProjects(prev => prev.map(p => p._id===payload.projectId ? { ...p, invites: (p.invites||[]).filter((i:any)=> i.email!==myEmail) } : p));
+        removeById?.(`pinv_${payload.projectId}`);
+      }
     });
     s.on('project:memberJoined', (payload:any) => {
       setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, members: payload.project.members, invites: payload.project.invites } : p));
@@ -627,15 +680,27 @@ export default function DashboardScreen() {
       if(!t) return;
       const mine = String((user as any)?.id || (user as any)?._id || '') === String(t.assignedTo || '');
       const meta = t.startTime && t.date ? `${t.startTime} • ${t.date}` : (t.date||'');
-      addNotification({ id:`tcrt_${t._id||Date.now()}`, type: (mine? 'task-assigned':'task-created'), title: mine? `Bạn được giao: ${t.title}`: `Tác vụ mới: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||'') } as NotiItemCtx);
+      if(mine){
+        addNotification({ id:`tcrt_${t._id||Date.now()}`, type:'task-assigned', title:`Bạn được giao: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||''), taskId: String(t._id||'') } as NotiItemCtx);
+      }
+      // Local simulate when it's assigned to me
+      if(mine){
+        localNotify('Bạn được giao tác vụ', t.title, { type:'task-assigned', id: String(t._id||'') }, `tcrt_${t._id||''}`);
+      }
     });
     s.on('task:updated', (t:any) => {
       if(!t) return;
       const meta = t.status ? `Trạng thái: ${t.status}` : undefined;
-      addNotification({ id:`tupd_${t._id||Date.now()}`, type:'task-updated', title:`Cập nhật tác vụ: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||'') } as NotiItemCtx);
+      const myId = String((user as any)?.id || (user as any)?._id || '');
+      if(myId && String(t.assignedTo||'') === myId){
+        addNotification({ id:`tupd_${t._id||Date.now()}`, type:'task-updated', title:`Cập nhật tác vụ: ${t.title}`, meta, at: Date.now(), projectId: String(t.projectId||''), taskId: String(t._id||'') } as NotiItemCtx);
+        // Local simulate update only for assignee
+        localNotify('Cập nhật tác vụ', t.title, { type:'task-updated', id: String(t._id||'') }, `tupd_${t._id||''}`);
+      }
     });
     s.on('task:deleted', (p:any) => {
       addNotification({ id:`tdel_${Date.now()}`, type:'task-updated', title:`Đã xóa một tác vụ`, at: Date.now(), projectId: String(p?.projectId||'') } as NotiItemCtx);
+      // No local notify for deletions to reduce noise
     });
     return () => { s.disconnect(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -891,8 +956,29 @@ export default function DashboardScreen() {
       if(socket){ socket.emit('joinProject', projectId); }
       DeviceEventEmitter.emit('projectsUpdated');
       setToast('Đã tham gia dự án');
+      // Remove invite notification
+      removeById?.(`pinv_${projectId}`);
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tham gia');
+    } finally { setAcceptingInvite(null); }
+  };
+
+  const declineInvite = async (projectId:string) => {
+    if(!token) return;
+    const proj = projects.find(p=> p._id===projectId);
+    if(!proj) return;
+    const myInvite = (proj.invites||[]).find((inv:any)=> inv.email===userEmailLower && inv.status==='pending');
+    if(!myInvite) return;
+    try{
+      setAcceptingInvite(projectId);
+      const res = await axios.post(`${API_BASE}/api/projects/${projectId}/decline`, { token: myInvite.token }, { headers:{ Authorization:`Bearer ${token}` } });
+      const updated = res.data.project;
+      setProjects(prev => prev.map(p=> p._id===projectId ? updated : p));
+      if(activeProject && activeProject._id===projectId){ setActiveProject(updated); }
+      removeById?.(`pinv_${projectId}`);
+      setToast('Đã từ chối lời mời');
+    }catch(e:any){
+      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể từ chối');
     } finally { setAcceptingInvite(null); }
   };
 
@@ -978,10 +1064,16 @@ export default function DashboardScreen() {
                         <Text style={styles.inviteBannerName}>{p.name}</Text>
                         <Text style={styles.inviteBannerMeta}>Bạn được mời tham gia</Text>
                       </View>
-                      <Pressable disabled={acceptingInvite===p._id} onPress={()=> acceptInvite(p._id)} style={[styles.inviteAcceptBtn, acceptingInvite===p._id && { opacity:0.5 }]}>
-                        <Ionicons name='checkmark-circle-outline' size={16} color='#fff' />
-                        <Text style={styles.inviteAcceptText}>{acceptingInvite===p._id? 'Đang...' : 'Tham gia'}</Text>
-                      </Pressable>
+                      <View style={{ flexDirection:'row', gap:8 }}>
+                        <Pressable disabled={acceptingInvite===p._id} onPress={()=> declineInvite(p._id)} style={[styles.inviteDeclineBtn, acceptingInvite===p._id && { opacity:0.5 }]}>
+                          <Ionicons name='close-circle-outline' size={16} color='#fff' />
+                          <Text style={styles.inviteAcceptText}>{acceptingInvite===p._id? '...' : 'Từ chối'}</Text>
+                        </Pressable>
+                        <Pressable disabled={acceptingInvite===p._id} onPress={()=> acceptInvite(p._id)} style={[styles.inviteAcceptBtn, acceptingInvite===p._id && { opacity:0.5 }]}>
+                          <Ionicons name='checkmark-circle-outline' size={16} color='#fff' />
+                          <Text style={styles.inviteAcceptText}>{acceptingInvite===p._id? '...' : 'Tham gia'}</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   );
                 })}
@@ -2117,6 +2209,7 @@ const styles = StyleSheet.create({
   inviteBannerName:{ fontSize:13, fontWeight:'600', color:'#16425b' },
   inviteBannerMeta:{ fontSize:11, color:'#607d8b', marginTop:2 },
   inviteAcceptBtn:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'#3a7ca5', paddingHorizontal:14, paddingVertical:8, borderRadius:14 },
+  inviteDeclineBtn:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'#dc2626', paddingHorizontal:14, paddingVertical:8, borderRadius:14 },
   inviteAcceptText:{ color:'#fff', fontSize:12, fontWeight:'600' },
   deleteProjectBtn:{ marginTop:4, backgroundColor:'#dc2626', flexDirection:'row', alignItems:'center', gap:8, paddingVertical:12, borderRadius:14, justifyContent:'center' },
   deleteProjectText:{ color:'#fff', fontSize:13, fontWeight:'600' },

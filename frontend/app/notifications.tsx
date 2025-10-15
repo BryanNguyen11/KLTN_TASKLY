@@ -16,8 +16,31 @@ const NotificationsScreen: React.FC = () => {
     ]);
   };
 
+  const onOpenFromNotification = (item: any) => {
+    markRead(item.id);
+    // Navigate based on type
+    if(item.type === 'project-invite' || item.type === 'project-update'){
+      if(item.projectId){
+        // Open project detail modal via dashboard event bridge
+        // Using DeviceEventEmitter would be ideal, but here we can route to dashboard and trigger
+        router.push('/');
+        setTimeout(() => {
+          // @ts-ignore rely on dashboard listener if present
+          // In our app we already listen DeviceEventEmitter 'openProjectDetail'
+          // so emit that event. If not available here, we can navigate directly to members screen
+          try { (global as any).DeviceEventEmitter?.emit?.('openProjectDetail', { id: item.projectId }); } catch {}
+        }, 250);
+      }
+      return;
+    }
+    if((item.type === 'task-assigned' || item.type === 'task-updated') && item.taskId){
+      router.push({ pathname: '/create-task', params:{ editId: item.taskId } });
+      return;
+    }
+  };
+
   const renderItem = ({ item }: any) => (
-    <Pressable style={[styles.itemRow, !item.read && styles.itemUnread]} onPress={() => markRead(item.id)}>
+    <Pressable style={[styles.itemRow, !item.read && styles.itemUnread]} onPress={() => onOpenFromNotification(item)}>
       <Ionicons name={
         item.type==='upcoming-task'? 'time-outline' :
         item.type==='upcoming-event'? 'calendar-outline' :

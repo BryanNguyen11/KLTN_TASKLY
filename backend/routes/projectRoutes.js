@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
-const { createProject, listProjects, getProject, inviteMembers, acceptInvite, archiveProject, deleteProject, updateProject, updateMemberRole, removeMember, revokeInvite, leaveProject } = require('../controllers/projectController');
+const { createProject, listProjects, getProject, inviteMembers, acceptInvite, archiveProject, deleteProject, updateProject, updateMemberRole, removeMember, revokeInvite, leaveProject, declineInvite } = require('../controllers/projectController');
 
 router.use(auth);
 router.post('/', createProject);
@@ -10,6 +10,7 @@ router.get('/:id', getProject);
 router.put('/:id', updateProject);
 router.post('/:id/invite', inviteMembers);
 router.post('/:id/accept', acceptInvite);
+router.post('/:id/decline', declineInvite);
 router.put('/:id/members/:userId/role', updateMemberRole);
 router.delete('/:id/members/:userId', removeMember);
 router.delete('/:id/invites/:inviteId', revokeInvite);

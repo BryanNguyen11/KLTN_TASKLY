@@ -1,15 +1,22 @@
 const User = require('../models/User');
 const Task = require('../models/Task');
 
-// PATCH /api/users/me/push-token { token }
+// PATCH /api/users/me/push-token { token, replace?: boolean }
 exports.savePushToken = async (req, res) => {
   try {
-    const { token } = req.body;
+    const { token, replace } = req.body;
     if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
     const u = await User.findById(req.user.userId);
     if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
-    if (!u.expoPushTokens.includes(token)) {
+    u.expoPushTokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
+    if (replace === true) {
+      // Keep only the latest token to avoid duplicate deliveries from stale tokens
+      u.expoPushTokens = [token];
+      await u.save();
+    } else if (!u.expoPushTokens.includes(token)) {
       u.expoPushTokens.push(token);
+      // De-duplicate just in case
+      u.expoPushTokens = Array.from(new Set(u.expoPushTokens));
       await u.save();
     }
     res.json({ ok: true });

@@ -8,7 +8,7 @@ const memberSchema = new mongoose.Schema({
 const inviteSchema = new mongoose.Schema({
   email: { type: String, required: true, trim: true, lowercase: true },
   token: { type: String, required: true },
-  status: { type: String, enum: ['pending','accepted','expired'], default: 'pending' },
+  status: { type: String, enum: ['pending','accepted','expired','declined'], default: 'pending' },
   invitedAt: { type: Date, default: Date.now },
   expiresAt: { type: Date }
 }, { _id: true });

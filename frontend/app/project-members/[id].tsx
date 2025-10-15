@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/AuthContext';
+import io from 'socket.io-client';
 
 export default function ProjectMembersScreen(){
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -23,6 +24,31 @@ export default function ProjectMembersScreen(){
     }catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không tải được dự án'); }
   };
   useEffect(()=>{ fetchProject(); },[id, token]);
+
+  // Live updates via socket for invite state changes
+  useEffect(() => {
+    if(!token || !id) return;
+    const API_BASE = process.env.EXPO_PUBLIC_API_BASE || '';
+    const endpoint = API_BASE.replace(/\/api$/,'');
+    const s = io(endpoint, { auth:{ token }, transports:['websocket'] });
+    s.on('connect', () => { s.emit('joinProject', id); });
+    s.on('project:updated', (payload:any) => {
+      if(String(payload.projectId) === String(id)){
+        if(payload.project){ setProject(payload.project); }
+        else if(payload.invites){ setProject((p:any)=> p? { ...p, invites: payload.invites }: p); }
+      }
+    });
+    s.on('project:memberJoined', (payload:any) => {
+      if(String(payload.projectId) === String(id)) setProject(payload.project);
+    });
+    s.on('project:inviteDeclined', (payload:any) => {
+      if(String(payload.projectId) === String(id)) fetchProject();
+    });
+    s.on('project:inviteRevoked', (payload:any) => {
+      if(String(payload.projectId) === String(id)) fetchProject();
+    });
+    return () => { s.disconnect(); };
+  }, [id, token]);
 
   const invite = async () => {
     const list = emails.split(/[,;\n]/).map(e=> e.trim()).filter(Boolean);

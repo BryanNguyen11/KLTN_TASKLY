@@ -27,6 +27,9 @@ interface AuthContextValue {
   updateName: (name: string) => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateAvatar: (avatar: string) => Promise<void>;
+  // Push notifications
+  pushToken?: string | null;
+  shouldSimulatePush: boolean; // true when we should use local notifications as a fallback (e.g., Expo Go without a registered push token)
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -35,6 +38,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [pushToken, setPushToken] = useState<string | null>(null);
+  const [shouldSimulatePush, setShouldSimulatePush] = useState<boolean>(false);
 
   const BASE = process.env.EXPO_PUBLIC_API_BASE;
   const API_AUTH = BASE ? `${BASE}/api/auth` : undefined;
@@ -46,6 +51,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const registerPushToken = async () => {
     try {
+      const isExpoGo = Constants.appOwnership === 'expo';
       // Ask permission
       const settings = await Notifications.getPermissionsAsync();
       let granted = settings.granted || settings.ios?.status === Notifications.IosAuthorizationStatus.AUTHORIZED;
@@ -53,14 +59,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const req = await Notifications.requestPermissionsAsync();
         granted = req.granted || req.ios?.status === Notifications.IosAuthorizationStatus.AUTHORIZED;
       }
-      if(!granted) return;
+      if(!granted){
+        // no permission; on Expo Go we fallback to local notifications
+        setPushToken(null);
+        setShouldSimulatePush(isExpoGo);
+        return;
+      }
       // Get token
       const pid = (Constants as any)?.expoConfig?.extra?.eas?.projectId || (Constants as any)?.easConfig?.projectId;
-      const expoToken = pid
-        ? (await Notifications.getExpoPushTokenAsync({ projectId: pid })).data
-        : (await Notifications.getExpoPushTokenAsync()).data;
+      let expoToken: string | null = null;
+      try {
+        expoToken = pid
+          ? (await Notifications.getExpoPushTokenAsync({ projectId: pid })).data
+          : (await Notifications.getExpoPushTokenAsync()).data;
+      } catch {
+        expoToken = null;
+      }
+      setPushToken(expoToken);
       const API_USERS = BASE ? `${BASE}/api/users` : undefined;
-      if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken }); }
+  if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken, replace: true }); }
+      // If we successfully obtained a push token, do not simulate local push to avoid duplicates
+      setShouldSimulatePush(!expoToken && isExpoGo);
     } catch { /* silent */ }
   };
 
@@ -110,6 +129,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = () => {
     setUser(null);
     setToken(null);
+    setPushToken(null);
+    setShouldSimulatePush(false);
     delete axios.defaults.headers.common['Authorization'];
   };
 
@@ -143,7 +164,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   return (
-  <AuthContext.Provider value={{ user, loading, token, login, register, logout, updateName, refreshProfile, updateAvatar }}>
+  <AuthContext.Provider value={{ user, loading, token, login, register, logout, updateName, refreshProfile, updateAvatar, pushToken, shouldSimulatePush }}>
       {children}
     </AuthContext.Provider>
   );
