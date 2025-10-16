@@ -57,6 +57,33 @@ exports.testPush = async (req, res) => {
   }
 };
 
+// POST /api/users/me/push-send { title, body, data }
+// Sends a custom push to the current user's registered Expo push tokens
+exports.pushSend = async (req, res) => {
+  try {
+    const { title, body, data } = req.body || {};
+    if (typeof title !== 'string' || title.length === 0) return res.status(400).json({ message: 'Thiếu title' });
+    const u = await User.findById(req.user.userId).select('expoPushTokens');
+    if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
+    const tokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
+    const list = tokens
+      .filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))
+      .map(to => ({ to, sound: 'default', title, body: typeof body === 'string' ? body : '', data: data || {} }));
+    if (list.length === 0) return res.status(200).json({ ok: true, sent: 0, message: 'Chưa có Expo Push Token hợp lệ' });
+    try {
+      const r = await globalThis.fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(list)
+      });
+      await r.json().catch(()=>null);
+    } catch (_) { /* ignore network error */ }
+    return res.json({ ok: true, sent: list.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Lỗi gửi push', error: err.message });
+  }
+};
+
 
 // GET /api/users/me
 exports.getMe = async (req, res) => {

@@ -34,6 +34,7 @@ export default function RootLayout() {
               <Stack.Screen name="auth/register" options={{ headerShown: false }} />
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="create-task" options={{ headerShown:false }} />
+              <Stack.Screen name="create-calendar" options={{ headerShown:false }} />
               <Stack.Screen name="notifications" options={{ headerShown:false }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
             </Stack>

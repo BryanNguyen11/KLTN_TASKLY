@@ -46,7 +46,7 @@ export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   // NEW: date filtering enhancement plan
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
-  const { user, token, shouldSimulatePush } = useAuth();
+  const { user, token, shouldSimulatePush, pushToken } = useAuth();
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
@@ -83,6 +83,11 @@ export default function DashboardScreen() {
   const [celebrateId, setCelebrateId] = useState<string|null>(null);
   // Notifications (global)
   const { addNotification, addMany, upsertById, unreadCount, removeById } = useNotifications() as any;
+  // Show a one-time summary notification right after login
+  const loginSummaryShownRef = React.useRef<string | null>(null);
+  const lastSummaryAtRef = React.useRef<number | null>(null);
+  const upcomingSkippedOnceRef = React.useRef<boolean>(false);
+  // Track timing to avoid double notifications with the upcoming builder
 
   // Local push simulator for Expo Go: show lock-screen-like notifications for key events
   const lastNotiRef = React.useRef<Record<string, number>>({});
@@ -113,6 +118,22 @@ export default function DashboardScreen() {
       await Notifications.scheduleNotificationAsync({
         content: { title, body: body || '', sound: 'default', data },
         trigger: null
+      });
+    } catch {}
+  };
+
+  // Immediate local OS notification (bypass simulate flag) as a fallback for critical notices
+  const fireLocalImmediate = async (title: string, body?: string, data?: any) => {
+    if (Platform.OS === 'web') return;
+    try {
+      const st = await Notifications.getPermissionsAsync();
+      if (!st.granted) {
+        const req = await Notifications.requestPermissionsAsync();
+        if (!req.granted) return;
+      }
+      await Notifications.scheduleNotificationAsync({
+        content: { title, body: body || '', sound: 'default', data },
+        trigger: null,
       });
     } catch {}
   };
@@ -573,6 +594,38 @@ export default function DashboardScreen() {
   };
 
   useEffect(()=>{ fetchTasks(); },[token]);
+
+  // After tasks are loaded post-login, notify how many tasks remain today
+  useEffect(() => {
+    if(!token) return;
+    if(loading) return; // wait until initial fetch completes
+    if(loginSummaryShownRef.current === token) return; // only once per login session
+    const countToday = tasks.filter(t => !t.completed && occursTaskOnDate(t as any, todayISO)).length;
+    const title = countToday > 0
+      ? `Hôm nay còn ${countToday} tác vụ`
+      : 'Hôm nay bạn đã hoàn thành hết các tác vụ, hãy lên kế hoạch cho ngày mai nhé';
+    const now = Date.now();
+  upsertById?.({ id:`login-summary-${todayISO}`, type:'upcoming-task', title, at: now } as NotiItemCtx);
+    loginSummaryShownRef.current = token;
+    lastSummaryAtRef.current = now;
+    // reset skip flag so the next upcoming-notifications pass will skip once
+    upcomingSkippedOnceRef.current = false;
+    // Also send a remote push to the phone when a valid push token exists
+    (async () => {
+      try {
+        if (pushToken) {
+          const body = countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào';
+          await axios.post(`${API_BASE}/api/users/me/push-send`, { title: 'Tác vụ hôm nay', body, data: { type: 'today-summary', count: countToday } }, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+        } else {
+          // No remote push available: show OS notification immediately as fallback
+          await fireLocalImmediate('Tác vụ hôm nay', countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào', { type: 'today-summary', count: countToday });
+        }
+      } catch(_) {
+        // Remote push failed: try a local OS notification as a fallback
+        await fireLocalImmediate('Tác vụ hôm nay', countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào', { type: 'today-summary', count: countToday });
+      }
+    })();
+  }, [token, loading, tasks]);
   // Fetch projects
   const fetchProjects = async () => {
     if(!token) return;
@@ -858,7 +911,21 @@ export default function DashboardScreen() {
   const fabStyle = useAnimatedStyle(()=>({ transform:[{ scale: fabScale.value }] }));
 
   // Build upcoming notifications from local data (tasks/events)
+  const upcomingLastRunAtRef = React.useRef<number | null>(null);
   useEffect(()=>{
+    // If we just posted login summary, skip this first upcoming batch to avoid two notifications at once
+    if (loginSummaryShownRef.current === token && !upcomingSkippedOnceRef.current) {
+      upcomingSkippedOnceRef.current = true;
+      return;
+    }
+    // Additionally, suppress upcoming notifications within 60s after summary to avoid clutter on login
+    if (lastSummaryAtRef.current && Date.now() - lastSummaryAtRef.current < 60000) {
+      return;
+    }
+    // Cooldown upcoming generator itself to at most once per 60s
+    if (upcomingLastRunAtRef.current && Date.now() - upcomingLastRunAtRef.current < 60000) {
+      return;
+    }
     // today upcoming in next 2 hours
     const nowD = new Date();
     const cutoff = new Date(nowD.getTime() + 2*60*60*1000);
@@ -879,7 +946,11 @@ export default function DashboardScreen() {
         nlist.push({ id:`up_e_${e.id}`, type:'upcoming-event', title:`Lịch sắp diễn ra: ${e.title}`, meta: e.startTime, at: Date.now() } as NotiItemCtx);
       }
     });
-    if(nlist.length){ addMany(nlist); }
+    if(nlist.length){
+      // De-dupe: upsert by id so repeated runs don't create duplicates
+      nlist.forEach(n => upsertById?.(n));
+    }
+    upcomingLastRunAtRef.current = Date.now();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks.length, events.length]);
 
