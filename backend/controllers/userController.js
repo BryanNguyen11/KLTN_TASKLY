@@ -1,13 +1,24 @@
 const User = require('../models/User');
 const Task = require('../models/Task');
 
-// PATCH /api/users/me/push-token { token, replace?: boolean, timezone?: string }
+// PATCH /api/users/me/push-token { token?, replace?: boolean, clear?: boolean, timezone?: string }
 exports.savePushToken = async (req, res) => {
   try {
-    const { token, replace, timezone } = req.body;
-    if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
+    const { token, replace, clear, timezone } = req.body || {};
     const u = await User.findById(req.user.userId);
     if (!u) return res.status(404).json({ message: 'Không tìm thấy user' });
+
+    // Allow clearing all tokens explicitly (useful for Expo Go fallback to avoid duplicate remote+local notifications)
+    if (clear === true) {
+      u.expoPushTokens = [];
+      if (timezone && typeof timezone === 'string' && timezone.length <= 80) {
+        u.timezone = timezone;
+      }
+      await u.save();
+      return res.json({ ok: true, cleared: true, timezone: u.timezone || null });
+    }
+
+    if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
     u.expoPushTokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
     if (replace === true) {
       // Keep only the latest token to avoid duplicate deliveries from stale tokens
@@ -39,7 +50,7 @@ exports.testPush = async (req, res) => {
     const tokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
     const list = tokens
       .filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))
-      .map(to => ({ to, sound: 'default', title: 'Test thông báo', body: `Xin chào${u.name? ', ' + u.name : ''}! Đây là thông báo thử.`, data: { type: 'test' } }));
+      .map(to => ({ to, sound: 'default', title: 'Test thông báo', body: `Xin chào${u.name? ', ' + u.name : ''}! Đây là thông báo thử.`, data: { type: 'test' }, ttl: 120 }));
     if (list.length === 0) {
       return res.status(200).json({ ok: true, sent: 0, message: 'Chưa có Expo Push Token hợp lệ' });
     }
@@ -68,7 +79,7 @@ exports.pushSend = async (req, res) => {
     const tokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
     const list = tokens
       .filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))
-      .map(to => ({ to, sound: 'default', title, body: typeof body === 'string' ? body : '', data: data || {} }));
+      .map(to => ({ to, sound: 'default', title, body: typeof body === 'string' ? body : '', data: data || {}, ttl: 300 }));
     if (list.length === 0) return res.status(200).json({ ok: true, sent: 0, message: 'Chưa có Expo Push Token hợp lệ' });
     try {
       const r = await globalThis.fetch('https://exp.host/--/api/v2/push/send', {

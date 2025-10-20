@@ -17,7 +17,7 @@ async function sendExpoPush(tokens, title, body, data){
   unique.forEach(to => {
     const key = `${to}|${data?.type||''}|${data?.projectId||data?.id||''}|${title||''}|${body||''}`;
     if(__shouldSend(key, 20000)){
-      list.push({ to, sound:'default', title, body, data });
+      list.push({ to, sound:'default', title, body, data, ttl: 600 });
     }
   });
   if(list.length===0) return;

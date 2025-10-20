@@ -72,9 +72,13 @@ mongoose.connect(process.env.MONGO_URI)
     console.log('✅ MongoDB connected');
 
     // Simple daily push scheduler (runs every minute; sends once per day per user)
-    async function sendExpoPush(pushTokens, title, body, data){
+    async function sendExpoPush(pushTokens, title, body, data, opts){
       if(!Array.isArray(pushTokens) || pushTokens.length===0) return;
-      const messages = pushTokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken[')).map(to => ({ to, sound: 'default', title, body, data }));
+      const ttl = opts && typeof opts.ttl === 'number' ? opts.ttl : undefined;
+      const base = { sound: 'default', title, body, data };
+      const messages = pushTokens
+        .filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))
+        .map(to => (ttl ? { to, ...base, ttl } : { to, ...base }));
       if(messages.length===0) return;
       try{
         const res = await fetch('https://exp.host/--/api/v2/push/send',{ method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(messages) });
@@ -108,7 +112,7 @@ mongoose.connect(process.env.MONGO_URI)
           };
           const todays = tasks.filter(occursToday);
           if(todays.length>0){
-            await sendExpoPush(u.expoPushTokens, 'Tác vụ hôm nay', `${todays.length} tác vụ cần hoàn thành`, { type:'daily-summary', count: todays.length });
+            await sendExpoPush(u.expoPushTokens, 'Tác vụ hôm nay', `${todays.length} tác vụ cần hoàn thành`, { type:'daily-summary', count: todays.length }, { ttl: 600 });
             u.lastDailyPushDate = todayISO; await u.save();
           }
         }
@@ -144,7 +148,7 @@ mongoose.connect(process.env.MONGO_URI)
             ]
           });
           if(remaining > 0){
-            await sendExpoPush(u.expoPushTokens, 'Nhắc nhở tác vụ', `Bạn còn ${remaining} tác vụ đến hạn hôm nay`, { type:'intraday-digest', slot: hh, count: remaining, localDate: todayISO });
+            await sendExpoPush(u.expoPushTokens, 'Nhắc nhở tác vụ', `Bạn còn ${remaining} tác vụ đến hạn hôm nay`, { type:'intraday-digest', slot: hh, count: remaining, localDate: todayISO }, { ttl: 600 });
           }
           if(u.intradayDigestDate !== todayISO){ u.intradayDigestDate = todayISO; u.intradayDigestSlots = [hh]; }
           else { u.intradayDigestSlots = Array.from(new Set([ ...slots, hh ])).sort(); }
@@ -158,36 +162,45 @@ mongoose.connect(process.env.MONGO_URI)
     async function runReminders(){
       try{
         const now = new Date();
+        const windowMs = 5 * 60 * 1000; // deliver only reminders within 5 minutes window
         // Tasks
         const tasks = await Task.find({ 'reminders.sent': false, 'reminders.at': { $lte: now } }).select('title userId assignedTo reminders projectId');
         for(const t of tasks){
-          const due = (t.reminders||[]).filter(r => !r.sent && r.at <= now);
+          const due = (t.reminders||[]).filter(r => !r.sent && r.at <= now && r.at >= new Date(now.getTime() - windowMs));
+          const tooOld = (t.reminders||[]).filter(r => !r.sent && r.at < new Date(now.getTime() - windowMs));
           if(due.length===0) continue;
           const users = await User.find({ _id: { $in: Array.from(new Set([ String(t.userId), t.assignedTo? String(t.assignedTo): null ].filter(Boolean))) } }).select('expoPushTokens');
           const tokens = users.flatMap(u => Array.isArray(u.expoPushTokens)? u.expoPushTokens: []);
           if(tokens.length){
             try{
-              const messages = tokens.filter(to => typeof to==='string' && to.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title:'Nhắc nhở tác vụ', body: t.title, data:{ type:'task-reminder', id: String(t._id) } }));
+              const messages = tokens
+                .filter(to => typeof to==='string' && to.startsWith('ExpoPushToken['))
+                .map(to => ({ to, sound:'default', title:'Nhắc nhở tác vụ', body: t.title, data:{ type:'task-reminder', id: String(t._id) }, ttl: 300 }));
               if(messages.length){ await fetch('https://exp.host/--/api/v2/push/send',{ method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(messages) }); }
             }catch(_e){}
           }
           (t.reminders||[]).forEach(r => { if(!r.sent && r.at <= now) r.sent = true; });
+          if(tooOld.length){ (t.reminders||[]).forEach(r => { if(!r.sent && r.at < new Date(now.getTime() - windowMs)) r.sent = true; }); }
           await t.save();
         }
         // Events
         const events = await Event.find({ 'reminders.sent': false, 'reminders.at': { $lte: now } }).select('title userId reminders');
         for(const e of events){
-          const due = (e.reminders||[]).filter(r => !r.sent && r.at <= now);
+          const due = (e.reminders||[]).filter(r => !r.sent && r.at <= now && r.at >= new Date(now.getTime() - windowMs));
+          const tooOld = (e.reminders||[]).filter(r => !r.sent && r.at < new Date(now.getTime() - windowMs));
           if(due.length===0) continue;
           const u = await User.findById(e.userId).select('expoPushTokens');
           const tokens = u?.expoPushTokens || [];
           if(tokens.length){
             try{
-              const messages = tokens.filter(to => typeof to==='string' && to.startsWith('ExpoPushToken[')).map(to => ({ to, sound:'default', title:'Nhắc nhở lịch', body: e.title, data:{ type:'event-reminder', id: String(e._id) } }));
+              const messages = tokens
+                .filter(to => typeof to==='string' && to.startsWith('ExpoPushToken['))
+                .map(to => ({ to, sound:'default', title:'Nhắc nhở lịch', body: e.title, data:{ type:'event-reminder', id: String(e._id) }, ttl: 300 }));
               if(messages.length){ await fetch('https://exp.host/--/api/v2/push/send',{ method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(messages) }); }
             }catch(_e){}
           }
           (e.reminders||[]).forEach(r => { if(!r.sent && r.at <= now) r.sent = true; });
+          if(tooOld.length){ (e.reminders||[]).forEach(r => { if(!r.sent && r.at < new Date(now.getTime() - windowMs)) r.sent = true; }); }
           await e.save();
         }
       }catch(_e){}

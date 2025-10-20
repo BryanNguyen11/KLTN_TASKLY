@@ -10,6 +10,7 @@ import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
 import io from 'socket.io-client';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeInDown, FadeOutUp, Layout, withRepeat, withSequence, interpolate } from 'react-native-reanimated';
+import ProjectInsights from '@/components/ProjectInsights';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'expo-router';
 import { useNotifications, type NotificationItem as NotiItemCtx } from '@/contexts/NotificationContext';
@@ -1904,6 +1905,8 @@ export default function DashboardScreen() {
                       );
                     })()
                   )}
+                  {/* Project analytics & charts */}
+                  <ProjectInsights project={activeProject as any} tasks={tasks as any} events={events as any} />
                 </View>
               );
             })()}

@@ -8,6 +8,7 @@ router.get('/me', getMe);
 router.patch('/me', updateMe);
 router.get('/me/stats', getStats);
 router.patch('/me/avatar', updateAvatar);
+// Save or clear Expo push token for the current user
 router.patch('/me/push-token', savePushToken);
 router.post('/me/push-test', testPush);
 router.post('/me/push-send', pushSend);

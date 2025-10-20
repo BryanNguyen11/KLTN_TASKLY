@@ -63,6 +63,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         // no permission; on Expo Go we fallback to local notifications
         setPushToken(null);
         setShouldSimulatePush(isExpoGo);
+        // Ensure server doesn't retain old tokens that could still receive remote pushes
+        try {
+          if (API_USERS) {
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+            await axios.patch(`${API_USERS}/me/push-token`, { clear: true, timezone: tz });
+          }
+        } catch {}
         return;
       }
       // Get token
@@ -76,11 +83,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         expoToken = null;
       }
       setPushToken(expoToken);
-    const API_USERS = BASE ? `${BASE}/api/users` : undefined;
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-    if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken, replace: true, timezone: tz }); }
+  if(API_USERS && expoToken){ await axios.patch(`${API_USERS}/me/push-token`, { token: expoToken, replace: true, timezone: tz }); }
       // If we successfully obtained a push token, do not simulate local push to avoid duplicates
       setShouldSimulatePush(!expoToken && isExpoGo);
+      if (!expoToken) {
+        // Explicitly clear any previous tokens on server to avoid remote duplicates
+        try {
+          if (API_USERS) {
+            await axios.patch(`${API_USERS}/me/push-token`, { clear: true, timezone: tz });
+          }
+        } catch {}
+      }
     } catch { /* silent */ }
   };
 
