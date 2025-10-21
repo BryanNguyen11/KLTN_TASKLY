@@ -153,7 +153,11 @@ exports.removeMember = async (req,res) => {
     if(project.members.length === before) return res.status(404).json({ message:'Không tìm thấy thành viên' });
     await project.save();
     const io = req.app.get('io');
-    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    if(io){
+      io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project });
+      // Emit global so removed user gets notified even if not in room
+      io.emit('project:memberRemoved', { projectId: project._id, userId: String(targetId) });
+    }
     try {
       const target = await User.findById(targetId).select('expoPushTokens');
       await sendExpoPush(target?.expoPushTokens||[], 'Bạn đã bị xóa khỏi dự án', `Bạn đã bị gỡ khỏi dự án: ${project.name}`, { type:'project-removed', projectId: String(project._id) });
@@ -212,19 +216,19 @@ exports.declineInvite = async (req,res) => {
       // Optional: explicit event for admin UIs (no in-app notifications should be attached client-side)
       io.to(`project:${project._id}`).emit('project:inviteDeclined', { projectId: project._id, email });
     }
-    // Notify inviter or owner/admins
+    // Notify inviter and owner (deduped) so owner always knows
     try {
-      let targetUserIds = [];
-      if(inv.invitedBy){ targetUserIds = [ String(inv.invitedBy) ]; }
-      if(targetUserIds.length === 0){
-        // Fallback to a single recipient (owner) to avoid notifying multiple admins
-        targetUserIds = [ String(project.owner) ];
+      const targetSet = new Set();
+      if(inv?.invitedBy) targetSet.add(String(inv.invitedBy));
+      if(project?.owner) targetSet.add(String(project.owner));
+      // Don't notify the acting user
+      targetSet.delete(String(userId));
+      const targetUserIds = Array.from(targetSet);
+      if(targetUserIds.length){
+        const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
+        const tokens = targets.flatMap(u => Array.isArray(u.expoPushTokens) ? u.expoPushTokens : []);
+        await sendExpoPush(tokens, 'Lời mời bị từ chối', `${email} đã từ chối tham gia ${project.name}`, { type:'project-invite-declined', projectId: String(project._id) });
       }
-      const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
-      const tokens = targets.flatMap(u => u.expoPushTokens||[]);
-      // Send a single push to the inviter (or fallback admins). Avoid emitting a socket notify to the whole room
-      // to prevent the invitee (who might join via pending invites) from seeing this announcement.
-      await sendExpoPush(tokens, 'Lời mời bị từ chối', `${email} đã từ chối tham gia ${project.name}`, { type:'project-invite-declined', projectId: String(project._id) });
     } catch(_e){}
     return res.json({ message:'Đã từ chối lời mời', project });
   } catch(err){
@@ -245,7 +249,11 @@ exports.leaveProject = async (req,res) => {
     if(project.members.length === before) return res.status(400).json({ message:'Bạn không phải là thành viên của dự án' });
     await project.save();
     const io = req.app.get('io');
-    if(io){ io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project }); }
+    if(io){
+      // Update project room members and notify about the member leaving
+      io.to(`project:${project._id}`).emit('project:updated', { projectId: project._id, project });
+      io.to(`project:${project._id}`).emit('project:memberLeft', { projectId: project._id, userId: String(userId), project });
+    }
     res.json({ message:'Đã rời dự án', project });
   } catch(err){
     res.status(500).json({ message:'Lỗi rời dự án', error: err.message });
@@ -334,18 +342,19 @@ exports.acceptInvite = async (req,res) => {
     if(io){
       io.to(`project:${project._id}`).emit('project:memberJoined', { projectId: project._id, memberId: userId, project });
     }
-    // Notify inviter (preferred) or owner/admins that a member joined
+    // Notify inviter and owner (deduped) so owner always knows
     try {
-      let targetUserIds = [];
-      // notify the specific inviter captured on the matched invite
-      if(invite?.invitedBy){ targetUserIds = [ String(invite.invitedBy) ]; }
-      if(targetUserIds.length === 0){
-        // Fallback to a single recipient (owner) to avoid notifying multiple admins
-        targetUserIds = [ String(project.owner) ];
+      const targetSet = new Set();
+      if(invite?.invitedBy) targetSet.add(String(invite.invitedBy));
+      if(project?.owner) targetSet.add(String(project.owner));
+      // Don't notify the acting user
+      targetSet.delete(String(userId));
+      const targetUserIds = Array.from(targetSet);
+      if(targetUserIds.length){
+        const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
+        const tokens = targets.flatMap(u => Array.isArray(u.expoPushTokens) ? u.expoPushTokens : []);
+        await sendExpoPush(tokens, 'Lời mời đã được chấp nhận', `${email} đã tham gia ${project.name}`, { type:'project-invite-accepted', projectId: String(project._id) });
       }
-      const targets = await User.find({ _id: { $in: targetUserIds } }).select('expoPushTokens');
-      const tokens = targets.flatMap(u => u.expoPushTokens||[]);
-      await sendExpoPush(tokens, 'Lời mời đã được chấp nhận', `${email} đã tham gia ${project.name}`, { type:'project-invite-accepted', projectId: String(project._id) });
       // Do not broadcast a separate socket notification here; push is sufficient and project:memberJoined updates the UI
     } catch(_e){}
     res.json({ message:'Đã tham gia dự án', project });

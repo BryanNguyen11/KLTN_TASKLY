@@ -33,7 +33,7 @@ interface FormState {
 
 export default function CreateEventScreen(){
   const router = useRouter();
-  const { editId, occDate } = useLocalSearchParams<{ editId?: string; occDate?: string }>();
+  const { editId, occDate, projectId } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string }>();
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
@@ -230,6 +230,7 @@ export default function CreateEventScreen(){
       link: form.link || undefined,
       props: form.props
     };
+    if(projectId) payload.projectId = String(projectId);
     if(form.isRepeating && form.repeat){ payload.repeat = form.repeat; }
     try {
       if(editId){
@@ -318,6 +319,7 @@ export default function CreateEventScreen(){
               props: form.props || {},
               repeat: form.repeat || undefined,
             };
+            if(projectId) newPayload.projectId = String(projectId);
             const created = await axios.post(`${API_BASE}/api/events`, newPayload, authHeader());
             // Notify
             DeviceEventEmitter.emit('eventCreated', created.data);

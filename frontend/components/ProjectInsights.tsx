@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, Dimensions, Platform, Pressable } from 'react-native';
-import { PieChart, LineChart } from 'react-native-chart-kit';
+import { PieChart } from 'react-native-chart-kit';
 import Svg, { Rect, Line as SvgLine, Text as SvgText } from 'react-native-svg';
 
 // Lightweight props to avoid importing large dashboard types
@@ -36,12 +36,18 @@ const toISODate = (d: Date) => {
   const day = String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
 };
+const fmtDM = (d: Date) => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+const fmtDMY = (d: Date) => `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
 
-type ChartType = 'gantt' | 'burndown' | 'pie' | 'cfd';
+type ChartType = 'gantt' | 'pie';
 
 export default function ProjectInsights({ project, tasks, events }: ProjectInsightsProps){
   const screenW = Dimensions.get('window').width;
-  const width = Math.min(screenW - 40, 720); // leave page padding
+  const [containerW, setContainerW] = React.useState<number | null>(null);
+  const width = React.useMemo(() => {
+    const base = containerW ? containerW - 16 : screenW - 24; // account for card padding
+    return Math.max(240, Math.min(base, 820));
+  }, [containerW, screenW]);
   const [chartType, setChartType] = React.useState<ChartType>('gantt');
   const [menuOpen, setMenuOpen] = React.useState(false);
 
@@ -93,72 +99,18 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
     cursor.setDate(cursor.getDate()+1);
   }
 
-  const lineData = {
-    labels: dateLabels,
-    datasets: [
-      { data: remaining, color: () => palette.inProgress, strokeWidth: 2 },
-      // Ideal line: straight from total to 0
-      { data: (() => {
-          const n = remaining.length;
-          if(n <= 1) return remaining;
-          const step = total / (n - 1);
-          return Array.from({ length: n }, (_, i) => Math.max(Math.round(total - i*step), 0));
-        })(),
-        color: () => palette.subtle, strokeWidth: 1 },
-    ],
-    legend: ['Còn lại', 'Lý tưởng']
-  } as any;
-
-  // CFD (Cumulative Flow Diagram) lines: cumulative counts by status over time
-  const cfd = React.useMemo(() => {
-    const labels: string[] = [];
-    const days: string[] = [];
-    const toISO = (d: Date) => toISODate(d);
-    const startDay = new Date(start);
-    const endDay = new Date(endBound);
-    const cursor = new Date(startDay);
-    while (cursor <= endDay) {
-      const iso = toISO(cursor);
-      days.push(iso);
-      labels.push(`${cursor.getDate()}/${cursor.getMonth()+1}`);
-      cursor.setDate(cursor.getDate()+1);
-    }
-    const byDay = days.map(iso => {
-      const filtered = projTasks.filter(t => {
-        const s = t as any;
-        // consider task present by project timeline proximity
-        const d = (s.date as string) || undefined;
-        const e = (s.endDate as string) || d;
-        if(!d) return false;
-        return (d <= iso) && (e ? e >= iso : true);
-      });
-      return {
-        todo: filtered.filter(t=> t.status==='todo').length,
-        inProg: filtered.filter(t=> t.status==='in-progress').length,
-        done: filtered.filter(t=> t.status==='completed').length,
-      };
-    });
-    return {
-      labels,
-      datasets: [
-        { data: byDay.map(x=> x.todo), color: () => palette.todo, strokeWidth: 2 },
-        { data: byDay.map(x=> x.inProg), color: () => palette.inProgress, strokeWidth: 2 },
-        { data: byDay.map(x=> x.done), color: () => palette.completed, strokeWidth: 2 },
-      ],
-      legend: ['Todo','In-progress','Hoàn thành'],
-    } as any;
-  }, [projTasks, start, endBound]);
+  // Note: temporarily removed Burndown and CFD per request.
 
   // Simple Gantt renderer using react-native-svg
   const renderGantt = () => {
     if (projTasks.length === 0) {
       return <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa có dữ liệu tác vụ</Text>;
     }
-    const padX = 12;
-    const padY = 12;
-    const barH = 16;
-    const gap = 10;
-    const maxRows = 12;
+  const padX = 12;
+  const padY = 34; // extra space for bigger labels
+  const barH = 22; // larger bars for readability
+  const gap = 12;
+  const maxRows = Math.min(projTasks.length, 20);
     const rows = projTasks
       .slice()
       .sort((a,b) => {
@@ -181,10 +133,45 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
     const eDate = new Date(endBound);
     const showToday = today >= sDate && today <= eDate;
     const todayX = calcX(toISODate(today));
-    const contentH = padY*2 + rows.length * (barH + gap);
+    const contentH = padY*2 + rows.length * (barH + gap) + 6;
+
+    // Build tick marks (max ~7)
+    const totalDays = Math.max(1, dayDiff(sDate, eDate));
+    const tickStep = Math.max(1, Math.ceil(totalDays / 6));
+    const tickDates: Date[] = [];
+    const cur = new Date(sDate);
+    while (cur <= eDate) {
+      tickDates.push(new Date(cur));
+      cur.setDate(cur.getDate() + tickStep);
+    }
+    if (tickDates[tickDates.length-1].getTime() !== eDate.getTime()) {
+      tickDates.push(new Date(eDate));
+    }
     return (
       <Svg width={width} height={contentH}>
-        {/* grid lines per week approx */}
+        {/* top axis baseline */}
+  <SvgLine x1={padX} y1={padY - 18} x2={padX + chartW} y2={padY - 18} stroke={palette.grid} strokeWidth={1} />
+        {/* ticks */}
+        {tickDates.map((d,i) => {
+          const iso = toISODate(d);
+          const x = calcX(iso);
+          const label = fmtDM(d);
+          const isRight = x > (padX + chartW - 30);
+          return (
+            <React.Fragment key={`tick-${i}`}>
+              <SvgLine x1={x} y1={padY - 22} x2={x} y2={contentH} stroke={palette.grid} strokeWidth={1} strokeDasharray="3 4" />
+              <SvgText
+                x={isRight ? x - 2 : x + 2}
+                y={padY - 24}
+                fill={palette.subtle}
+                fontSize={11}
+                textAnchor={isRight ? 'end' : 'start'}
+              >
+                {label}
+              </SvgText>
+            </React.Fragment>
+          );
+        })}
         {/* today line */}
         {showToday && (
           <SvgLine x1={todayX} y1={0} x2={todayX} y2={contentH} stroke="#ef4444" strokeWidth={1} strokeDasharray="4 3" />
@@ -202,7 +189,7 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
           return (
             <React.Fragment key={(t as any).id}>
               <Rect x={minX} y={y} width={w} height={barH} rx={4} ry={4} fill={color} opacity={0.85} />
-              <SvgText x={minX + 6} y={y + barH - 4} fill="#ffffff" fontSize={10}>
+              <SvgText x={minX + 8} y={y + barH - 5} fill="#ffffff" fontSize={11}>
                 {(t as any).title?.slice(0, 20) || 'Task'}
               </SvgText>
             </React.Fragment>
@@ -218,16 +205,14 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
       <View style={{ position: 'relative' }}>
         <Pressable onPress={()=> setMenuOpen(o=>!o)} style={{ paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 8, backgroundColor: '#fff' }}>
           <Text style={{ color: palette.text, fontSize: 12 }}>
-            {chartType === 'gantt' ? 'Gantt' : chartType === 'burndown' ? 'Burndown' : chartType === 'pie' ? 'Phân bố' : 'CFD'} ▾
+            {chartType === 'gantt' ? 'Gantt' : 'Phân bố'} ▾
           </Text>
         </Pressable>
         {menuOpen && (
           <View style={{ position: 'absolute', right: 0, top: 34, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 8, overflow: 'hidden', zIndex: 20 }}>
             {([
               { key: 'gantt', label: 'Gantt' },
-              { key: 'burndown', label: 'Burndown' },
               { key: 'pie', label: 'Phân bố trạng thái' },
-              { key: 'cfd', label: 'CFD (Cumulative Flow)' },
             ] as Array<{key: ChartType; label: string}>).map(opt => (
               <Pressable key={opt.key} onPress={()=> { setChartType(opt.key); setMenuOpen(false); }} style={{ paddingHorizontal: 12, paddingVertical: 10, minWidth: 180 }}>
                 <Text style={{ color: palette.text, fontSize: 12 }}>{opt.label}</Text>
@@ -239,48 +224,28 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
     </View>
   );
 
+  const rangeText = `Khoảng thời gian: ${fmtDMY(new Date(start))} – ${fmtDMY(new Date(endBound))}`;
+
   return (
-    <View style={{ marginTop: 12 }}>
+    <View style={{ marginTop: 12 }} onLayout={(e)=> setContainerW(e.nativeEvent.layout.width)}>
       {ChartHeader}
       {/* Chart container */}
       {chartType === 'gantt' && (
-        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#e5e7eb' }}>
+        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#e5e7eb', overflow: 'hidden' }}>
           <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 4 }}>Gantt chart</Text>
+          <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 6 }}>{rangeText}</Text>
           {renderGantt()}
         </View>
       )}
 
-      {chartType === 'burndown' && (
-        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#e5e7eb' }}>
-          <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Burndown chart</Text>
-          {remaining.length > 1 ? (
-            <LineChart
-              data={lineData}
-              width={width}
-              height={220}
-              chartConfig={chartConfig}
-              bezier={false}
-              withInnerLines
-              withOuterLines
-              withVerticalLines={false}
-              yAxisInterval={1}
-              segments={4}
-              fromZero
-            />
-          ) : (
-            <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa đủ dữ liệu để vẽ biểu đồ</Text>
-          )}
-        </View>
-      )}
-
       {chartType === 'pie' && (
-        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#e5e7eb' }}>
+        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#e5e7eb', overflow: 'hidden' }}>
           <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Phân bố trạng thái</Text>
           {pieData.length > 0 ? (
             <PieChart
               data={pieData as any}
               width={width}
-              height={180}
+              height={220}
               chartConfig={chartConfig}
               accessor="population"
               backgroundColor="transparent"
@@ -290,29 +255,6 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
             />
           ) : (
             <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa có dữ liệu tác vụ</Text>
-          )}
-        </View>
-      )}
-
-      {chartType === 'cfd' && (
-        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#e5e7eb' }}>
-          <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>CFD (Cumulative Flow)</Text>
-          {cfd.labels.length > 1 ? (
-            <LineChart
-              data={cfd}
-              width={width}
-              height={220}
-              chartConfig={chartConfig}
-              bezier={false}
-              withInnerLines
-              withOuterLines
-              withVerticalLines={false}
-              yAxisInterval={1}
-              segments={4}
-              fromZero
-            />
-          ) : (
-            <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa đủ dữ liệu để vẽ biểu đồ</Text>
           )}
         </View>
       )}

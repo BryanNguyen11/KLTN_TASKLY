@@ -29,6 +29,13 @@
       "expo-router",
       "expo-notifications",
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "Ứng dụng cần quyền truy cập ảnh để quét thông tin lịch.",
+          "cameraPermission": "Ứng dụng cần quyền sử dụng máy ảnh để quét thông tin lịch."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",

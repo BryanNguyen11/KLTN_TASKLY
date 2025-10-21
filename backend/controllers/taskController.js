@@ -1,5 +1,7 @@
 const Task = require('../models/Task');
 const User = require('../models/User');
+let GoogleGenerativeAI;
+try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 
 // In-memory dedupe for identical pushes in a small time window
 const __PUSH_RECENT = new Map();
@@ -109,8 +111,22 @@ exports.createTask = async (req,res) => {
 exports.getTasks = async (req,res) => {
   try {
     const userId = req.user.userId;
-    // Return all tasks created by user, plus tasks assigned to user
-    const tasks = await Task.find({ $or: [ { userId }, { assignedTo: userId } ] }).sort({ createdAt: -1 }).lean();
+    // Base filter: all tasks created by user, plus tasks assigned to user
+    const base = { $or: [ { userId }, { assignedTo: userId } ] };
+    const q = String(req.query?.q||'').trim();
+    const from = String(req.query?.from||'');
+    const to = String(req.query?.to||'');
+    const weekday = parseInt(String(req.query?.weekday||''),10); // 1..7 (Mon..Sun)
+    const and = [];
+    if(q){
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      and.push({ $or: [ { title: re }, { description: re } ] });
+    }
+  if(from){ and.push({ $or: [ { endDate: { $gte: from } }, { date: { $gte: from } } ] }); }
+    if(to){ and.push({ date: { $lte: to } }); }
+    // Note: weekday filtering properly requires recurrence expansion; keep on frontend for now.
+    const filter = and.length? { $and: [ base, ...and ] } : base;
+    const tasks = await Task.find(filter).sort({ createdAt: -1 }).lean();
     res.json(tasks);
   } catch(err){
     res.status(500).json({ message: 'Lỗi lấy danh sách', error: err.message });
@@ -248,5 +264,34 @@ exports.toggleSubTask = async (req,res) => {
     res.json(fresh);
   } catch(err){
     res.status(500).json({ message:'Lỗi toggle subtask', error: err.message });
+  }
+};
+
+// AI sort and prioritization using Gemini. Returns ordered tasks and reasons.
+exports.aiSort = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { tasks=[] } = req.body || {};
+    if(!Array.isArray(tasks) || tasks.length===0){ return res.json({ ordered: [], reasons: [] }); }
+    const key = process.env.GEMINI_API_KEY; if(!key || !GoogleGenerativeAI){ return res.status(400).json({ message:'Thiếu GEMINI_API_KEY hoặc thư viện' }); }
+    const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const temp = isFinite(parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'')) ? parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'') : 0.2;
+    const generationConfig = { temperature: temp };
+    const schema = `You are a productivity assistant. Given a list of tasks (JSON), return a JSON with fields: ordered (array of ids in best execution order), and reasons (array of {id, reason} explaining the placement). Consider importance, urgency (due dates), estimated hours, and grouping similar/contextual tasks. Respond JSON only.`;
+    const content = [
+      { role:'user', parts:[ { text: schema }, { text: JSON.stringify({ tasks }) } ] }
+    ];
+    const result = await model.generateContent({ contents: content, generationConfig });
+    const text = String(result?.response?.text?.() || '').trim();
+    let data;
+    try { data = JSON.parse(text.replace(/^```json\n?|```$/g,'')); } catch { data = null; }
+    if(!data || !Array.isArray(data.ordered)){
+      return res.json({ ordered: tasks.map(t=> t.id), reasons: [] });
+    }
+    return res.json({ ordered: data.ordered, reasons: Array.isArray(data.reasons)? data.reasons : [] });
+  } catch(e){
+    return res.status(500).json({ message:'Lỗi AI sort', error: e.message });
   }
 };

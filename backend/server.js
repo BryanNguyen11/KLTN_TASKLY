@@ -49,7 +49,8 @@ const Event = require('./models/Event');
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// Increase JSON limit to allow base64 image uploads for OCR (default 100kb is too small)
+app.use(express.json({ limit: '8mb' }));
 // Debug: minimal request logger (method, path)
 app.use((req, res, next) => {
   try {

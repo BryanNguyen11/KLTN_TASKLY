@@ -8,7 +8,15 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { EventTypeDoc, EventTypeField, EventDoc, toDisplayDate } from '@/utils/events';
-import { Platform } from 'react-native';
+import { Platform, Linking } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
+import * as DocumentPicker from 'expo-document-picker';
+import { setOcrScanPayload } from '@/contexts/OcrScanStore';
+import { parseWeeklyFromRaw } from '@/utils/ocrTimetable';
+// Optional: image conversion. If not installed, we'll skip conversion.
+let ImageManipulator: any;
+try { ImageManipulator = require('expo-image-manipulator'); } catch { ImageManipulator = null; }
 
 interface FormState {
   title: string;
@@ -33,7 +41,7 @@ interface FormState {
 
 export default function CreateEventScreen(){
   const router = useRouter();
-  const { editId, occDate } = useLocalSearchParams<{ editId?: string; occDate?: string }>();
+  const { editId, occDate, projectId } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string }>();
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
@@ -51,6 +59,7 @@ export default function CreateEventScreen(){
   const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|'repeatEndDate'|null}>({mode:'date', field:null});
   const [tempDate, setTempDate] = useState<Date | null>(null);
   const [errors, setErrors] = useState<{start?:string; end?:string}>({});
+  const [scanning, setScanning] = useState(false);
   const [form, setForm] = useState<FormState>({
     title: '',
     typeId: '',
@@ -228,6 +237,7 @@ export default function CreateEventScreen(){
       props: form.props,
       reminders: form.reminders,
     };
+    if(projectId) payload.projectId = String(projectId);
     if(form.isRepeating && form.repeat){ payload.repeat = form.repeat; }
     try {
       if(editId){
@@ -243,6 +253,154 @@ export default function CreateEventScreen(){
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể lưu lịch');
     } finally { setSaving(false); }
+  };
+
+  // Pick an image and call backend OCR to extract fields
+  const scanFromImage = async () => {
+    // 1) Permission flow (do not show generic OCR error here)
+    let perm = await MediaLibrary.getPermissionsAsync();
+    if (!perm.granted) {
+      perm = await MediaLibrary.requestPermissionsAsync();
+    }
+    // Re-check after request
+    perm = await MediaLibrary.getPermissionsAsync();
+    if (Platform.OS === 'ios' && (perm as any).accessPrivileges === 'limited') {
+      const choice = await new Promise<'more'|'continue'|'cancel'>(resolve => {
+        Alert.alert(
+          'Quyền ảnh bị giới hạn',
+          'Bạn đang cho phép truy cập ảnh ở chế độ Giới hạn. Hãy chọn “Chọn thêm ảnh” để thêm ảnh bạn muốn dùng.',
+          [
+            { text: 'Hủy', style: 'cancel', onPress: () => resolve('cancel') },
+            { text: 'Tiếp tục', onPress: () => resolve('continue') },
+            { text: 'Chọn thêm ảnh', onPress: () => resolve('more') },
+          ]
+        );
+      });
+      if (choice === 'more') {
+        try { await (MediaLibrary as any).presentLimitedLibraryPickerAsync?.(); } catch {}
+        try { perm = await MediaLibrary.getPermissionsAsync(); } catch {}
+      } else if (choice === 'cancel') {
+        return;
+      }
+    }
+    if (!perm.granted && Platform.OS === 'ios' && (perm as any).canAskAgain === false) {
+      Alert.alert(
+        'Thiếu quyền truy cập',
+        'Ứng dụng cần quyền truy cập thư viện ảnh để quét từ ảnh. Mở Cài đặt để cấp quyền.',
+        [
+          { text: 'Đóng', style: 'cancel' },
+          { text: 'Mở Cài đặt', onPress: () => { try { Linking.openSettings(); } catch {} } },
+        ]
+      );
+      return;
+    }
+    if (!perm.granted) {
+      Alert.alert('Quyền truy cập', 'Cần quyền truy cập thư viện ảnh để quét');
+      return;
+    }
+
+    // 2) Open image picker (user may cancel — just return quietly)
+    let pick = await ImagePicker.launchImageLibraryAsync({
+      quality: 0.8,
+      allowsEditing: false,
+      base64: true,
+    });
+    if (pick.canceled && Platform.OS === 'ios' && (perm as any).accessPrivileges === 'limited') {
+      pick = await ImagePicker.launchImageLibraryAsync({
+        quality: 0.8,
+        allowsEditing: false,
+        base64: true,
+      });
+    }
+    if (pick.canceled) return;
+
+    const asset = pick.assets?.[0];
+    if (!asset?.uri) return;
+
+  // 3) Upload and OCR (now show error if fails)
+  setScanning(true);
+    try {
+      // Normalize to JPEG to improve OCR
+      let normalizedUri = asset.uri;
+      if (ImageManipulator && ImageManipulator.manipulateAsync) {
+        try {
+          const manip = await ImageManipulator.manipulateAsync(asset.uri, [], { compress: 0.9, format: ImageManipulator.SaveFormat?.JPEG || 'jpeg' });
+          if (manip?.uri) normalizedUri = manip.uri;
+        } catch {}
+      }
+      const formData = new FormData();
+      const filename = (asset.fileName && asset.fileName.endsWith('.jpg')) ? asset.fileName : 'image.jpg';
+      const uri = normalizedUri;
+      // @ts-ignore React Native FormData file
+      formData.append('image', { uri, name: filename, type: 'image/jpeg' });
+      let res;
+      try {
+        res = await axios.post(`${API_BASE}/api/events/scan-image`, formData, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      } catch(_e:any) {
+        const imageBase64 = asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : undefined;
+        if (!imageBase64) {
+          Alert.alert('Lỗi', 'Thiếu base64 ảnh để quét, vui lòng chọn lại ảnh từ thư viện.');
+          return;
+        }
+        res = await axios.post(`${API_BASE}/api/events/scan-image`, { imageBase64 }, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      }
+  const extracted = res.data?.extracted || {};
+      const raw = res.data?.raw || '';
+      // Always go to preview screen for confirmation
+  setOcrScanPayload({ raw, extracted, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
+      router.push('/scan-preview');
+    } catch (e:any) {
+      const reason = e?.response?.data?.reason;
+      const message = e?.response?.data?.message || 'Không quét được thông tin từ ảnh';
+      Alert.alert('Lỗi', reason ? `${message}
+Lý do: ${reason}` : message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Pick a PDF or image via DocumentPicker and send to unified /scan-file endpoint
+  const scanFromPdf = async () => {
+    try {
+      const pick = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'image/*'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+      // Support both legacy and v12 result shapes safely
+      const anyPick: any = pick as any;
+      if (anyPick.canceled) return;
+      const asset: any = Array.isArray(anyPick.assets) ? anyPick.assets[0] : anyPick;
+      const uri: string | undefined = asset?.uri as string | undefined;
+      if (!uri) return;
+      const name: string = (asset?.name as string) || (uri.split('/').pop() || 'upload');
+      const mime: string = (asset?.mimeType as string) || (name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/*');
+      setScanning(true);
+      const formData = new FormData();
+      // @ts-ignore React Native FormData file
+      formData.append('file', { uri, name, type: mime });
+      const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+  const raw = res.data?.raw || '';
+  const extracted = res.data?.extracted || {};
+  setOcrScanPayload({ raw, extracted, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
+      router.push('/scan-preview');
+    } catch (e:any) {
+      const reason = e?.response?.data?.reason;
+      const message = e?.response?.data?.message || 'Không xử lý được tệp';
+      Alert.alert('Lỗi', reason ? `${message}\nLý do: ${reason}` : message);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // Open choice sheet for Auto Create: Image or PDF/File
+  const startAutoCreate = async () => {
+    const opts = [
+      { text: 'Chọn ảnh từ thư viện', onPress: () => scanFromImage() },
+      { text: 'Chọn PDF/Tệp', onPress: () => scanFromPdf() },
+      { text: 'Hủy', style: 'cancel' as const },
+    ];
+    Alert.alert('Tạo lịch tự động', 'Chọn nguồn dữ liệu', opts, { cancelable: true });
   };
 
   const selectedType = types.find(t => t._id === form.typeId);
@@ -308,6 +466,7 @@ export default function CreateEventScreen(){
               props: form.props || {},
               repeat: form.repeat || undefined,
             };
+            if(projectId) newPayload.projectId = String(projectId);
             const created = await axios.post(`${API_BASE}/api/events`, newPayload, authHeader());
             DeviceEventEmitter.emit('eventCreated', created.data);
             DeviceEventEmitter.emit('toast','Đã xóa lần này và giữ các lần khác');
@@ -338,10 +497,21 @@ export default function CreateEventScreen(){
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Ionicons name='arrow-back' size={22} color='#16425b' /></Pressable>
   <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa lịch':'Tạo lịch mới'}</Text>
-        <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
-          {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
-        </Pressable>
+        <View style={{ flexDirection:'row', alignItems:'center', gap:10 }}>
+          <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
+            {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
+          </Pressable>
+        </View>
       </View>
+
+      {/* Nút Tạo lịch tự động nằm ngay dưới tiêu đề màn hình */}
+      {!editId && (
+        <View style={{ alignItems:'center', paddingBottom:8 }}>
+          <Pressable onPress={startAutoCreate} style={[styles.autoBtn, { alignSelf:'center' }]} hitSlop={8}>
+            <Text style={styles.autoBtnText}>Tạo lịch tự động</Text>
+          </Pressable>
+        </View>
+      )}
 
       <KeyboardAwareScrollView
         contentContainerStyle={styles.body}
@@ -565,6 +735,17 @@ export default function CreateEventScreen(){
           </View>
         </Modal>
       )}
+      {/* Scanning overlay */}
+      {scanning && (
+        <Modal transparent animationType='fade'>
+          <View style={{ flex:1, backgroundColor:'rgba(0,0,0,0.35)', alignItems:'center', justifyContent:'center' }}>
+            <View style={{ backgroundColor:'#fff', borderRadius:16, padding:20, alignItems:'center' }}>
+              <ActivityIndicator size='large' color='#3a7ca5' />
+              <Text style={{ marginTop:10, color:'#16425b', fontWeight:'600' }}>Đang xử lý…</Text>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
@@ -609,4 +790,6 @@ const styles = StyleSheet.create({
   pickerCancel:{ backgroundColor:'#e2e8f0' },
   pickerOk:{ backgroundColor:'#3a7ca5' },
   pickerActionText:{ fontSize:15, fontWeight:'600', color:'#16425b' },
+  autoBtn:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'#e2e8f0', borderRadius:14 },
+  autoBtnText:{ color:'#16425b', fontWeight:'700', fontSize:12 },
 });

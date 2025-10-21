@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { Swipeable } from 'react-native-gesture-handler';
@@ -51,8 +52,25 @@ export default function DashboardScreen() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
-  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule; projectId?: string };
+  type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule; projectId?: string; notes?: string };
   const [events, setEvents] = useState<EventItem[]>([]);
+  const matchesQueryTask = (t: Task) => {
+    const q = searchQuery.trim().toLowerCase();
+    if(!q) return true;
+    return (
+      (t.title||'').toLowerCase().includes(q) ||
+      (t as any).description?.toLowerCase?.().includes(q)
+    );
+  };
+  const matchesQueryEvent = (e: EventItem) => {
+    const q = searchQuery.trim().toLowerCase();
+    if(!q) return true;
+    return (
+      (e.title||'').toLowerCase().includes(q) ||
+      (e.location||'').toLowerCase().includes(q) ||
+      (e.notes||'').toLowerCase().includes(q)
+    );
+  };
   const [aiMode, setAiMode] = useState(false); // AI suggestion sorting active
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -234,6 +252,33 @@ export default function DashboardScreen() {
     return arr;
   };
   const weekISO = buildWeek(selectedDateISO);
+
+  // Search & filters
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  // Weekday filter: 1=Mon..7=Sun (null=all)
+  const [filterWeekday, setFilterWeekday] = useState<number | null>(null);
+  const [filterFromISO, setFilterFromISO] = useState<string | null>(null);
+  const [filterToISO, setFilterToISO] = useState<string | null>(null);
+  const [showFromPicker, setShowFromPicker] = useState(false);
+  const [showToPicker, setShowToPicker] = useState(false);
+  const dayNumFromISO = (iso:string) => {
+    if(!iso) return 0;
+    const [y,m,d] = iso.split('-').map(Number);
+    const dt = new Date(y, (m||1)-1, d||1);
+    const js = dt.getDay(); // 0 Sun..6 Sat
+    return js === 0 ? 7 : js; // Sun -> 7
+  };
+  const isISOInRange = (iso:string) => {
+    if(!iso) return false;
+    if(filterFromISO && iso < filterFromISO) return false;
+    if(filterToISO && iso > filterToISO) return false;
+    return true;
+  };
+  const fmtDM = (iso?: string | null) => {
+    if(!iso) return '';
+    const [y,m,d] = iso.split('-');
+    return `${d}/${m}`;
+  };
 
   // Recurrence helpers (expand events with repeat)
   const isoToDate = (iso: string) => { const [y,m,d] = iso.split('-').map(n=>parseInt(String(n),10)); return new Date(y, (m||1)-1, d||1); };
@@ -484,9 +529,19 @@ export default function DashboardScreen() {
   };
 
   // Filter tasks based on tab + selected date (include recurring)
+  const [aiOrdering, setAiOrdering] = React.useState<string[] | null>(null);
+  const [aiLoading, setAiLoading] = React.useState(false);
   const filteredTasks = React.useMemo(()=>{
     const today = todayISO;
-    const applySort = (list:Task[]) => aiMode ? aiOrderedTasks(list, today) : list;
+    const applySort = (list:Task[]) => {
+      if(aiMode && aiOrdering && aiOrdering.length){
+        const byId: Record<string, Task> = Object.fromEntries(list.map(t=> [t.id, t]));
+        const ord = aiOrdering.filter(id=> byId[id]).map(id=> byId[id]);
+        const remainder = list.filter(t=> !aiOrdering.includes(t.id));
+        return [...ord, ...aiOrderedTasks(remainder, today)]; // put AI first, fill rest by heuristic
+      }
+      return aiMode ? aiOrderedTasks(list, today) : list;
+    };
     if(selectedTab === 'Hôm nay'){
       const baseAll = tasks.filter(t => !t.completed && occursTaskOnDate(t, today));
       // Skip tasks already ended today if they have an endTime (align with events Today card logic)
@@ -502,20 +557,40 @@ export default function DashboardScreen() {
         // single-day task
         return et > nowHM;
       });
-      const base = notEnded;
+      const inRange = isISOInRange(today);
+      const base = notEnded.filter(t => inRange && matchesQueryTask(t));
       return applySort(base);
     }
     if(selectedTab === 'Tuần'){
-      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO));
+      const inRange = isISOInRange(selectedDateISO);
+      const weekdayOk = !filterWeekday || dayNumFromISO(selectedDateISO)===filterWeekday;
+      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO) && inRange && weekdayOk && matchesQueryTask(t));
       return applySort(base);
     }
     if(selectedTab === 'Tháng'){
-      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO));
+      const inRange = isISOInRange(selectedDateISO);
+      const weekdayOk = !filterWeekday || dayNumFromISO(selectedDateISO)===filterWeekday;
+      const base = tasks.filter(t=> !t.completed && occursTaskOnDate(t, selectedDateISO) && inRange && weekdayOk && matchesQueryTask(t));
       return applySort(base);
     }
-    const base = tasks.filter(t=>!t.completed);
+    const base = tasks.filter(t=>!t.completed && matchesQueryTask(t));
     return applySort(base);
-  }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth, aiMode]);
+  }, [tasks, selectedTab, selectedDateISO, weekISO, currentMonth, aiMode, searchQuery, filterFromISO, filterToISO]);
+
+  // Call backend AI when toggled on or when tasks change significantly
+  useEffect(()=>{
+    (async()=>{
+      if(!aiMode){ setAiOrdering(null); return; }
+      if(!token) return;
+      try{
+        setAiLoading(true);
+        const body = { tasks: tasks.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours })) };
+        const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } });
+        if(Array.isArray(res.data?.ordered)) setAiOrdering(res.data.ordered);
+      }catch(_){ setAiOrdering(null); }
+      finally{ setAiLoading(false); }
+    })();
+  }, [aiMode, tasks.length]);
 
   // Completed tasks (still show below) - you could scope per view if wanted
   const completedTasks = React.useMemo(()=> tasks.filter(t=> t.completed), [tasks]);
@@ -565,7 +640,11 @@ export default function DashboardScreen() {
     if(!token) return;
     setLoading(true); setError(null);
     try {
-      const res = await axios.get(`${API_BASE}/api/tasks`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      const params: any = {};
+      if(searchQuery.trim()) params.q = searchQuery.trim();
+      if(filterFromISO) params.from = filterFromISO;
+      if(filterToISO) params.to = filterToISO;
+      const res = await axios.get(`${API_BASE}/api/tasks`, { params, headers: { Authorization: token ? `Bearer ${token}` : '' } });
       // Map API tasks to local Task interface
       const mapped: Task[] = res.data.map((t: any) => ({
         id: t._id,
@@ -595,6 +674,12 @@ export default function DashboardScreen() {
   };
 
   useEffect(()=>{ fetchTasks(); },[token]);
+  // Refetch on search/range change (lightweight debounce)
+  useEffect(()=>{
+    if(!token) return;
+    const id = setTimeout(()=> { fetchTasks(); fetchEvents(); }, 250);
+    return () => clearTimeout(id);
+  }, [searchQuery, filterFromISO, filterToISO]);
 
   // After tasks are loaded post-login, notify how many tasks remain today
   useEffect(() => {
@@ -717,10 +802,33 @@ export default function DashboardScreen() {
         removeById?.(`pinv_${payload.projectId}`);
       }
     });
+    // Inform admins when an invite is declined
+    s.on('project:inviteDeclined', (payload:any) => {
+      const pid = payload?.projectId;
+      if(!pid) return;
+      const proj = projects.find(p=> p._id===pid);
+      const userId = (user as any)?._id || (user as any)?.id;
+      const isAdmin = proj && (proj.owner === userId || (proj.members||[]).some((m:any)=> m.user===userId && m.role==='admin'));
+      if(isAdmin){
+        const title = 'Lời mời bị từ chối';
+        upsertById({ id:`pdecl_${pid}_${payload.email}`, type:'project-update', title, meta: payload.email, at: Date.now(), projectId: pid } as NotiItemCtx);
+        localNotify(title, `${payload.email} đã từ chối`, { type:'project-invite-declined', projectId: pid }, `pdecl_${pid}_${payload.email}`);
+      }
+    });
     s.on('project:memberJoined', (payload:any) => {
       setProjects(prev => prev.map(p=> p._id===payload.projectId ? { ...p, members: payload.project.members, invites: payload.project.invites } : p));
       if(activeProject && activeProject._id===payload.projectId){
         setActiveProject(payload.project);
+      }
+      // Notify admins/owner that a member joined
+      const pid = payload?.projectId;
+      const proj = projects.find(p=> p._id===pid);
+      const userId = (user as any)?._id || (user as any)?.id;
+      const isAdmin = proj && (proj.owner === userId || (proj.members||[]).some((m:any)=> m.user===userId && m.role==='admin'));
+      if(isAdmin){
+        const title = 'Thành viên đã tham gia dự án';
+        upsertById({ id:`pjoin_${pid}_${payload.memberId}`, type:'project-update', title, at: Date.now(), projectId: pid } as NotiItemCtx);
+        localNotify(title, 'Một thành viên vừa tham gia', { type:'project-member-joined', projectId: pid, memberId: payload.memberId }, `pjoin_${pid}_${payload.memberId}`);
       }
     });
     // Do not generate client-side in-app notifications for invite accepted/declined
@@ -729,6 +837,35 @@ export default function DashboardScreen() {
       setProjects(prev => prev.filter(p=> p._id!==payload.projectId));
       if(activeProject && activeProject._id===payload.projectId){
         setActiveProject(null); setShowProjectsModal(false);
+      }
+    });
+    // If current user is removed from a project, inform and clean up UI
+    s.on('project:memberRemoved', (payload:any) => {
+      const myId = String((user as any)?._id || (user as any)?.id || '');
+      if(String(payload?.userId||'') !== myId) return;
+      const pid = payload?.projectId;
+      if(!pid) return;
+      upsertById({ id:`prem_${pid}_${myId}`, type:'project-update', title:'Bạn đã bị xóa khỏi dự án', at: Date.now(), projectId: pid } as NotiItemCtx);
+      localNotify('Bạn đã bị xóa khỏi dự án', '', { type:'project-removed', projectId: pid }, `prem_${pid}_${myId}`);
+      setProjects(prev => prev.filter(p=> p._id !== pid));
+      if(activeProject && activeProject._id===pid){ setActiveProject(null); setShowProjectsModal(false); }
+    });
+    // If someone leaves the project, inform admins/owner
+    s.on('project:memberLeft', (payload:any) => {
+      const pid = payload?.projectId;
+      if(!pid) return;
+      // update project members list if provided
+      if(payload?.project){
+        setProjects(prev => prev.map(p=> p._id===pid ? payload.project : p));
+        if(activeProject && activeProject._id===pid){ setActiveProject(payload.project); }
+      }
+      const proj = projects.find(p=> p._id===pid);
+      const userId = (user as any)?._id || (user as any)?.id;
+      const isAdmin = proj && (proj.owner === userId || (proj.members||[]).some((m:any)=> m.user===userId && m.role==='admin'));
+      if(isAdmin){
+        const title = 'Thành viên đã rời dự án';
+        upsertById({ id:`pleft_${pid}_${payload.userId}`, type:'project-update', title, at: Date.now(), projectId: pid } as NotiItemCtx);
+        localNotify(title, 'Một thành viên vừa rời dự án', { type:'project-member-left', projectId: pid, userId: payload.userId }, `pleft_${pid}_${payload.userId}`);
       }
     });
     // Task notifications in project rooms
@@ -780,7 +917,11 @@ export default function DashboardScreen() {
   const fetchEvents = async () => {
     if(!token) return;
     try {
-      const res = await axios.get(`${API_BASE}/api/events`, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      const params: any = {};
+      if(searchQuery.trim()) params.q = searchQuery.trim();
+      if(filterFromISO) params.from = filterFromISO;
+      if(filterToISO) params.to = filterToISO;
+      const res = await axios.get(`${API_BASE}/api/events`, { params, headers: { Authorization: token ? `Bearer ${token}` : '' } });
       const mapped: EventItem[] = res.data.map((e:any)=>({
         id: e._id,
         title: e.title,
@@ -790,7 +931,8 @@ export default function DashboardScreen() {
         endTime: e.endTime,
         location: e.location,
         repeat: e.repeat,
-        projectId: e.projectId
+        projectId: e.projectId,
+        notes: e.notes
       }));
       setEvents(mapped);
     } catch(e){ /* silent for now */ }
@@ -809,6 +951,9 @@ export default function DashboardScreen() {
         endTime: ev.endTime,
         location: ev.location,
         repeat: ev.repeat,
+        // ensure project scoping is carried over for immediate UI
+        projectId: (ev as any).projectId,
+        notes: (ev as any).notes,
       } as EventItem;
       setEvents(prev => [adapted, ...prev]);
     });
@@ -822,6 +967,8 @@ export default function DashboardScreen() {
         endTime: ev.endTime,
         location: ev.location,
         repeat: ev.repeat,
+        projectId: (ev as any).projectId,
+        notes: (ev as any).notes,
       } as EventItem;
       setEvents(prev => prev.map(e => e.id===adapted.id ? { ...e, ...adapted } : e));
     });
@@ -1161,6 +1308,61 @@ export default function DashboardScreen() {
                 </Pressable>
               ))}
             </View>
+            {/* Search & Filters */}
+            <View style={styles.searchRow}>
+              <Ionicons name='search' size={16} color='#607d8b' />
+              <TextInput
+                placeholder='Tìm kiếm tác vụ, lịch...'
+                placeholderTextColor={'#94a3b8'}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                style={styles.searchInput}
+                returnKeyType='search'
+              />
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterChipsRow}>
+              {/* Weekday filter chips */}
+              {['T2','T3','T4','T5','T6','T7','CN'].map((label, idx) => {
+                const val = idx+1; // 1..7
+                const active = filterWeekday === val;
+                return (
+                  <Pressable key={label} onPress={()=> setFilterWeekday(active? null : val)} style={[styles.filterChip, active && styles.filterChipActive]}>
+                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{label}</Text>
+                  </Pressable>
+                );
+              })}
+              {/* Date range pickers */}
+              <Pressable onPress={()=> setShowFromPicker(true)} style={styles.filterChip}>
+                <Ionicons name='calendar-outline' size={14} color='#2f6690' />
+                <Text style={styles.filterChipText}>{filterFromISO ? fmtDM(filterFromISO) : 'Từ ngày'}</Text>
+              </Pressable>
+              <Pressable onPress={()=> setShowToPicker(true)} style={styles.filterChip}>
+                <Ionicons name='calendar-number-outline' size={14} color='#2f6690' />
+                <Text style={styles.filterChipText}>{filterToISO ? fmtDM(filterToISO) : 'Đến ngày'}</Text>
+              </Pressable>
+              {(filterFromISO || filterToISO || filterWeekday) && (
+                <Pressable onPress={()=> { setFilterFromISO(null); setFilterToISO(null); setFilterWeekday(null); }} style={[styles.filterChip,{ backgroundColor:'rgba(220,38,38,0.08)', borderColor:'rgba(220,38,38,0.2)' }]}>
+                  <Ionicons name='close-circle-outline' size={14} color='#dc2626' />
+                  <Text style={{ color:'#dc2626', fontSize:12, fontWeight:'700' }}>Xóa lọc</Text>
+                </Pressable>
+              )}
+            </ScrollView>
+            {showFromPicker && (
+              <DateTimePicker
+                value={filterFromISO? new Date(filterFromISO+'T00:00:00') : new Date()}
+                mode='date'
+                display={Platform.OS==='ios'? 'inline':'default'}
+                onChange={(e,dt)=>{ setShowFromPicker(false); if(dt){ const iso = toLocalISODate(dt); setFilterFromISO(iso); if(filterToISO && iso > filterToISO){ setFilterToISO(null); } }}}
+              />
+            )}
+            {showToPicker && (
+              <DateTimePicker
+                value={filterToISO? new Date(filterToISO+'T00:00:00') : new Date()}
+                mode='date'
+                display={Platform.OS==='ios'? 'inline':'default'}
+                onChange={(e,dt)=>{ setShowToPicker(false); if(dt){ const iso = toLocalISODate(dt); if(filterFromISO && iso < filterFromISO){ setFilterFromISO(iso); setFilterToISO(null); } else { setFilterToISO(iso); } }}}
+              />
+            )}
             {/* Dynamic date pickers */}
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
@@ -1183,8 +1385,9 @@ export default function DashboardScreen() {
                     }
                   };
                   const todaysEvents = todaysAll.filter(ev => !isEndedForToday(ev))
+                    .filter(ev => matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(todayISO)===filterWeekday) && isISOInRange(todayISO))
                     .sort((a,b) => (a.startTime||'99:99').localeCompare(b.startTime||'99:99'));
-                  const todaysTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, todayISO));
+                  const todaysTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, todayISO) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(todayISO)===filterWeekday) && isISOInRange(todayISO));
                   const [y,m,d] = todayISO.split('-');
                   const display = `${d}/${m}/${y}`;
                   const w = weekdayVNFromISO(todayISO);
@@ -1227,6 +1430,12 @@ export default function DashboardScreen() {
                                     )}
                                   </View>
                                   <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {ev.projectId && (
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                      <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                    </View>
+                                  )}
                                   {!!ev.location && (
                                     <View style={styles.eventMetaRow}>
                                       <Ionicons name='location-outline' size={14} color='#607d8b' />
@@ -1285,8 +1494,8 @@ export default function DashboardScreen() {
                   const [y,m,d] = iso.split('-');
                   const display = `${d}/${m}`;
                   const w = weekdayVNFromISO(iso);
-                  const dayEvents = events.filter(ev => occursOnDate(ev, iso));
-                  const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                  const dayEvents = events.filter(ev => occursOnDate(ev, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                  const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
                   const isToday = iso === todayISO;
                   return (
                     <Animated.View key={iso} entering={FadeInDown.delay(60 + i*30)} style={[styles.weekDayCard, isToday && styles.weekDayCardToday]}>
@@ -1329,6 +1538,12 @@ export default function DashboardScreen() {
                                     )}
                                   </View>
                                   <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {ev.projectId && (
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                      <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                    </View>
+                                  )}
                                   {!!ev.location && (
                                     <View style={styles.eventMetaRow}>
                                       <Ionicons name='location-outline' size={14} color='#607d8b' />
@@ -1413,8 +1628,8 @@ export default function DashboardScreen() {
                     const display = `${d}/${m}/${y}`;
                     const w = weekdayVNFromISO(iso);
                     const isToday = iso === todayISO;
-                    const dayEvents = events.filter(ev => occursOnDate(ev, iso));
-                    const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                      const dayEvents = events.filter(ev => occursOnDate(ev, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                      const dayTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
                     return (
                       <Animated.View entering={FadeInDown.delay(40)} style={[styles.weekDayCard, { marginTop: 8 }, isToday && styles.weekDayCardToday]}>
                         <View style={styles.weekDayHeader}>
@@ -1456,6 +1671,12 @@ export default function DashboardScreen() {
                                       )}
                                     </View>
                                     <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                    {ev.projectId && (
+                                      <View style={styles.eventMetaRow}>
+                                        <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                        <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                      </View>
+                                    )}
                                     {!!ev.location && (
                                       <View style={styles.eventMetaRow}>
                                         <Ionicons name='location-outline' size={14} color='#607d8b' />
@@ -1495,9 +1716,12 @@ export default function DashboardScreen() {
               <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
                 <Text style={styles.sectionTitle}>Tác vụ</Text>
                 {aiMode && (
-                  <View style={styles.aiBadge}>
-                    <Text style={styles.aiBadgeText}>AI</Text>
-                  </View>
+                  <>
+                    <View style={styles.aiBadge}><Text style={styles.aiBadgeText}>AI</Text></View>
+                    <Pressable onPress={()=>{ if(!token) return; (async()=>{ try{ setAiLoading(true); const body = { tasks: tasks.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours })) }; const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } }); if(Array.isArray(res.data?.ordered)) setAiOrdering(res.data.ordered); } catch{ /*silent*/ } finally{ setAiLoading(false); } })(); }} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:12, backgroundColor:'rgba(47,102,144,0.1)' }}>
+                      <Text style={{ color:'#2f6690', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang AI...' : 'Làm mới AI'}</Text>
+                    </Pressable>
+                  </>
                 )}
               </View>
               <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
@@ -1816,8 +2040,8 @@ export default function DashboardScreen() {
                   {projectSelectedTab === 'Hôm nay' && (
                     (()=>{
                       const iso = todayISO;
-                      const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso));
-                      const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                      const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                      const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
                       return (
                         <View style={{ marginTop:12 }}>
                           <Text style={{ fontSize:13, fontWeight:'700', color:'#16425b', marginBottom:6 }}>Hôm nay</Text>
@@ -1827,6 +2051,12 @@ export default function DashboardScreen() {
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                  {ev.projectId && (
+                                    <View style={styles.eventMetaRow}>
+                                      <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                      <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                    </View>
+                                  )}
                                   {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
                                 </View>
                               </View>
@@ -1852,8 +2082,8 @@ export default function DashboardScreen() {
                       return (
                         <View style={{ marginTop:8 }}>
                           {daysToShow.map((iso, i)=>{
-                            const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso));
-                            const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso));
+                            const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                            const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
                             const w = weekdayVNFromISO(iso);
                             const [y,m,d] = iso.split('-');
                             return (
@@ -1878,6 +2108,12 @@ export default function DashboardScreen() {
                                         <View style={styles.eventColorBar} />
                                         <View style={{ flex:1 }}>
                                           <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                          {ev.projectId && (
+                                            <View style={styles.eventMetaRow}>
+                                              <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                              <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                            </View>
+                                          )}
                                           {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
                                         </View>
                                       </View>
@@ -2187,6 +2423,14 @@ const styles = StyleSheet.create({
   tabBtnActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
   tabText: { fontSize: 13, color: '#2f6690' },
   tabTextActive: { color: '#3a7ca5', fontWeight: '600' },
+  // Search & Filters
+  searchRow:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'#fff', borderRadius:14, paddingHorizontal:12, paddingVertical:8, borderWidth:1, borderColor:'rgba(0,0,0,0.06)', marginTop:10 },
+  searchInput:{ flex:1, fontSize:13, color:'#16425b', paddingVertical:2 },
+  filterChipsRow:{ marginTop:8 },
+  filterChip:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'rgba(58,124,165,0.06)', borderWidth:1, borderColor:'rgba(58,124,165,0.12)', paddingHorizontal:10, paddingVertical:6, borderRadius:999, marginRight:8 },
+  filterChipActive:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  filterChipText:{ color:'#2f6690', fontSize:12, fontWeight:'700' },
+  filterChipTextActive:{ color:'#fff' },
   weekRow: { flexDirection:'row', justifyContent: 'space-between', marginBottom: 20 },
   dayBtn: { width:40, height:40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   dayActive: { backgroundColor: '#3a7ca5' },
