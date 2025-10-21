@@ -261,6 +261,8 @@ export default function DashboardScreen() {
   const [filterToISO, setFilterToISO] = useState<string | null>(null);
   const [showFromPicker, setShowFromPicker] = useState(false);
   const [showToPicker, setShowToPicker] = useState(false);
+  const [fromDraft, setFromDraft] = useState<Date | null>(null);
+  const [toDraft, setToDraft] = useState<Date | null>(null);
   const dayNumFromISO = (iso:string) => {
     if(!iso) return 0;
     const [y,m,d] = iso.split('-').map(Number);
@@ -1261,6 +1263,13 @@ export default function DashboardScreen() {
               </View>
             </View>
 
+            {/* Top search now navigates to full-screen search */}
+            <Pressable onPress={()=> router.push('/search')} style={[styles.searchRow,{ marginBottom:14 }]}
+            >
+              <Ionicons name='search' size={16} color='#607d8b' />
+              <Text style={[styles.searchInput,{ color:'#94a3b8' }]}>Tìm kiếm tác vụ, lịch...</Text>
+            </Pressable>
+
             <View style={styles.progressCard}>
               <View style={styles.progressRow}>
                 <Text style={styles.progressTitle}>Tiến độ hôm nay</Text>
@@ -1308,61 +1317,7 @@ export default function DashboardScreen() {
                 </Pressable>
               ))}
             </View>
-            {/* Search & Filters */}
-            <View style={styles.searchRow}>
-              <Ionicons name='search' size={16} color='#607d8b' />
-              <TextInput
-                placeholder='Tìm kiếm tác vụ, lịch...'
-                placeholderTextColor={'#94a3b8'}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                style={styles.searchInput}
-                returnKeyType='search'
-              />
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterChipsRow}>
-              {/* Weekday filter chips */}
-              {['T2','T3','T4','T5','T6','T7','CN'].map((label, idx) => {
-                const val = idx+1; // 1..7
-                const active = filterWeekday === val;
-                return (
-                  <Pressable key={label} onPress={()=> setFilterWeekday(active? null : val)} style={[styles.filterChip, active && styles.filterChipActive]}>
-                    <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>{label}</Text>
-                  </Pressable>
-                );
-              })}
-              {/* Date range pickers */}
-              <Pressable onPress={()=> setShowFromPicker(true)} style={styles.filterChip}>
-                <Ionicons name='calendar-outline' size={14} color='#2f6690' />
-                <Text style={styles.filterChipText}>{filterFromISO ? fmtDM(filterFromISO) : 'Từ ngày'}</Text>
-              </Pressable>
-              <Pressable onPress={()=> setShowToPicker(true)} style={styles.filterChip}>
-                <Ionicons name='calendar-number-outline' size={14} color='#2f6690' />
-                <Text style={styles.filterChipText}>{filterToISO ? fmtDM(filterToISO) : 'Đến ngày'}</Text>
-              </Pressable>
-              {(filterFromISO || filterToISO || filterWeekday) && (
-                <Pressable onPress={()=> { setFilterFromISO(null); setFilterToISO(null); setFilterWeekday(null); }} style={[styles.filterChip,{ backgroundColor:'rgba(220,38,38,0.08)', borderColor:'rgba(220,38,38,0.2)' }]}>
-                  <Ionicons name='close-circle-outline' size={14} color='#dc2626' />
-                  <Text style={{ color:'#dc2626', fontSize:12, fontWeight:'700' }}>Xóa lọc</Text>
-                </Pressable>
-              )}
-            </ScrollView>
-            {showFromPicker && (
-              <DateTimePicker
-                value={filterFromISO? new Date(filterFromISO+'T00:00:00') : new Date()}
-                mode='date'
-                display={Platform.OS==='ios'? 'inline':'default'}
-                onChange={(e,dt)=>{ setShowFromPicker(false); if(dt){ const iso = toLocalISODate(dt); setFilterFromISO(iso); if(filterToISO && iso > filterToISO){ setFilterToISO(null); } }}}
-              />
-            )}
-            {showToPicker && (
-              <DateTimePicker
-                value={filterToISO? new Date(filterToISO+'T00:00:00') : new Date()}
-                mode='date'
-                display={Platform.OS==='ios'? 'inline':'default'}
-                onChange={(e,dt)=>{ setShowToPicker(false); if(dt){ const iso = toLocalISODate(dt); if(filterFromISO && iso < filterFromISO){ setFilterFromISO(iso); setFilterToISO(null); } else { setFilterToISO(iso); } }}}
-              />
-            )}
+            {/* moved search+filters into dedicated screen; dashboard remains clean */}
             {/* Dynamic date pickers */}
             {selectedTab === 'Hôm nay' && (
               <View style={{ marginBottom:16 }}> 
@@ -2427,10 +2382,20 @@ const styles = StyleSheet.create({
   searchRow:{ flexDirection:'row', alignItems:'center', gap:8, backgroundColor:'#fff', borderRadius:14, paddingHorizontal:12, paddingVertical:8, borderWidth:1, borderColor:'rgba(0,0,0,0.06)', marginTop:10 },
   searchInput:{ flex:1, fontSize:13, color:'#16425b', paddingVertical:2 },
   filterChipsRow:{ marginTop:8 },
-  filterChip:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'rgba(58,124,165,0.06)', borderWidth:1, borderColor:'rgba(58,124,165,0.12)', paddingHorizontal:10, paddingVertical:6, borderRadius:999, marginRight:8 },
+  // Increase contrast for chips for better readability
+  filterChip:{ flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'#f7fbff', borderWidth:1, borderColor:'#a3c4dc', paddingHorizontal:12, paddingVertical:8, borderRadius:999, marginRight:8, shadowColor:'#000', shadowOpacity:0.05, shadowRadius:2, elevation:1 },
   filterChipActive:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
-  filterChipText:{ color:'#2f6690', fontSize:12, fontWeight:'700' },
+  filterChipText:{ color:'#0b2545', fontSize:12, fontWeight:'700' },
   filterChipTextActive:{ color:'#fff' },
+  // Modal picker styles for date range
+  pickerModalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.35)', justifyContent:'center', padding:24 },
+  pickerModal:{ backgroundColor:'#fff', borderRadius:16, paddingVertical:12, paddingHorizontal:12 },
+  pickerTitle:{ fontSize:16, fontWeight:'700', color:'#0b2545', textAlign:'center', marginBottom:8 },
+  pickerActions:{ flexDirection:'row', justifyContent:'flex-end', gap:12, paddingTop:8 },
+  pickerBtn:{ paddingHorizontal:14, paddingVertical:10, borderRadius:10 },
+  pickerCancelBtn:{ backgroundColor:'#e6f1f8', borderWidth:1, borderColor:'#bcd4e6' },
+  pickerOkBtn:{ backgroundColor:'#2f6690' },
+  pickerBtnText:{ fontSize:14, fontWeight:'700' },
   weekRow: { flexDirection:'row', justifyContent: 'space-between', marginBottom: 20 },
   dayBtn: { width:40, height:40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   dayActive: { backgroundColor: '#3a7ca5' },
