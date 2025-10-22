@@ -28,14 +28,22 @@ export default function RootLayout() {
           <NotificationProvider>
           {/* Force light mode only */}
           <ThemeProvider value={DefaultTheme}>
-            <Stack screenOptions={{ headerShown: false }}>
+            <Stack
+              screenOptions={{
+                headerShown: false,
+                animation: 'slide_from_right',
+                gestureEnabled: true,
+              }}
+            >
               <Stack.Screen name="index" />
               <Stack.Screen name="auth/login" />
               <Stack.Screen name="auth/register" options={{ headerShown: false }} />
               <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="create-task" options={{ headerShown:false }} />
-              <Stack.Screen name="create-calendar" options={{ headerShown:false }} />
-              <Stack.Screen name="notifications" options={{ headerShown:false }} />
+              <Stack.Screen name="create-task" options={{ headerShown:false, animation:'slide_from_right' }} />
+              <Stack.Screen name="create-calendar" options={{ headerShown:false, animation:'slide_from_right' }} />
+              <Stack.Screen name="create-project" options={{ headerShown:false, animation:'slide_from_right' }} />
+              <Stack.Screen name="search" options={{ headerShown:false, animation:'slide_from_right' }} />
+              <Stack.Screen name="notifications" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
             </Stack>
             <StatusBar style="dark" />

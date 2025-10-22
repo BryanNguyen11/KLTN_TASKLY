@@ -508,6 +508,7 @@ Lý do: ${reason}` : message);
       {!editId && (
         <View style={{ alignItems:'center', paddingBottom:8 }}>
           <Pressable onPress={startAutoCreate} style={[styles.autoBtn, { alignSelf:'center' }]} hitSlop={8}>
+            <Ionicons name='sparkles' size={16} color='#fff' style={{ marginRight:8 }} />
             <Text style={styles.autoBtnText}>Tạo lịch tự động</Text>
           </Pressable>
         </View>
@@ -790,6 +791,6 @@ const styles = StyleSheet.create({
   pickerCancel:{ backgroundColor:'#e2e8f0' },
   pickerOk:{ backgroundColor:'#3a7ca5' },
   pickerActionText:{ fontSize:15, fontWeight:'600', color:'#16425b' },
-  autoBtn:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'#e2e8f0', borderRadius:14 },
-  autoBtnText:{ color:'#16425b', fontWeight:'700', fontSize:12 },
+  autoBtn:{ flexDirection:'row', alignItems:'center', paddingHorizontal:16, paddingVertical:10, backgroundColor:'#4f46e5', borderRadius:16, borderWidth:1, borderColor:'#a78bfa', shadowColor:'#000', shadowOpacity:0.12, shadowRadius:6, elevation:3 },
+  autoBtnText:{ color:'#fff', fontWeight:'800', fontSize:13, letterSpacing:0.3 },
 });
