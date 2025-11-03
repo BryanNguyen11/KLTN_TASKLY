@@ -3,6 +3,38 @@ const User = require('../models/User');
 let GoogleGenerativeAI;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 
+// Helpers for more informative notifications
+function toDisplayDate(iso){
+  try { const [y,m,d] = String(iso||'').split('-').map(n=>parseInt(n,10)); if(!y||!m||!d) return ''; return `${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`; } catch { return String(iso||''); }
+}
+function safeJoinTime(start, end){
+  const a = start||''; const b = end||''; if(a && b) return `${a}–${b}`; return a || b || '';
+}
+function diffTaskFields(before, after){
+  const changes = [];
+  const push = (label, from, to) => { if(from===to) return; changes.push({ label, from, to }); };
+  push('Tiêu đề', before?.title||'', after?.title||'');
+  push('Ngày', toDisplayDate(before?.date), toDisplayDate(after?.date));
+  push('Đến ngày', toDisplayDate(before?.endDate), toDisplayDate(after?.endDate));
+  push('Giờ', safeJoinTime(before?.startTime, before?.endTime), safeJoinTime(after?.startTime, after?.endTime));
+  push('Ưu tiên', before?.priority||'', after?.priority||'');
+  push('Quan trọng', before?.importance||'', after?.importance||'');
+  push('Cấp bách', before?.urgency||'', after?.urgency||'');
+  push('Trạng thái', before?.status||'', after?.status||'');
+  // assignedTo change is handled by a dedicated push, but still include in summary for others
+  if(String(before?.assignedTo||'') !== String(after?.assignedTo||'')){
+    changes.push({ label:'Người phụ trách', from: before?.assignedTo? String(before.assignedTo): '', to: after?.assignedTo? String(after.assignedTo): '' });
+  }
+  return changes;
+}
+function summarizeChanges(changes){
+  if(!Array.isArray(changes) || changes.length===0) return '';
+  const parts = changes
+    .filter(ch => (ch.from||'') !== (ch.to||''))
+    .map(ch => `• ${ch.label}: ${ch.from||'—'} → ${ch.to||'—'}`);
+  return parts.join('\n');
+}
+
 // In-memory dedupe for identical pushes in a small time window
 const __PUSH_RECENT = new Map();
 function __shouldSend(key, windowMs=20000){
@@ -14,7 +46,7 @@ function __shouldSend(key, windowMs=20000){
 }
 async function sendExpoPush(tokens, title, body, data){
   if(!Array.isArray(tokens) || tokens.length===0) return;
-  const unique = Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken['))));
+    const unique = Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.startsWith('ExpoPushToken'))));
   const list = [];
   unique.forEach(to => {
     const key = `${to}|${data?.type||''}|${data?.projectId||data?.id||''}|${title||''}|${body||''}`;
@@ -185,36 +217,95 @@ exports.updateTask = async (req,res) => {
         updates.reminders = rems;
       }
     }
-    const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new: true });
+  const task = await Task.findOneAndUpdate({ _id: req.params.id, $or: [ { userId }, { assignedTo: userId } ] }, updates, { new: true });
     if(!task) return res.status(404).json({ message:'Không tìm thấy task' });
     // Socket emit: notify project room about task update
     try {
       const io = req.app.get('io');
       if(io && task.projectId){ io.to(`project:${task.projectId}`).emit('task:updated', task.toObject ? task.toObject() : task); }
     } catch(_e){}
-    // Push notifications for changes
+    // Push notifications for changes (detailed)
     try {
+      const actorId = String(userId);
       // Assignment changed
       const beforeAssignee = before?.assignedTo ? String(before.assignedTo) : undefined;
       const afterAssignee = task.assignedTo ? String(task.assignedTo) : undefined;
       const assignmentChanged = beforeAssignee !== afterAssignee && !!afterAssignee;
       if(assignmentChanged){
         const assignee = await User.findById(afterAssignee).select('expoPushTokens');
-        await sendExpoPush(assignee?.expoPushTokens||[], 'Bạn được giao tác vụ', `${task.title}`, { type:'task-assigned', id: String(task._id) });
+        const summary = summarizeChanges(diffTaskFields(before, task));
+        const body = summary ? `${task.title}\n${summary}` : `${task.title}`;
+        await sendExpoPush(assignee?.expoPushTokens||[], 'Bạn được giao tác vụ', body, { type:'task-assigned', id: String(task._id) });
       }
-      // Status changed to completed (notify owner if different)
+      // Status changed to completed
       if(before?.status !== task.status && task.status === 'completed'){
-        const targetUsers = [];
-        if(task.userId && String(task.userId) !== afterAssignee) targetUsers.push(String(task.userId));
-        const users = await User.find({ _id: { $in: targetUsers } }).select('expoPushTokens');
-        const tokens = users.flatMap(u => u.expoPushTokens||[]);
-        await sendExpoPush(tokens, 'Tác vụ đã hoàn thành', `${task.title}`, { type:'task-completed', id: String(task._id) });
+        const summary = summarizeChanges(diffTaskFields(before, task));
+        const body = summary ? `${task.title}\n${summary}` : `${task.title}`;
+        if(task.projectId){
+          // Project rule: send exactly one project-wide notification; do not notify actor or task owner
+          try{
+            const Project = require('../models/Project');
+            const p = await Project.findById(task.projectId).select('owner members');
+            if(p){
+              const targets = new Set();
+              if(p.owner) targets.add(String(p.owner));
+              (p.members||[]).forEach(m => m?.user && targets.add(String(m.user)));
+              // Exclude actor and task owner
+              targets.delete(actorId);
+              if(task.userId) targets.delete(String(task.userId));
+              // If assignee completed, they are the actor; already excluded
+              const users = await User.find({ _id: { $in: Array.from(targets) } }).select('expoPushTokens');
+              let tokens = users.flatMap(u => Array.isArray(u.expoPushTokens)? u.expoPushTokens: []);
+              tokens = Array.from(new Set(tokens));
+              if(tokens.length){
+                await sendExpoPush(tokens, 'Tác vụ hoàn thành (Dự án)', body, { type:'task-project-completed', id: String(task._id), projectId: String(task.projectId) });
+              }
+            }
+          }catch(_e){}
+        } else {
+          // Non-project: notify the owner if they are not the actor or assignee
+          const ownerId = task.userId ? String(task.userId) : '';
+          if(ownerId && ownerId !== actorId && ownerId !== (afterAssignee||'')){
+            const owner = await User.findById(ownerId).select('expoPushTokens');
+            await sendExpoPush(owner?.expoPushTokens||[], 'Tác vụ đã hoàn thành', body, { type:'task-completed', id: String(task._id) });
+          }
+        }
       }
       // General update notify assignee (if exists), but avoid sending in the same update when assignment just changed to prevent duplicate pushes
       if(afterAssignee && !assignmentChanged){
+        // Skip notifying actor to avoid duplicate on same device if they are the assignee
         const users = await User.find({ _id: { $in: [afterAssignee] } }).select('expoPushTokens');
-        const tokens = users.flatMap(u => u.expoPushTokens||[]);
-        await sendExpoPush(tokens, 'Cập nhật tác vụ', `${task.title}`, { type:'task-updated', id: String(task._id) });
+        let tokens = users.flatMap(u => Array.isArray(u.expoPushTokens)? u.expoPushTokens: []);
+        tokens = Array.from(new Set(tokens));
+        const summary = summarizeChanges(diffTaskFields(before, task));
+        const body = summary ? `${task.title}\n${summary}` : `${task.title}`;
+        await sendExpoPush(tokens, 'Tác vụ cập nhật', body, { type:'task-updated', id: String(task._id) });
+      }
+      // Notify project members for general updates (skip completed to avoid duplicate with project-completed push)
+      if(task.projectId && task.status !== 'completed'){
+        try{
+          const Project = require('../models/Project');
+          const p = await Project.findById(task.projectId).select('owner members');
+          if(p){
+            const targets = new Set();
+            const updater = actorId;
+            const ass = task.assignedTo ? String(task.assignedTo) : '';
+            if(p.owner) targets.add(String(p.owner));
+            (p.members||[]).forEach(m => m?.user && targets.add(String(m.user)));
+            // Exclude updater and assignee (already got a push)
+            targets.delete(updater); if(ass) targets.delete(ass);
+            if(targets.size){
+              const users = await User.find({ _id: { $in: Array.from(targets) } }).select('expoPushTokens');
+              let tokens = users.flatMap(u => Array.isArray(u.expoPushTokens)? u.expoPushTokens: []);
+              tokens = Array.from(new Set(tokens));
+              if(tokens.length){
+                const summary = summarizeChanges(diffTaskFields(before, task));
+                const body = summary ? `${task.title}\n${summary}` : `${task.title}`;
+                await sendExpoPush(tokens, 'Cập nhật tác vụ (Dự án)', body, { type:'task-project-updated', id: String(task._id), projectId: String(task.projectId) });
+              }
+            }
+          }
+        }catch(_e){}
       }
     } catch(_e){}
     res.json(task);

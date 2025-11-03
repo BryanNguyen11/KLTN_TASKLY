@@ -190,7 +190,7 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
             <React.Fragment key={(t as any).id}>
               <Rect x={minX} y={y} width={w} height={barH} rx={4} ry={4} fill={color} opacity={0.85} />
               <SvgText x={minX + 8} y={y + barH - 5} fill="#ffffff" fontSize={11}>
-                {(t as any).title?.slice(0, 20) || 'Task'}
+                {(t as any).title?.slice(0, 20) || 'Tác vụ'}
               </SvgText>
             </React.Fragment>
           );

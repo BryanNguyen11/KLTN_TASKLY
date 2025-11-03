@@ -85,6 +85,8 @@ export default function DashboardScreen() {
   // Projects (real backend)
   const [projects, setProjects] = useState<any[]>([]);
   const [showProjectsModal, setShowProjectsModal] = useState(false);
+  // Control modal animation to avoid flicker when navigating to create screens
+  const [projectModalAnim, setProjectModalAnim] = useState<'none'|'fade'|'slide'>('fade');
   const [activeProject, setActiveProject] = useState<any|null>(null);
   // Đã bỏ phần mời thành viên trực tiếp trong chi tiết dự án; dùng trang quản lý thành viên
   const [deletingProject, setDeletingProject] = useState(false);
@@ -736,6 +738,8 @@ export default function DashboardScreen() {
     }catch(e){ /* silent */ }
   };
   useEffect(()=>{ fetchProjects(); },[token]);
+  // Reset modal animation to fade when opening the modal
+  useEffect(()=>{ if(showProjectsModal) setProjectModalAnim('fade'); },[showProjectsModal]);
   // Quick lookup: projectId -> name
   const projectNameById = React.useMemo(() => {
     const m: Record<string,string> = {};
@@ -1274,7 +1278,7 @@ export default function DashboardScreen() {
                 <Animated.View style={[styles.progressBarFill, progressStyle]} />
               </View>
               <Text style={styles.progressHint}>
-                {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} task`}
+                {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} tác vụ`}
               </Text>
             </View>
 
@@ -1907,7 +1911,7 @@ export default function DashboardScreen() {
       </View>
     )}
     {/* Projects list (sheet) & full-screen detail */}
-    <Modal visible={showProjectsModal} transparent animationType='fade' onRequestClose={()=>{ setShowProjectsModal(false); setActiveProject(null); }}>
+  <Modal visible={showProjectsModal} transparent animationType={projectModalAnim} onRequestClose={()=>{ setShowProjectsModal(false); setActiveProject(null); }}>
       {!activeProject && (
         <Pressable style={styles.modalBackdrop} onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }}>
           <View style={styles.projectsSheet}>
@@ -1945,9 +1949,14 @@ export default function DashboardScreen() {
               <Ionicons name='chevron-back' size={22} color='#16425b' />
             </Pressable>
             <Text style={styles.projectFullTitle} numberOfLines={1}>{activeProject.name}</Text>
-            <Pressable onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }} style={styles.projectFullClose} hitSlop={10}>
-              <Ionicons name='close' size={22} color='#16425b' />
-            </Pressable>
+            <View style={{ flexDirection:'row', alignItems:'center' }}>
+              <Pressable onPress={()=> { const pid = activeProject?._id; if(pid){ setProjectModalAnim('none'); setShowProjectsModal(false); setActiveProject(null); router.push({ pathname:'/project-settings/[id]', params:{ id: pid } }); } }} style={styles.projectFullClose} hitSlop={10}>
+                <Ionicons name='settings-outline' size={20} color='#16425b' />
+              </Pressable>
+              <Pressable onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }} style={styles.projectFullClose} hitSlop={10}>
+                <Ionicons name='close' size={22} color='#16425b' />
+              </Pressable>
+            </View>
           </View>
           <KeyboardAwareScrollView
             enableOnAndroid
@@ -1981,11 +1990,11 @@ export default function DashboardScreen() {
                   </View>
                   {/* Quick actions in project */}
                   <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#2f6690' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ projectId: projId } }); }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#2f6690' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ projectId: projId } }); }}>
                       <Ionicons name='add-circle-outline' size={16} color='#fff' />
-                      <Text style={styles.inviteAcceptText}>Task mới</Text>
+                      <Text style={styles.inviteAcceptText}>Tác vụ mới</Text>
                     </Pressable>
-                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ projectId: projId } }); }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ projectId: projId } }); }}>
                       <Ionicons name='calendar-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Lịch mới</Text>
                     </Pressable>
@@ -2018,7 +2027,7 @@ export default function DashboardScreen() {
                           </View>
                           <View style={styles.dayTaskChips}>
                             {dayTasks.map((t, idx)=> (
-                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { const occ = iso; setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: occ } }); }}>
+                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { const occ = iso; setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: occ } }); }}>
                                 <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                 <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                               </Pressable>
@@ -2079,7 +2088,7 @@ export default function DashboardScreen() {
                                 {dayTasks.length>0 ? (
                                   <View style={styles.dayTaskChips}>
                                     {dayTasks.map((t, idx)=> (
-                                      <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
+                                      <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
                                         <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                         <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                       </Pressable>
@@ -2202,7 +2211,7 @@ export default function DashboardScreen() {
                   <View key={idx} style={styles.memberRow}>
                     <Ionicons name='person-outline' size={20} color='#2f6690' />
                     <Text style={styles.memberName}>{display}</Text>
-                    <Text style={styles.memberRole}>{isOwner? 'owner' : m.role}</Text>
+                    <Text style={styles.memberRole}>{isOwner? 'Chủ dự án' : (m.role==='admin'?'Quản trị': m.role==='member'?'Thành viên': m.role)}</Text>
                   </View>
                 );
               })}
@@ -2210,52 +2219,14 @@ export default function DashboardScreen() {
             {/* Đã bỏ phần "Lời mời" và "Mời thêm" tại đây; hãy dùng trang Quản lý để thao tác */}
             {(() => {
               const userId = (user as any)?._id || (user as any)?.id;
-              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId) && m.role==='admin');
-              if(isAdmin){
-                return (
-                  <View style={{ marginTop:32 }}>
-                    <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Xóa dự án</Text>
-                    <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Thao tác này vĩnh viễn và cần xác nhận bằng mật khẩu.</Text>
-                    <Pressable
-                      disabled={deletingProject}
-                      onPress={() => {
-                        Alert.prompt?.('Xóa dự án','Nhập mật khẩu tài khoản admin để xác nhận', [
-                          { text:'Hủy', style:'cancel' },
-                          { text:'Xóa', style:'destructive', onPress: async (pwd?: string) => {
-                            if(!pwd) return;
-                            setDeletingProject(true);
-                            try {
-                              await axios.delete(`${API_BASE}/api/projects/${activeProject._id}`, { data:{ password: pwd }, headers:{ Authorization: token?`Bearer ${token}`:'' } });
-                              setProjects(prev => prev.filter(p=> p._id!==activeProject._id));
-                              setActiveProject(null);
-                              setShowProjectsModal(false);
-                              setToast('Đã xóa dự án');
-                            } catch(e:any){
-                              Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa');
-                            } finally { setDeletingProject(false); }
-                          }}
-                        ], 'secure-text');
-                        if(!Alert.prompt){
-                          Alert.alert('Nhắc nhở','Thiết bị không hỗ trợ nhập trực tiếp. Vui lòng triển khai màn hình xác nhận riêng.');
-                        }
-                      }}
-                      style={[styles.deleteProjectBtn, deletingProject && { opacity:0.5 }]}
-                    >
-                      <Ionicons name='trash-outline' size={16} color='#fff' />
-                      <Text style={styles.deleteProjectText}>{deletingProject? 'Đang xóa...' : 'Xóa dự án'}</Text>
-                    </Pressable>
-                  </View>
-                );
-              }
-              // Not admin: if user is a member (not owner/admin), show Leave Project
-              const isMember = (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId));
               const isOwner = String(activeProject.owner) === String(userId);
+              const isMember = (activeProject.members||[]).some((m:any)=> String(m.user?._id || m.user)===String(userId));
               if(isMember && !isOwner){
                 return (
                   <View style={{ marginTop:32 }}>
                     <Text style={{ fontSize:13, fontWeight:'700', color:'#b91c1c', marginBottom:8 }}>Rời dự án</Text>
                     <Text style={{ fontSize:11, color:'#7f1d1d', marginBottom:10 }}>Bạn sẽ không còn thấy nhiệm vụ/sự kiện của dự án này.</Text>
-                    <Pressable onPress={leaveProject} style={[styles.deleteProjectBtn,{ backgroundColor:'#ef4444' }]}>
+                    <Pressable onPress={leaveProject} style={[styles.deleteProjectBtn,{ backgroundColor:'#ef4444' }]}> 
                       <Ionicons name='log-out-outline' size={16} color='#fff' />
                       <Text style={styles.deleteProjectText}>Rời dự án</Text>
                     </Pressable>

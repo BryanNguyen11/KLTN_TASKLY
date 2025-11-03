@@ -49,8 +49,8 @@ const Event = require('./models/Event');
 
 // Middleware
 app.use(cors());
-// Increase JSON limit to allow base64 image uploads for OCR (default 100kb is too small)
-app.use(express.json({ limit: '8mb' }));
+// Increase JSON limit to allow big base64 image uploads for OCR
+app.use(express.json({ limit: '16mb' }));
 // Debug: minimal request logger (method, path)
 app.use((req, res, next) => {
   try {
@@ -66,6 +66,19 @@ app.use('/api/users', userRoutes);
 app.use('/api/event-types', eventTypeRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/projects', projectRoutes);
+
+// AI health endpoint to verify GEMINI env loaded
+app.get('/api/ai/health', (req, res) => {
+  try {
+    const hasKey = !!process.env.GEMINI_API_KEY;
+    // Lazy check for library presence
+    let libOk = true;
+    try { require.resolve('@google/generative-ai'); } catch(_) { libOk = false; }
+    return res.json({ gemini: { hasKey, libOk, model: process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro' } });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 // Connect to MongoDB and start schedulers + server
 mongoose.connect(process.env.MONGO_URI)

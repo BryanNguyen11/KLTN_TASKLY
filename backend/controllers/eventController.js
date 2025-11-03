@@ -10,6 +10,34 @@ let GoogleGenerativeAI;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 const OCR_DEBUG = process.env.OCR_DEBUG === '1' || process.env.OCR_DEBUG === 'true';
 
+// Notification helpers (similar to tasks)
+function evToDisplayDate(iso){ try{ const [y,m,d] = String(iso||'').split('-').map(n=>parseInt(n,10)); if(!y||!m||!d) return ''; return `${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`; }catch{ return String(iso||''); } }
+function evSafeJoinTime(a,b){ const s=a||''; const e=b||''; if(s&&e) return `${s}–${e}`; return s||e||''; }
+function diffEventFields(before, after){
+  const changes = [];
+  const push=(label, from, to)=>{ if(from===to) return; changes.push({ label, from, to }); };
+  push('Tiêu đề', before?.title||'', after?.title||'');
+  push('Ngày', evToDisplayDate(before?.date), evToDisplayDate(after?.date));
+  push('Đến ngày', evToDisplayDate(before?.endDate), evToDisplayDate(after?.endDate));
+  push('Giờ', evSafeJoinTime(before?.startTime, before?.endTime), evSafeJoinTime(after?.startTime, after?.endTime));
+  push('Địa điểm', before?.location||'', after?.location||'');
+  push('Ghi chú', before?.notes||'', after?.notes||'');
+  return changes;
+}
+function evSummarizeChanges(changes){ if(!Array.isArray(changes)||!changes.length) return ''; return changes.filter(ch=> (ch.from||'') !== (ch.to||'')).map(ch=> `• ${ch.label}: ${ch.from||'—'} → ${ch.to||'—'}`).join('\n'); }
+
+function tesseractParams(){
+  return {
+    logger: () => {},
+    langPath: path.join(__dirname, '..'),
+    // Hints for table-like text
+    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠƯàáâãèéêìíòóôõùúăđĩũơưỲỴÝỳỵýÂÊÔăâêô0123456789-–:/().,[] ' ,
+    preserve_interword_spaces: '1',
+    user_defined_dpi: '300',
+    psm: 6,
+  };
+}
+
 // External OCR (e.g., DEMINI free API) via JSON base64 request
 async function tryExternalOCR(buffer){
   try{
@@ -53,6 +81,7 @@ async function tryGeminiOCR(buffer){
     if(!key || !GoogleGenerativeAI) return null;
     const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
     const genAI = new GoogleGenerativeAI(key);
+    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision model=${modelName} keyPresent=${!!key}`);
     // Generation config from env (defaults optimized for OCR: deterministic)
     const temp = isFinite(parseFloat(process.env.GEMINI_TEMPERATURE||'')) ? parseFloat(process.env.GEMINI_TEMPERATURE||'') : 0;
     const topP = isFinite(parseFloat(process.env.GEMINI_TOP_P||'')) ? parseFloat(process.env.GEMINI_TOP_P||'') : undefined;
@@ -79,6 +108,204 @@ async function tryGeminiOCR(buffer){
     text = text.replace(/^```[a-zA-Z]*\n|```$/g, '').trim();
     return text || null;
   }catch(_e){ return null; }
+}
+
+// Vision → structured JSON (skip OCR text step, ask directly for JSON items)
+async function tryGeminiVisionToStructured(buffer){
+  try{
+    const key = process.env.GEMINI_API_KEY; if(!key || !GoogleGenerativeAI) return null;
+    const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const prompt = [
+      'Bạn là engine OCR + trích xuất thời khoá biểu (tiếng Việt).',
+      'Chỉ trả về JSON hợp lệ theo schema. Không giải thích hay Markdown.',
+      'Schema: { "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }',
+      '- weekday: Thứ 2..7 => 2..7; Chủ nhật => 7',
+      '- from/to: số tiết theo "Tiết a-b"; nếu bảng dùng 9–12 cho buổi chiều, vẫn ghi 9..12',
+      '- startDate/endDate: nếu có ngày bắt đầu/kết thúc, điền ISO; nếu không rõ để ""',
+    ].join('\n');
+    const b64 = buffer.toString('base64');
+    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision structured model=${modelName}`);
+    const result = await model.generateContent({
+      contents: [ { role:'user', parts:[ { text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: b64 } } ] } ],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type:'string' },
+                  weekday: { type:'integer' },
+                  from: { type:'integer' },
+                  to: { type:'integer' },
+                  startDate: { type:'string' },
+                  endDate: { type:'string' },
+                  location: { type:'string' },
+                  lecturer: { type:'string' },
+                  notes: { type:'string' }
+                },
+                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+              }
+            }
+          },
+          required: ['items']
+        }
+      }
+    });
+    const raw = String(result?.response?.text?.() || '').trim();
+    let data = null; try { data = JSON.parse(raw); } catch(_) { data = null; }
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if(items.length){ if(OCR_DEBUG) console.log(`[OCR] Vision structured items=${items.length}`); return items; }
+    return null;
+  }catch(_e){ return null; }
+}
+// Gemini text-only parse for progress timetable from raw text (PDF text or OCR text)
+// Returns array of { title, weekday (2..7 for Thu 2..7, 7 for Sunday), from, to, startDate, endDate, location }
+async function tryGeminiParseProgress(text){
+  try{
+    const key = process.env.GEMINI_API_KEY;
+    if(!key || !GoogleGenerativeAI) return null;
+    const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const temp = isFinite(parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'')) ? parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'') : 0.1;
+    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini text parse model=${modelName} keyPresent=${!!key}`);
+    const prompt = [
+      'Bạn là trợ lý trích xuất thời khoá biểu từ văn bản (tiếng Việt).',
+      'Hãy phân tích văn bản dưới đây và trả về JSON với dạng:',
+      '{ "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string } ] }',
+      '- weekday: dùng hệ Việt Nam: Thứ 2..7 => 2..7; Chủ nhật => 7',
+      '- from/to: là số tiết theo định dạng "Tiết a-b"',
+      '- startDate, endDate: nếu có ngày bắt đầu/kết thúc học phần, hãy điền theo ISO; nếu không rõ, để trống ""',
+      '- Không thêm bình luận khác. Chỉ trả JSON hợp lệ.',
+    ].join('\n');
+    const contents = [ { role:'user', parts:[ { text: prompt }, { text } ] } ];
+    const result = await model.generateContent({
+      contents,
+      generationConfig: {
+        temperature: temp,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string' },
+                  weekday: { type: 'integer' },
+                  from: { type: 'integer' },
+                  to: { type: 'integer' },
+                  startDate: { type: 'string' },
+                  endDate: { type: 'string' },
+                  location: { type: 'string' },
+                  lecturer: { type: 'string' },
+                  notes: { type: 'string' }
+                },
+                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+              }
+            }
+          },
+          required: ['items']
+        }
+      }
+    });
+    const raw = String(result?.response?.text?.() || '').trim();
+    let data = null;
+    try { data = JSON.parse(raw); } catch(_) { data = null; }
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if(OCR_DEBUG) console.log(`[OCR] Gemini parse progress items=${items.length}`);
+    if(items.length) return items;
+    return null;
+  }catch(_e){ return null; }
+}
+
+// Parse tabular "Lịch học theo tiến độ" style: rows with Thứ, Tiết a-b, Bắt đầu, Kết thúc, Phòng, Tên môn
+function parseProgressTable(text){
+  try{
+    const strip = (s)=> s.normalize('NFD').replace(/[\u0300-\u036f]+/g,'').replace(/đ/gi,'d');
+    const rawLines = String(text||'').split(/\r?\n/).map(s=>s.replace(/[\t\u00A0]+/g,' ').replace(/\s{2,}/g,' ').trim());
+    const lines = rawLines.filter(Boolean);
+    if(lines.length<3) return [];
+    const L = lines.map(l=> ({ raw:l, n: strip(l).toLowerCase() }));
+    const isMeta = (s)=> /^(lich|lich hoc|lich thi|thong tin|thoi gian|thu\b|tiet\b|phong\b|nhom\b|gio\b|bat dau\b|ket thuc\b|ma hoc phan\b|so tin chi\b|ma giang\b|stt\b)/i.test(strip(s));
+    const looksTitle = (s)=>{
+      const t = s.trim();
+      if(!t) return false; if(isMeta(t)) return false;
+      const letters = (t.match(/[A-Za-zÀ-ỹ]/g)||[]).length;
+      const digits = (t.match(/\d/g)||[]).length;
+      return letters >= 3 && letters > digits; // text-heavy
+    };
+    const mapThuByName = { hai:2, ba:3, tu:4, nam:5, sau:6, bay:7 };
+    const dateRe = /(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/;
+    const uniq = new Set();
+    const items = [];
+    let lastTitle = '';
+    for(let i=0;i<L.length;i++){
+      const raw = L[i].raw; const n = L[i].n;
+      if(looksTitle(raw)) lastTitle = raw;
+      // build a wider forward window for columns that may be on separate lines
+      const winArr = L.slice(i, i+12);
+      const win = winArr.map(o=>o.raw).join(' | ');
+      const winN = strip(win).toLowerCase();
+      // weekday detection
+      let weekday = null;
+      let m = winN.match(/\bthu\s*(2|3|4|5|6|7)\b/);
+      if(m) weekday = parseInt(m[1],10);
+      if(weekday===null){ const mm = winN.match(/\bthu\s*(hai|ba|tu|nam|sau|bay)\b/); if(mm) weekday = mapThuByName[mm[1]]||null; }
+      if(weekday===null && /\bchu\s*nhat\b/.test(winN)) weekday = 7;
+      if(!weekday) continue;
+      // periods (Tiết a-b) may be a few tokens after 'Tiết'; fallback to generic a-b within range 1..16
+      let pm = winN.match(/tiet[^\d]*(\d{1,2})\s*[\-–]\s*(\d{1,2})/);
+      if(!pm){
+        const any = winN.match(/\b(\d{1,2})\s*[\-–]\s*(\d{1,2})\b/);
+        if(any){ pm = any; }
+      }
+      if(!pm) continue;
+      let from = parseInt(pm[1],10), to = parseInt(pm[2],10);
+      if(!(from&&to)) continue;
+      if(from>to){ const t=from; from=to; to=t; }
+      // clamp plausible periods
+      if(from<1||from>16||to<1||to>16) continue;
+      if(!(from&&to)) continue;
+      // dates: around words 'bat dau' & 'ket thuc' (or standalone dd/mm/yyyy tokens)
+      let startDate='', endDate='';
+      const bdIdx = winN.indexOf('bat dau');
+      if(bdIdx>=0){ const sPart = winN.slice(bdIdx, bdIdx+60); const md = sPart.match(dateRe); if(md){ startDate = `${md[3]}-${String(md[2]).padStart(2,'0')}-${String(md[1]).padStart(2,'0')}`; } }
+      const ktIdx = winN.indexOf('ket thuc');
+      if(ktIdx>=0){ const sPart = winN.slice(ktIdx, ktIdx+60); const md = sPart.match(dateRe); if(md){ endDate = `${md[3]}-${String(md[2]).padStart(2,'0')}-${String(md[1]).padStart(2,'0')}`; } }
+      // If not found, scan nearby lines individually for date tokens
+      if(!startDate||!endDate){
+        for(const o of winArr){ const md = o.n.match(dateRe); if(md){ const iso = `${md[3]}-${String(md[2]).padStart(2,'0')}-${String(md[1]).padStart(2,'0')}`; if(!startDate) startDate=iso; else if(!endDate && iso!==startDate) endDate=iso; } }
+      }
+      // location: phong, truc tuyen, codes like C2.04, B3.03, H5.1.2
+      let location='';
+      const locRegex = /(ph\s?o?ng|phòng|phong|truc\s*tuyen|ms\s*teams|c\d+\.\d+|b\d+\.\d+|h\d+\.\d+(?:\.\d+)?|clc|knn)/i;
+      const locMatch = win.match(locRegex);
+      if(locMatch) location = locMatch[0].replace(/^.*?:\s*/,'');
+      // title: prefer lastTitle; else look back a few lines
+      let title = lastTitle;
+      if(!title){
+        for(let k=i-1;k>=Math.max(0,i-5);k--){ if(looksTitle(L[k].raw)){ title = L[k].raw; break; } }
+      }
+      if(!title) title = 'Lich hoc';
+      const key = [title, weekday, from, to, startDate, endDate, location].join('|');
+      if(!uniq.has(key)){
+        items.push({ title, weekday, from, to, startDate, endDate, location });
+        uniq.add(key);
+      }
+      i += 2; // skip ahead a bit to reduce duplicates
+    }
+    if(OCR_DEBUG) console.log(`[OCR] progress-table items=${items.length}`);
+    return items;
+  }catch(e){ if(OCR_DEBUG) console.log('[OCR] progress-table parse error', e.message); return []; }
 }
 
 exports.createEvent = async (req, res) => {
@@ -183,9 +410,33 @@ exports.updateEvent = async (req, res) => {
         }).filter(Boolean);
       }
     }
+    const before = await Event.findOne({ _id: req.params.id, userId }).lean();
     const doc = await Event.findOneAndUpdate({ _id: req.params.id, userId }, updates, { new: true });
     if (!doc) return res.status(404).json({ message: 'Không tìm thấy sự kiện' });
     res.json(doc);
+
+    // Send detailed push to owner (and later project members if needed)
+    try{
+      const User = require('../models/User');
+      // Avoid notifying the actor when they update their own event
+      const isOwner = String(before?.userId||'') === String(userId||'');
+      if(isOwner){ /* skip self-notify to reduce duplicates */ return; }
+      const u = await User.findById(before?.userId||userId).select('expoPushTokens');
+      let tokens = Array.isArray(u?.expoPushTokens)? u.expoPushTokens: [];
+      // Deduplicate tokens for a single device
+      tokens = Array.from(new Set(tokens.filter(t => typeof t==='string' && t.startsWith('ExpoPushToken['))));
+      if(tokens.length){
+        const changes = diffEventFields(before, doc);
+        const body = changes.length? `${doc.title}\n${evSummarizeChanges(changes)}` : `${doc.title}`;
+        await (async () => {
+          const doFetch = globalThis.fetch;
+          try{
+            const list = tokens.map(to => ({ to, sound:'default', title:'Cập nhật lịch', body, data:{ type:'event-updated', id: String(doc._id) }, ttl: 600 }));
+            if(list.length){ await doFetch('https://exp.host/--/api/v2/push/send', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(list) }); }
+          }catch(_e){}
+        })();
+      }
+    }catch(_e){}
   } catch (e) {
     res.status(500).json({ message: 'Lỗi cập nhật sự kiện', error: e.message });
   }
@@ -220,12 +471,20 @@ exports.scanImage = async (req, res) => {
     try {
       const base = await sharp(buffer)
         .rotate()
-        .resize({ width: 2200, withoutEnlargement: true })
+        .resize({ width: 3000, withoutEnlargement: true })
         .grayscale()
         .normalise()
         .toFormat('jpeg', { quality: 95 })
         .toBuffer();
-      // Try Gemini first
+      // Try Gemini Vision structured first
+      try{
+        const gStruct = await tryGeminiVisionToStructured(base);
+        if(gStruct && gStruct.length){
+          if(OCR_DEBUG) console.log('[OCR] Using Gemini Vision structured result');
+          return res.json({ structured: { kind:'progress-table', items: gStruct }, raw: '', rawLength: 0 });
+        }
+      }catch(_){ }
+      // Try Gemini OCR text next
       try{
         const gText = await tryGeminiOCR(base);
         if(gText && gText.trim().length>0){
@@ -262,6 +521,9 @@ exports.scanImage = async (req, res) => {
           result.title = (lines.find(l => !isMeta(l)) || '').slice(0,120) || 'Lịch mới từ ảnh';
           result.notes = bestText.length>600 ? (bestText.slice(0,580)+'...') : bestText;
           if(!result.date){ const d = new Date(); const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; result.date = iso; }
+          // Try structured progress-table parse
+          const items = parseProgressTable(bestText);
+          if(items && items.length){ return res.json({ structured: { kind:'progress-table', items }, raw: bestText, rawLength: bestText.length }); }
           return res.json({ extracted: result, raw: bestText, rawLength: bestText.length });
         }
       }catch(_){ }
@@ -293,32 +555,36 @@ exports.scanImage = async (req, res) => {
           result.title = (lines.find(l => !isMeta(l)) || '').slice(0,120) || 'Lịch mới từ ảnh';
           result.notes = bestText.length>600 ? (bestText.slice(0,580)+'...') : bestText;
           if(!result.date){ const d=new Date(); const iso=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; result.date=iso; }
+          const items = parseProgressTable(bestText);
+          if(items && items.length){ return res.json({ structured: { kind:'progress-table', items }, raw: bestText, rawLength: bestText.length }); }
           return res.json({ extracted: result, raw: bestText, rawLength: bestText.length });
         }
       }catch(_){ }
       variants.push(base);
-      // High contrast threshold
-      variants.push(await sharp(base).threshold(128).toBuffer());
-      // Slight blur to reduce noise
-      variants.push(await sharp(base).blur(0.7).toBuffer());
+      // High contrast threshold (use PNG to avoid JPEG artifacts)
+      variants.push(await sharp(base).threshold(128).toFormat('png').toBuffer());
+      // Slight blur then threshold
+      variants.push(await sharp(base).blur(0.7).threshold(140).toFormat('png').toBuffer());
       // Stronger threshold
-      variants.push(await sharp(base).threshold(160).toBuffer());
+      variants.push(await sharp(base).threshold(180).toFormat('png').toBuffer());
+      // Gamma + sharpen
+      variants.push(await sharp(base).gamma(1.2).sharpen().toFormat('jpeg', { quality: 95 }).toBuffer());
       // Median (using Jimp) to remove speckles + contrast
       try {
         const j = await Jimp.read(base);
         j.median(1).contrast(0.35).normalize();
-        variants.push(await j.getBufferAsync(Jimp.MIME_JPEG));
+        variants.push(await j.getBufferAsync(Jimp.MIME_PNG));
       } catch(_) {}
     } catch(_) {
       variants.push(buffer);
     }
     // Try OCR across variants and language combos
-    const langs = ['vie+eng', 'eng'];
+    const langs = ['vie+eng', 'vie', 'eng'];
     let bestText = '';
     for (const v of variants) {
       for (const lang of langs) {
         try {
-          const { data } = await Tesseract.recognize(v, lang, { logger: () => {}, langPath: path.join(__dirname, '..') });
+          const { data } = await Tesseract.recognize(v, lang, tesseractParams());
           const t = (data && data.text ? String(data.text) : '').trim();
           if(OCR_DEBUG) console.log(`[OCR] Tesseract variant lang=${lang} length=${t.length}`);
           if (t && t.length > bestText.length) {
@@ -333,8 +599,8 @@ exports.scanImage = async (req, res) => {
     // If still empty, do a last-resort heavy threshold
     if (!text) {
       try {
-        const thr = await sharp(variants[0] || buffer).threshold(180).toBuffer();
-        const { data } = await Tesseract.recognize(thr, 'vie+eng', { logger: () => {}, langPath: path.join(__dirname, '..') });
+        const thr = await sharp(variants[0] || buffer).threshold(180).toFormat('png').toBuffer();
+        const { data } = await Tesseract.recognize(thr, 'vie+eng', tesseractParams());
         if (!bestText && data?.text) bestText = String(data.text).trim();
       } catch(_) {}
     }
@@ -427,6 +693,8 @@ exports.scanImage = async (req, res) => {
       result.date = iso;
     }
 
+  const items = parseProgressTable(bestText);
+  if(items && items.length){ return res.json({ structured: { kind:'progress-table', items }, raw: bestText, rawLength: bestText.length }); }
   return res.json({ extracted: result, raw: bestText, rawLength: bestText.length });
   } catch(e){
     return res.status(500).json({ message: 'Lỗi OCR', error: e.message });
@@ -450,6 +718,17 @@ exports.scanFile = async (req, res) => {
         const parsed = await pdfParse(req.file.buffer);
         const text = String(parsed.text || '').trim();
         if (!text) return res.status(400).json({ message: 'Không đọc được nội dung PDF', reason: 'empty-pdf' });
+        // Try Gemini text parsing first (AI structuring)
+        try{
+          if(OCR_DEBUG) console.log('[OCR] PDF detected, attempting Gemini text parse...');
+          const aiItems = await tryGeminiParseProgress(text);
+          if(aiItems && aiItems.length){
+            return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items: aiItems } });
+          }
+        }catch(_){ }
+        // If possible, parse to structured progress-table
+        const items = parseProgressTable(text);
+        if(items && items.length){ return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items } }); }
         // Return raw text; frontend will parse to weekly preview
         return res.json({ raw: text, rawLength: text.length, extracted: {} });
       } catch (e) {
@@ -461,13 +740,20 @@ exports.scanFile = async (req, res) => {
     try {
       buffer = await sharp(buffer)
         .rotate()
-        .resize({ width: 2000, withoutEnlargement: true })
+        .resize({ width: 2800, withoutEnlargement: true })
         .grayscale()
         .normalise()
-        .toFormat('jpeg', { quality: 92 })
+        .toFormat('jpeg', { quality: 94 })
         .toBuffer();
     } catch(_e) {}
-    // Try Gemini first, then external DEMINI
+    // Try Gemini Vision structured first, then Vision OCR text, then external DEMINI
+    try{
+      const gStruct = await tryGeminiVisionToStructured(buffer);
+      if(gStruct && gStruct.length){
+        const best = gStruct;
+        return res.json({ raw: '', rawLength: 0, structured: { kind:'progress-table', items: best } });
+      }
+    }catch(_){ }
     try{
       const gText = await tryGeminiOCR(buffer);
       if(gText && gText.trim().length>0){
@@ -484,26 +770,28 @@ exports.scanFile = async (req, res) => {
     }catch(_){ }
     try {
       const img = await Jimp.read(buffer);
-      img.contrast(0.3).normalize();
-      buffer = await img.getBufferAsync(Jimp.MIME_JPEG);
+      img.contrast(0.35).normalize();
+      buffer = await img.getBufferAsync(Jimp.MIME_PNG);
     } catch(_e) {}
     let data;
     try {
-      ({ data } = await Tesseract.recognize(buffer, 'vie+eng', { logger: () => {}, langPath: path.join(__dirname, '..') }));
+      ({ data } = await Tesseract.recognize(buffer, 'vie+eng', tesseractParams()));
     } catch(_e) {
-      ({ data } = await Tesseract.recognize(buffer, 'eng', { logger: () => {}, langPath: path.join(__dirname, '..') }));
+      ({ data } = await Tesseract.recognize(buffer, 'eng', tesseractParams()));
     }
     let text = (data && data.text ? String(data.text) : '').trim();
     if (!text) {
       try {
-        const thr = await sharp(buffer).threshold(128).toBuffer();
+        const thr = await sharp(buffer).threshold(140).toFormat('png').toBuffer();
         let data2;
-        try { ({ data: data2 } = await Tesseract.recognize(thr, 'vie+eng', { logger: () => {}, langPath: path.join(__dirname, '..') })); }
-        catch(_ee){ ({ data: data2 } = await Tesseract.recognize(thr, 'eng', { logger: () => {}, langPath: path.join(__dirname, '..') })); }
+        try { ({ data: data2 } = await Tesseract.recognize(thr, 'vie+eng', tesseractParams())); }
+        catch(_ee){ ({ data: data2 } = await Tesseract.recognize(thr, 'eng', tesseractParams())); }
         text = (data2 && data2.text ? String(data2.text) : '').trim();
       } catch(_e) {}
     }
     if (!text) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr' });
+    const items = parseProgressTable(text);
+    if(items && items.length){ return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items } }); }
     return res.json({ raw: text, rawLength: text.length, extracted: {} });
   } catch (e) {
     return res.status(500).json({ message: 'Lỗi xử lý tệp', error: e.message });

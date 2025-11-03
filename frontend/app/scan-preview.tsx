@@ -5,7 +5,7 @@ import { useRouter } from 'expo-router';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOcrScanPayload, setOcrScanPayload } from '@/contexts/OcrScanStore';
-import { parseWeeklyFromRaw, WeekdayBlock, CandidateEvent } from '@/utils/ocrTimetable';
+import { parseWeeklyFromRaw, WeekdayBlock, CandidateEvent, periodsRangeToTime, periodsToSlot } from '@/utils/ocrTimetable';
 
 type Editable = CandidateEvent & { id: string; selected: boolean };
 
@@ -24,10 +24,67 @@ export default function ScanPreview() {
       router.back();
       return;
     }
-    const parsed = parseWeeklyFromRaw(payload.raw);
+    // Prefer structured rows from backend (progress-table). If absent, fallback to raw weekly parser.
+    if (payload.structured?.kind === 'progress-table' && Array.isArray(payload.structured.items) && payload.structured.items.length) {
+      const items = payload.structured.items;
+      // Group by weekday; use startDate as column date (for display)
+      const map = new Map<number, WeekdayBlock>();
+      for (const it of items) {
+        const { from, to } = it;
+        const { startTime, endTime } = periodsRangeToTime(from, to);
+        const slot = periodsToSlot(from, to);
+        const day = map.get(it.weekday) || { weekday: it.weekday, label: (it.weekday===7? 'Chủ nhật' : `Thứ ${it.weekday}`), date: it.startDate || '', events: [] };
+        (day.events as any).push({
+          id: `${it.weekday}-${from}-${to}-${(day.events as any).length}`,
+          selected: true,
+          title: it.title || 'Lịch học',
+          date: it.startDate || '',
+          startTime,
+          endTime,
+          slot,
+          location: it.location || '',
+          lecturer: '',
+          notes: it.endDate ? `Kết thúc: ${toDisplay(it.endDate)}` : '',
+          // Extra metadata for creation
+          _weekday: it.weekday,
+          _repeatEndDate: it.endDate || '',
+        });
+        map.set(it.weekday, day);
+      }
+      const blocks = Array.from(map.values()).sort((a,b)=> a.weekday - b.weekday);
+      setDays(blocks as any);
+      return;
+    }
+    let parsed = parseWeeklyFromRaw(payload.raw);
+    const total = parsed.reduce((acc, d) => acc + d.events.length, 0);
+    // Fallback: if weekly parser found no events but backend provided a single extracted event, surface it
+    if (total === 0 && payload.extracted) {
+      const ex = payload.extracted as any;
+      const start = String(ex.startTime || '09:00');
+      const end = String(ex.endTime || '10:00');
+      const hh = parseInt(start.split(':')[0] || '9', 10);
+      const slot = hh < 12 ? 'morning' : (hh < 18 ? 'afternoon' : 'evening');
+      parsed = [{
+        weekday: 1,
+        label: 'Tất cả',
+        date: String(ex.date || ''),
+        events: [{
+          id: 'single-0',
+          selected: true,
+          title: String(ex.title || 'Lịch mới từ ảnh'),
+          date: String(ex.date || ''),
+          slot: slot as any,
+          startTime: start,
+          endTime: end,
+          location: ex.location || '',
+          lecturer: '',
+          notes: ex.notes || ''
+        }] as any
+      }];
+    }
     const withIds = parsed.map(d => ({
       ...d,
-      events: d.events.map((e, idx) => ({ ...e, id: `${d.date || d.weekday}-${idx}`, selected: true })) as any,
+      events: d.events.map((e, idx) => ({ ...e, id: `${d.date || d.weekday}-${idx}`, selected: (e as any).selected ?? true })) as any,
     }));
     setDays(withIds as any);
   }, []);
@@ -51,7 +108,14 @@ export default function ScanPreview() {
         if(!typeId){ Alert.alert('Thiếu loại lịch','Không có loại lịch mặc định để tạo. Hãy tạo loại lịch trước.'); return; }
       }
           for (const e of selected) {
-        const date = e.date || deriveDateFromWeekday(days, e);
+            // If structured metadata exists, compute first occurrence date by weekday >= startDate
+            let date = e.date || deriveDateFromWeekday(days, e);
+            const metaWeekday = (e as any)._weekday as number | undefined;
+            const repeatEnd = (e as any)._repeatEndDate as string | undefined;
+            if (metaWeekday && (e.date || payload?.structured)) {
+              const base = (e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date)) ? e.date : (payload as any)?.structured?.items?.find((it:any)=> it.weekday===metaWeekday)?.startDate;
+              if (base) date = firstWeekdayOnOrAfter(base, metaWeekday);
+            }
         const payloadEvt: any = {
           title: e.title || 'Lịch học',
           typeId,
@@ -62,6 +126,9 @@ export default function ScanPreview() {
           notes: [e.notes, e.lecturer ? `GV: ${e.lecturer}` : ''].filter(Boolean).join('\n'),
           props: {},
         };
+            if (repeatEnd && /^\d{4}-\d{2}-\d{2}$/.test(repeatEnd)) {
+              payloadEvt.repeat = { frequency: 'weekly', endMode: 'onDate', endDate: repeatEnd };
+            }
             if(payload?.projectId) payloadEvt.projectId = String(payload.projectId);
         await axios.post(`${API_BASE}/api/events`, payloadEvt, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
       }
@@ -192,6 +259,21 @@ function deriveDateFromWeekday(days: WeekdayBlock[], e: CandidateEvent): string 
   // fallback: today
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+}
+
+function firstWeekdayOnOrAfter(baseISO: string, weekday: number): string {
+  // weekday: 1=Mon..7=Sun
+  try{
+    const [y,m,d] = baseISO.split('-').map(n=>parseInt(String(n),10));
+    const dt = new Date(y,(m||1)-1,d||1);
+    const jsDay = dt.getDay() || 7; // JS: 0=Sun..6=Sat → convert to 1..7
+    const diff = (weekday - jsDay + 7) % 7;
+    if(diff>0) dt.setDate(dt.getDate()+diff);
+    const yy = dt.getFullYear(); const mm = String(dt.getMonth()+1).padStart(2,'0'); const dd = String(dt.getDate()).padStart(2,'0');
+    return `${yy}-${mm}-${dd}`;
+  }catch{
+    return baseISO;
+  }
 }
 
 const styles = StyleSheet.create({

@@ -11,6 +11,7 @@ export type OcrExtracted = {
 export type OcrScanPayload = {
   raw: string;
   extracted?: OcrExtracted;
+  structured?: { kind: 'progress-table'; items: Array<{ title: string; weekday: number; from: number; to: number; startDate?: string; endDate?: string; location?: string; }> };
   defaultTypeId?: string;
   projectId?: string;
 };

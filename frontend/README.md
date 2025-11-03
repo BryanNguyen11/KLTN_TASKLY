@@ -42,6 +42,29 @@ To learn more about developing your project with Expo, look at the following res
 - [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
 - [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
 
+## AI scan → Auto-create schedule
+
+This app can read a timetable or event image/PDF and auto-create calendar entries:
+
+- Where: On the Create Event screen, tap "Tạo lịch tự động".
+- Sources: Choose "Chọn ảnh từ thư viện" or "Chọn PDF/Tệp".
+- Flow: The image/PDF is uploaded to the backend at `/api/events/scan-image` or `/api/events/scan-file`. The server runs OCR (Gemini Vision if configured, fallback to Tesseract) and returns raw text. The app parses weekly blocks (Thứ 2…Chủ nhật, Tiết, Phòng, GV) and shows a preview to select/edit before creating events.
+
+Setup checklist:
+
+- Frontend `.env`: set `EXPO_PUBLIC_API_BASE` to your backend (e.g. `http://<LAN-IP>:5050`). A helper script exists: `npm run update:ip`.
+- Backend `.env`: `PORT=5050`, `MONGO_URI=...`, `JWT_SECRET=...` and optionally `GEMINI_API_KEY` for higher OCR quality.
+- Restart Expo after changing `.env`.
+
+Troubleshooting:
+
+- If OCR preview is empty: use a clearer image, ensure day headers like `Thứ 2 10/02/2025` exist. You can still fall back to single-event extraction from the same scan.
+- iOS photo access Limited: the app will prompt to "Chọn thêm ảnh" or open Settings.
+- Device cannot reach backend: run Expo with tunnel or align `EXPO_PUBLIC_API_BASE` with your LAN IP and backend port.
+- PDF not recognized: install `pdf-parse` on the backend (already included in package.json). Ensure server logs show `/api/events/scan-file` hit.
+
+Privacy note: Images/files are processed on your backend. If Gemini is configured, an image is sent to Google to obtain OCR text only.
+
 ## Join the community
 
 Join our community of developers creating universal apps.

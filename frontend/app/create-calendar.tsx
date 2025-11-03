@@ -344,10 +344,11 @@ export default function CreateEventScreen(){
         }
         res = await axios.post(`${API_BASE}/api/events/scan-image`, { imageBase64 }, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
       }
-  const extracted = res.data?.extracted || {};
-      const raw = res.data?.raw || '';
+    const extracted = res.data?.extracted || {};
+    const structured = res.data?.structured;
+    const raw = res.data?.raw || '';
       // Always go to preview screen for confirmation
-  setOcrScanPayload({ raw, extracted, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
+  setOcrScanPayload({ raw, extracted, structured, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
       router.push('/scan-preview');
     } catch (e:any) {
       const reason = e?.response?.data?.reason;
@@ -380,9 +381,10 @@ Lý do: ${reason}` : message);
       // @ts-ignore React Native FormData file
       formData.append('file', { uri, name, type: mime });
       const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
-  const raw = res.data?.raw || '';
-  const extracted = res.data?.extracted || {};
-  setOcrScanPayload({ raw, extracted, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
+    const raw = res.data?.raw || '';
+    const extracted = res.data?.extracted || {};
+    const structured = res.data?.structured;
+  setOcrScanPayload({ raw, extracted, structured, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
       router.push('/scan-preview');
     } catch (e:any) {
       const reason = e?.response?.data?.reason;

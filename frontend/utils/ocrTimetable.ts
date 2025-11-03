@@ -26,33 +26,69 @@ function norm(s: string){
   return stripDiacritics(s).toLowerCase();
 }
 
-// A rough mapping commonly used: (heuristic, user can edit later)
-const SLOT_DEFAULTS: Record<string, { startTime: string; endTime: string }> = {
-  '1-3': { startTime: '07:30', endTime: '10:15' },
-  '4-6': { startTime: '10:30', endTime: '13:15' },
-  '7-9': { startTime: '13:30', endTime: '16:15' },
-  '10-12': { startTime: '16:30', endTime: '19:15' },
-  '13-15': { startTime: '19:30', endTime: '22:15' },
+// School standard period mapping (from provided table)
+// Morning:
+// 1: 06:30–07:20, 2: 07:20–08:10, 3: 08:10–09:00, break 10',
+// 4: 09:10–10:00, 5: 10:00–10:50, 6: 10:50–11:40
+// Afternoon:
+// 7: 12:30–13:20, 8: 13:20–14:10, 9: 14:10–15:00, break 10',
+// 10: 15:10–16:00, 11: 16:00–16:50, 12: 16:50–17:40
+// Evening:
+// 13: 18:00–18:50, 14: 18:50–19:40, break 10',
+// 15: 19:50–20:40, 16: 20:40–21:30
+// Base period time map (school standard). We additionally normalize afternoon numbering 9..12 -> 7..10
+// to support timetables that label afternoon periods as 9..12 while using the same actual times.
+const PERIOD_TIME: Record<number, { start: string; end: string }> = {
+  1: { start: '06:30', end: '07:20' },
+  2: { start: '07:20', end: '08:10' },
+  3: { start: '08:10', end: '09:00' },
+  4: { start: '09:10', end: '10:00' },
+  5: { start: '10:00', end: '10:50' },
+  6: { start: '10:50', end: '11:40' },
+  7: { start: '12:30', end: '13:20' },
+  8: { start: '13:20', end: '14:10' },
+  9: { start: '14:10', end: '15:00' },
+  10: { start: '15:10', end: '16:00' },
+  11: { start: '16:00', end: '16:50' },
+  12: { start: '16:50', end: '17:40' },
+  13: { start: '18:00', end: '18:50' },
+  14: { start: '18:50', end: '19:40' },
+  15: { start: '19:50', end: '20:40' },
+  16: { start: '20:40', end: '21:30' },
 };
 
-function periodsToSlot(from: number, to: number): 'morning' | 'afternoon' | 'evening' {
-  if (to <= 6) return 'morning';
-  if (to <= 12) return 'afternoon';
+// Some universities label afternoon periods as 9..12 instead of 7..10.
+// Normalize those labels to keep a single time table: 9->7, 10->8, 11->9, 12->10
+function normalizePeriodNumber(n: number): number {
+  // Allow opt-out via env if ever needed
+  const scheme = (process.env.EXPO_PUBLIC_PERIOD_SCHEME || 'vn-9-12').toLowerCase();
+  if (scheme === 'vn-9-12') {
+    if (n >= 9 && n <= 12) return n - 2; // 9..12 -> 7..10
+  }
+  return n;
+}
+
+export function periodsToSlot(from: number, to: number): 'morning' | 'afternoon' | 'evening' {
+  const f = normalizePeriodNumber(from);
+  const t = normalizePeriodNumber(to);
+  if (t <= 6) return 'morning';
+  if (t <= 12) return 'afternoon';
   return 'evening';
 }
 
-function periodsToTime(from: number, to: number): { startTime: string; endTime: string } {
-  const key = `${from}-${to}`;
-  if (SLOT_DEFAULTS[key]) return SLOT_DEFAULTS[key];
-  // fallback: estimate 45 min per period from 07:30 baseline
-  const base = new Date(`1970-01-01T07:30:00`);
-  const mins = (from - 1) * 45;
-  const dur = (to - from + 1) * 45;
-  const s = new Date(base.getTime() + mins * 60000);
-  const e = new Date(s.getTime() + dur * 60000);
-  const hh = (d: Date) => String(d.getHours()).padStart(2, '0');
-  const mm = (d: Date) => String(d.getMinutes()).padStart(2, '0');
-  return { startTime: `${hh(s)}:${mm(s)}`, endTime: `${hh(e)}:${mm(e)}` };
+export function periodsRangeToTime(from: number, to: number): { startTime: string; endTime: string } {
+  const f = normalizePeriodNumber(from);
+  const t = normalizePeriodNumber(to);
+  const s = PERIOD_TIME[f]?.start;
+  const e = PERIOD_TIME[t]?.end;
+  if (s && e) return { startTime: s, endTime: e };
+  // Fallback if an unexpected period range appears
+  const firstKnown = Object.keys(PERIOD_TIME).map(Number).sort((a,b)=>a-b)[0];
+  const lastKnown = Object.keys(PERIOD_TIME).map(Number).sort((a,b)=>a-b).slice(-1)[0];
+  const clamp = (n:number) => Math.min(lastKnown, Math.max(firstKnown, n));
+  const s2 = PERIOD_TIME[clamp(f)]?.start || '07:30';
+  const e2 = PERIOD_TIME[clamp(t)]?.end || '09:00';
+  return { startTime: s2, endTime: e2 };
 }
 
 function toISO(y: number, m: number, d: number) {
@@ -89,23 +125,37 @@ function chooseTitle(lines: string[]): string {
 }
 
 function parseDayHeader(line: string): { weekday: number; label: string; date?: string } | null {
-  // Accept: "Thứ 2" .. "Thứ 7", "Chủ nhật" with or without accents
+  // Accept variants: "Thứ 2".."Thứ 7", "Chủ nhật", and spelled-out words (hai, ba, tư, nam, sáu, bảy)
   const raw = line.trim();
-  const norm = stripDiacritics(raw).toLowerCase();
-  // Detect weekday
+  const n = stripDiacritics(raw).toLowerCase();
+  // Detect weekday by number or name
   let weekday: number | null = null;
-  let label = raw;
-  const mThu = norm.match(/\bthu\s*(2|3|4|5|6|7)\b/);
+  // 1) Numeric form: Thu 2..7
+  const mThu = n.match(/\bthu\s*(2|3|4|5|6|7)\b/);
   if (mThu) {
     weekday = parseInt(mThu[1], 10);
   }
+  // 2) Spelled-out names
   if (weekday === null) {
-    if (/\bchu\s*nhat\b/.test(norm)) weekday = 7;
+    const mapByName: Record<string, number> = {
+      'hai': 2,
+      'ba': 3,
+      'tu': 4, // "tư" normalized
+      'nam': 5,
+      'sau': 6,
+      'bay': 7 // "bảy" normalized
+    };
+    const mName = n.match(/\bthu\s*(hai|ba|tu|nam|sau|bay)\b/);
+    if (mName) weekday = mapByName[mName[1]] || null;
+  }
+  // 3) Chu nhat
+  if (weekday === null) {
+    if (/\bchu\s*nhat\b/.test(n)) weekday = 7;
   }
   if (!weekday) return null;
   // Extract date (prefer from raw)
   const mDate = raw.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/)
-    || norm.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    || n.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   let date: string | undefined;
   if (mDate) {
     const d = parseInt(mDate[1], 10), mm = parseInt(mDate[2], 10), y = parseInt(mDate[3], 10);
@@ -147,7 +197,11 @@ export function parseWeeklyFromRaw(raw: string): WeekdayBlock[] {
   pushCurrent();
 
   // Helper matchers (diacritics-insensitive)
-  const isTietLine = (s: string) => /^(tiet|tiet)\b|^(ti?t)\b/i.test(norm(s)) || norm(s).startsWith('tiet');
+  // Detect any line that mentions periods/lessons "Tiết" or common OCR variants
+  const isTietLine = (s: string) => {
+    const t = norm(s);
+    return /\btiet\b|\btie?t\b/i.test(t) || t.startsWith('tiet') || /\bperiods?\b|\blesson\b/i.test(t);
+  };
   const extractPeriods = (s: string): { from: number; to: number } | null => {
     // Accept formats like:
     //  "Tiết: 1 - 3" | "Tiet 1-3" | "Tiet:1 – 3" | anywhere in the line
@@ -185,16 +239,16 @@ export function parseWeeklyFromRaw(raw: string): WeekdayBlock[] {
       const seg = buf.slice(b.start, b.end + 1);
       const title = chooseTitle(seg);
       const tz = seg.find(s => isTietLine(s));
-      const rm = seg.find(s => /^(Phòng|Phong)\s*:?/i.test(s));
-      const gv = seg.find(s => /^GV\s*:?/i.test(s));
+  const rm = seg.find(s => /^(Phòng|Phong|Địa\s*điểm|Dia\s*diem)\s*:?/i.test(s));
+  const gv = seg.find(s => /^(GV|Giảng\s*viên|Giang\s*vien)\s*:?/i.test(s));
       const nt = seg.find(s => /^(Ghi chú|Ghi chu)\s*:?/i.test(s));
       let from = 1, to = 3;
       const p = tz ? extractPeriods(tz) : null;
       if (p) { from = p.from; to = p.to; }
-      const slot = periodsToSlot(from, to);
-      const { startTime, endTime } = periodsToTime(from, to);
-      const location = rm?.replace(/^Phòng\s*:\s*/i, '').trim();
-      const lecturer = gv?.replace(/^GV\s*:\s*/i, '').trim();
+  const slot = periodsToSlot(from, to);
+  const { startTime, endTime } = periodsRangeToTime(from, to);
+  const location = rm?.replace(/^(Phòng|Phong|Địa\s*điểm|Dia\s*diem)\s*:\s*/i, '').trim();
+  const lecturer = gv?.replace(/^(GV|Giảng\s*viên|Giang\s*vien)\s*:\s*/i, '').trim();
       const notes = nt?.replace(/^Ghi chú\s*:\s*/i, '').trim();
       const date = d.date || '';
       d.events.push({ title, date, periods: { from, to }, slot, startTime, endTime, location, lecturer, notes });
@@ -218,16 +272,16 @@ export function parseWeeklyFromRaw(raw: string): WeekdayBlock[] {
       const seg = buf.slice(Math.max(0, titleIdx), nextIdx);
       const title = chooseTitle(seg);
       const tz = seg.find(s => isTietLine(s));
-      const rm = seg.find(s => /^(Phòng|Phong)\s*:?/i.test(s));
-      const gv = seg.find(s => /^GV\s*:?/i.test(s));
+  const rm = seg.find(s => /^(Phòng|Phong|Địa\s*điểm|Dia\s*diem)\s*:?/i.test(s));
+  const gv = seg.find(s => /^(GV|Giảng\s*viên|Giang\s*vien)\s*:?/i.test(s));
       const nt = seg.find(s => /^(Ghi chú|Ghi chu)\s*:?/i.test(s));
       let from = 1, to = 3;
       const p = tz ? extractPeriods(tz) : null;
       if (p) { from = p.from; to = p.to; }
-      const slot = periodsToSlot(from, to);
-      const { startTime, endTime } = periodsToTime(from, to);
-      const location = rm?.replace(/^(Phòng|Phong)\s*:\s*/i, '').trim();
-      const lecturer = gv?.replace(/^GV\s*:\s*/i, '').trim();
+  const slot = periodsToSlot(from, to);
+  const { startTime, endTime } = periodsRangeToTime(from, to);
+  const location = rm?.replace(/^(Phòng|Phong|Địa\s*điểm|Dia\s*diem)\s*:\s*/i, '').trim();
+  const lecturer = gv?.replace(/^(GV|Giảng\s*viên|Giang\s*vien)\s*:\s*/i, '').trim();
       const notes = nt?.replace(/^(Ghi chú|Ghi chu)\s*:\s*/i, '').trim();
       events.push({ title, date: '', periods: { from, to }, slot, startTime, endTime, location, lecturer, notes });
     }

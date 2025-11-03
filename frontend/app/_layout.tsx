@@ -42,6 +42,7 @@ export default function RootLayout() {
               <Stack.Screen name="create-task" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="create-calendar" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="create-project" options={{ headerShown:false, animation:'slide_from_right' }} />
+              <Stack.Screen name="project-settings/[id]" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="search" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="notifications" options={{ headerShown:false, animation:'slide_from_right' }} />
               <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
