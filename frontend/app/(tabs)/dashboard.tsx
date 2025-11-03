@@ -698,20 +698,15 @@ export default function DashboardScreen() {
     lastSummaryAtRef.current = now;
     // reset skip flag so the next upcoming-notifications pass will skip once
     upcomingSkippedOnceRef.current = false;
-    // Also send a remote push to the phone when a valid push token exists
+    // Tránh double OS notification khi đăng nhập:
+    // - Nếu đã có pushToken (sẽ nhận thông báo từ backend), không gửi OS notification từ client.
+    // - Nếu không có pushToken và đang giả lập (Expo Go), chỉ khi đó mới gửi local notification.
     (async () => {
       try {
-        if (pushToken) {
-          const body = countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào';
-          await axios.post(`${API_BASE}/api/users/me/push-send`, { title: 'Tác vụ hôm nay', body, data: { type: 'today-summary', count: countToday } }, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
-        } else {
-          // No remote push available: show OS notification immediately as fallback
+        if (!pushToken && shouldSimulatePush) {
           await fireLocalImmediate('Tác vụ hôm nay', countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào', { type: 'today-summary', count: countToday });
         }
-      } catch(_) {
-        // Remote push failed: try a local OS notification as a fallback
-        await fireLocalImmediate('Tác vụ hôm nay', countToday > 0 ? `${countToday} tác vụ còn lại` : 'Không còn tác vụ nào', { type: 'today-summary', count: countToday });
-      }
+      } catch(_) { /* ignore */ }
     })();
   }, [token, loading, tasks]);
   // Fetch projects
@@ -1722,9 +1717,9 @@ export default function DashboardScreen() {
                 >
                   <View style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle, { position:'relative' }]}>          
                     {celebrateId === item.id && <ConfettiBurst />}
-                    <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:12 }}>
+                    <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:10 }}>
                       <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
-                        {item.completed && <Ionicons name="checkmark" size={16} color="#fff" />}
+                        {item.completed && <Ionicons name="checkmark" size={14} color="#fff" />}
                       </Animated.View>
                     </Pressable>
                     <Pressable
@@ -1801,7 +1796,9 @@ export default function DashboardScreen() {
                   return (
                     <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                        <Text style={styles.projectName}>{p.name}</Text>
+                        <View style={{ flex:1, paddingRight:8 }}>
+                          <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
+                        </View>
                         <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
@@ -1828,7 +1825,9 @@ export default function DashboardScreen() {
                   return (
                     <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                        <Text style={styles.projectName}>{p.name}</Text>
+                        <View style={{ flex:1, paddingRight:8 }}>
+                          <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
+                        </View>
                         <Text style={[styles.leaderBadge,{ backgroundColor:'#2f6690' }]}>Thành viên</Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
@@ -2410,12 +2409,12 @@ const styles = StyleSheet.create({
   taskDone: { backgroundColor: 'rgba(217,220,214,0.15)', opacity: 0.75 },
   deadlineTodayCard:{ borderWidth:1, borderColor:'#6d28d9' },
   deadlineOverdueCard:{ borderWidth:1, borderColor:'#dc2626' },
-  checkCircle: { width:28, height:28, borderRadius:14, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center', marginRight: 12 },
+  checkCircle: { width:22, height:22, borderRadius:11, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center', marginRight: 12 },
   checkCircleDone: { backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
   priorityDot: { width:10, height:10, borderRadius:5, marginRight: 12 },
   taskTitle: { fontSize:15, fontWeight:'500', color:'#16425b', marginBottom:4 },
   taskTitleDone: { textDecorationLine:'line-through', color:'#2f6690' },
-  metaRow: { flexDirection:'row', alignItems:'center', gap:6 },
+  metaRow: { flexDirection:'row', alignItems:'center', gap:6, flexWrap:'wrap' },
   metaText: { fontSize:12, color:'#2f6690', marginLeft:4, marginRight:8 },
   groupBadge: { fontSize:11, backgroundColor:'#81c3d7', color:'#fff', paddingHorizontal:8, paddingVertical:2, borderRadius:12 },
   importanceBadge:{ fontSize:11, backgroundColor:'rgba(58,124,165,0.15)', color:'#2f6690', paddingHorizontal:8, paddingVertical:2, borderRadius:12, marginRight:8 },

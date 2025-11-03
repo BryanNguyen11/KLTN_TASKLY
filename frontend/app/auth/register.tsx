@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -18,6 +18,20 @@ export default function RegisterScreen() {
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Inline validate để hiện lỗi ngay dưới ô nhập
+  const emailError = useMemo(() => {
+    if(!email) return null;
+    return validateEmail(email) ? null : 'Email không hợp lệ (chỉ @gmail.com)';
+  }, [email]);
+  const passwordError = useMemo(() => {
+    if(!password) return null;
+    return validatePassword(password) ? null : 'Mật khẩu tối thiểu 8 ký tự';
+  }, [password]);
+  const confirmError = useMemo(() => {
+    if(!confirm) return null;
+    return password === confirm ? null : 'Mật khẩu nhập lại không khớp';
+  }, [password, confirm]);
 
   const handleRegister = async () => {
   if (!email || !password || !confirm) {
@@ -77,9 +91,9 @@ export default function RegisterScreen() {
           <Text style={styles.subtitle}>Bắt đầu trải nghiệm Taskly</Text>
         </View>
 
-  <Field label="Email" icon="mail" value={email} onChangeText={setEmail} placeholder="student@gmail.com" keyboardType="email-address" />
-        <Field label="Mật khẩu" icon="lock-closed" value={password} onChangeText={setPassword} placeholder="••••••" secureTextEntry />
-        <Field label="Nhập lại mật khẩu" icon="repeat" value={confirm} onChangeText={setConfirm} placeholder="••••••" secureTextEntry />
+  <Field label="Email" required icon="mail" value={email} onChangeText={setEmail} placeholder="student@gmail.com" keyboardType="email-address" error={emailError || undefined} />
+    <Field label="Mật khẩu" required icon="lock-closed" value={password} onChangeText={setPassword} placeholder="••••••" secureTextEntry error={passwordError || undefined} />
+    <Field label="Nhập lại mật khẩu" required icon="repeat" value={confirm} onChangeText={setConfirm} placeholder="••••••" secureTextEntry error={confirmError || undefined} />
 
         {error && <Text style={styles.error}>{error}</Text>}
 
@@ -95,11 +109,11 @@ export default function RegisterScreen() {
   );
 }
 
-interface FieldProps { label: string; icon: any; value: string; onChangeText: (t: string) => void; placeholder?: string; secureTextEntry?: boolean; keyboardType?: any; }
-const Field = ({ label, icon, value, onChangeText, placeholder, secureTextEntry, keyboardType }: FieldProps) => (
+interface FieldProps { label: string; icon: any; value: string; onChangeText: (t: string) => void; placeholder?: string; secureTextEntry?: boolean; keyboardType?: any; error?: string; required?: boolean; }
+const Field = ({ label, icon, value, onChangeText, placeholder, secureTextEntry, keyboardType, error, required }: FieldProps) => (
   <View style={styles.field}>          
-    <Text style={styles.label}>{label}</Text>
-    <View style={styles.inputWrapper}>
+    <Text style={styles.label}>{label}{required ? ' *' : ''}</Text>
+    <View style={[styles.inputWrapper, error && styles.inputWrapperError]}>
       <Ionicons name={icon} size={18} color="#666" style={styles.inputIcon} />
       <TextInput
         placeholder={placeholder}
@@ -112,6 +126,7 @@ const Field = ({ label, icon, value, onChangeText, placeholder, secureTextEntry,
         keyboardType={keyboardType}
       />
     </View>
+    {!!error && <Text style={styles.fieldError}>{error}</Text>}
   </View>
 );
 
@@ -126,6 +141,7 @@ const styles = StyleSheet.create({
   field: { marginBottom: 16 },
   label: { fontSize: 14, fontWeight: '500', marginBottom: 6, color: '#111827' },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: 14, borderWidth: 1, borderColor: '#e2e8f0', paddingHorizontal: 12 },
+  inputWrapperError: { borderColor: '#dc2626', backgroundColor: '#fff1f2' },
   inputIcon: { marginRight: 6 },
   input: { flex: 1, height: 48, fontSize: 16 },
   button: { backgroundColor: '#2563eb', height: 52, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
@@ -134,4 +150,5 @@ const styles = StyleSheet.create({
   footerText: { textAlign: 'center', marginTop: 18, fontSize: 13, color: '#374151' },
   link: { color: '#2563eb', fontWeight: '600' },
   error: { color: '#dc2626', textAlign: 'center', marginBottom: 8, fontSize: 13 },
+  fieldError: { color: '#dc2626', marginTop: 6, fontSize: 12 },
 });

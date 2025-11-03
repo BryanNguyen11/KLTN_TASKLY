@@ -11,7 +11,9 @@
     "lint": "expo lint",
     "update:ip": "node ./scripts/update-env-ip.js",
     "start:mac": "npm run update:ip -- 5050 && expo start",
-    "start:win": "npm run update:ip -- 5000 && expo start"
+    "start:win": "npm run update:ip -- 5000 && expo start",
+    "start:offline": "expo start -c --offline",
+    "start:offline:win": "set EXPO_OFFLINE=1&& set EXPO_NO_TELEMETRY=1&& expo start -c --offline"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

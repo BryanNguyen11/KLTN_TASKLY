@@ -97,23 +97,16 @@ mongoose.connect(process.env.MONGO_URI)
         const users = await User.find({ expoPushTokens: { $exists: true, $not: { $size: 0 } } }).select('_id expoPushTokens lastDailyPushDate name');
         for(const u of users){
           if(u.lastDailyPushDate === todayISO) continue;
-          const tasks = await Task.find({ $or:[ { userId: u._id }, { assignedTo: u._id } ], status: { $ne: 'completed' } }).select('date endDate repeat title');
-          const occursToday = (t) => {
-            const start = t.date;
-            const end = t.endDate || t.date;
-            if(start <= todayISO && todayISO <= end) return true;
-            const r = t.repeat; if(!r || todayISO < start) return false;
-            const diffDays = (a,b)=> Math.round((new Date(b)-new Date(a))/86400000);
-            const diffMonths = (a,b)=> { const A=new Date(a), B=new Date(b); return (B.getFullYear()-A.getFullYear())*12 + (B.getMonth()-A.getMonth()); };
-            if(r.frequency==='daily'){ const k = diffDays(start, todayISO); return k>=0; }
-            if(r.frequency==='weekly'){ const k = Math.floor(diffDays(start, todayISO)/7); return k>=0; }
-            if(r.frequency==='monthly'){ const m = diffMonths(start, todayISO); return m>=0; }
-            if(r.frequency==='yearly'){ const A=new Date(start), B=new Date(todayISO); const years=B.getFullYear()-A.getFullYear(); return years>=0; }
-            return false;
-          };
-          const todays = tasks.filter(occursToday);
-          if(todays.length>0){
-            await sendExpoPush(u.expoPushTokens, 'Tác vụ hôm nay', `${todays.length} tác vụ cần hoàn thành`, { type:'daily-summary', count: todays.length }, { ttl: 600 });
+          // Only count tasks whose endDate is today (per requirement)
+          const count = await Task.countDocuments({
+            status: { $ne: 'completed' },
+            $and: [
+              { $or: [ { userId: u._id }, { assignedTo: u._id } ] },
+              { endDate: todayISO }
+            ]
+          });
+          if(count > 0){
+            await sendExpoPush(u.expoPushTokens, 'Tác vụ hôm nay', `${count} tác vụ cần hoàn thành`, { type:'daily-summary', count }, { ttl: 600 });
             u.lastDailyPushDate = todayISO; await u.save();
           }
         }
