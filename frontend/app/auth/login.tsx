@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, ScrollView } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -48,9 +49,12 @@ export default function LoginScreen() {
         >
         <View style={styles.card}>
           <View style={styles.logoWrapper}>
-            <View style={styles.logoCircle}>
-              <Ionicons name="school" size={42} color="#fff" />
-            </View>
+            <Image
+              source={require('../../assets/images/icon.png')}
+              style={styles.logoImage}
+              contentFit="contain"
+              accessibilityLabel="Taskly Logo"
+            />
             <Text style={styles.brand}>Taskly</Text>
             <Text style={styles.subtitle}>
               Quản lý thời gian & công việc cho sinh viên
@@ -131,15 +135,7 @@ const styles = StyleSheet.create({
     elevation: 4
   },
   logoWrapper: { alignItems: 'center', marginBottom: 24 },
-  logoCircle: {
-    width: 90,
-    height: 90,
-    borderRadius: 28,
-    backgroundColor: '#2563eb',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12
-  },
+  logoImage: { width: 96, height: 96, borderRadius: 20, marginBottom: 12 },
   brand: { fontSize: 30, fontWeight: '600', color: '#111827' },
   subtitle: { fontSize: 13, color: '#4b5563', textAlign: 'center' },
   field: { marginBottom: 16 },

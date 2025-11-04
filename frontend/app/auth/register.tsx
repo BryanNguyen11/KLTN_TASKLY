@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { View, Text, TextInput, StyleSheet, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
@@ -84,9 +85,12 @@ export default function RegisterScreen() {
           <Ionicons name="arrow-back" size={22} color="#1f2937" />
         </Pressable>
         <View style={styles.logoWrapper}>
-          <View style={styles.logoCircle}>
-            <Ionicons name="person-add" size={40} color="#fff" />
-          </View>
+          <Image
+            source={require('../../assets/images/icon.png')}
+            style={styles.logoImage}
+            contentFit="contain"
+            accessibilityLabel="Taskly Logo"
+          />
           <Text style={styles.brand}>Tạo tài khoản</Text>
           <Text style={styles.subtitle}>Bắt đầu trải nghiệm Taskly</Text>
         </View>
@@ -135,7 +139,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: 24, padding: 24, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 4 },
   backBtn: { position: 'absolute', top: 16, left: 16, zIndex: 10, backgroundColor: '#fff', padding: 8, borderRadius: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowOffset: { width:0, height:2 }, shadowRadius: 4 },
   logoWrapper: { alignItems: 'center', marginBottom: 24 },
-  logoCircle: { width: 90, height: 90, borderRadius: 28, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  logoImage: { width: 96, height: 96, borderRadius: 20, marginBottom: 12 },
   brand: { fontSize: 30, fontWeight: '600', color: '#111827' },
   subtitle: { fontSize: 13, color: '#4b5563', textAlign: 'center' },
   field: { marginBottom: 16 },

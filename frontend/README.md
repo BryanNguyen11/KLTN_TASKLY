@@ -65,6 +65,26 @@ Troubleshooting:
 
 Privacy note: Images/files are processed on your backend. If Gemini is configured, an image is sent to Google to obtain OCR text only.
 
+## Branding (App Icon, Splash, Favicon)
+
+To use your custom Taskly logo across the app:
+
+- Replace `assets/images/icon.png` with your square PNG (recommend 1024x1024, no transparency for iOS store uploads).
+- Android adaptive icon (optional, already wired):
+   - Foreground: `assets/images/android-icon-foreground.png` (transparent background, centered glyph)
+   - Background: `assets/images/android-icon-background.png` (solid color or gradient). Config in `app.json > android.adaptiveIcon`.
+   - Monochrome (optional): `assets/images/android-icon-monochrome.png` for themed icons on Android 13+.
+- Web favicon: replace `assets/images/favicon.png`.
+- Splash: replace `assets/images/splash-icon.png` or adjust `expo-splash-screen` plugin config in `app.json`.
+
+After replacing files, restart Expo:
+
+```bash
+npm run start:offline
+```
+
+If the icon doesn't update on a physical device, uninstall the app first (caches the icon).
+
 ## Join the community
 
 Join our community of developers creating universal apps.

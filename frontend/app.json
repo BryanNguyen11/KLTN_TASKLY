@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "frontend",
-    "slug": "frontend",
+    "name": "Taskly",
+    "slug": "taskly",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "frontend",
+  "scheme": "taskly",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
