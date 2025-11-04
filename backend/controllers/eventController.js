@@ -75,19 +75,36 @@ async function tryExternalOCR(buffer){
 }
 
 // Google Gemini Vision OCR (free tier friendly) – returns plain text
-async function tryGeminiOCR(buffer){
+async function tryGeminiOCR(buffer, userPrompt){
   try{
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI) return null;
-    const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const candidates = [
+      process.env.GEMINI_MODEL,
+      // Latest aliases first
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-pro-latest',
+      // Specific revisions
+      'gemini-1.5-flash-002',
+      'gemini-1.5-pro-002',
+      'gemini-1.5-flash-001',
+      'gemini-1.5-pro-001',
+      // 8B variants
+      'gemini-1.5-flash-8b-latest',
+      'gemini-1.5-flash-8b-001',
+      'gemini-1.5-flash-8b',
+      // Base names
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      // Legacy names for image
+      'gemini-pro-vision'
+    ].filter(Boolean);
     const genAI = new GoogleGenerativeAI(key);
-    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision model=${modelName} keyPresent=${!!key}`);
     // Generation config from env (defaults optimized for OCR: deterministic)
     const temp = isFinite(parseFloat(process.env.GEMINI_TEMPERATURE||'')) ? parseFloat(process.env.GEMINI_TEMPERATURE||'') : 0;
     const topP = isFinite(parseFloat(process.env.GEMINI_TOP_P||'')) ? parseFloat(process.env.GEMINI_TOP_P||'') : undefined;
     const topK = isFinite(parseInt(process.env.GEMINI_TOP_K||'')) ? parseInt(process.env.GEMINI_TOP_K||'') : undefined;
     const maxOutputTokens = isFinite(parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS||'')) ? parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS||'') : undefined;
-    const model = genAI.getGenerativeModel({ model: modelName });
     const b64 = buffer.toString('base64');
     const prompt = [
       'You are an OCR engine. Return ONLY the UTF-8 plain text extracted from the image.',
@@ -97,11 +114,21 @@ async function tryGeminiOCR(buffer){
       "- Do not translate or summarize; don't add commentary or Markdown.",
       "- If the image is a weekly timetable in Vietnamese, include day headers exactly as they appear, e.g. 'Thứ 2 10/02/2025', 'Thứ 3 11/02/2025', ... 'Chủ nhật 16/02/2025'.",
       '- Keep each cell/box content as separate lines, including labels like "Tiết:", "Phòng:", "GV:", "Ghi chú:".',
+      userPrompt ? `Additional user instruction: ${String(userPrompt).slice(0, 500)}` : '',
     ].join('\n');
     const contents = [{ role: 'user', parts: [ { text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: b64 } } ] }];
     const generationConfig = { temperature: temp, ...(topP!==undefined? { topP }: {}), ...(topK!==undefined? { topK }: {}), ...(maxOutputTokens!==undefined? { maxOutputTokens }: {}) };
-    const result = await model.generateContent({ contents, generationConfig });
-    let text = String(result?.response?.text?.() || '').trim();
+
+    let text = '';
+    for(const name of candidates){
+      try{
+        if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision model=${name}`);
+        const model = genAI.getGenerativeModel({ model: name });
+        const result = await model.generateContent({ contents, generationConfig });
+        text = String(result?.response?.text?.() || '').trim();
+        if(text) break;
+      }catch(e){ if(OCR_DEBUG) console.log(`[OCR] model ${name} failed: ${e?.message||e}`); }
+    }
     if(OCR_DEBUG) console.log(`[OCR] Gemini response length=${text.length}`);
     if(!text) return null;
     // Strip possible Markdown fences
@@ -111,12 +138,30 @@ async function tryGeminiOCR(buffer){
 }
 
 // Vision → structured JSON (skip OCR text step, ask directly for JSON items)
-async function tryGeminiVisionToStructured(buffer){
+async function tryGeminiVisionToStructured(buffer, userPrompt){
   try{
     const key = process.env.GEMINI_API_KEY; if(!key || !GoogleGenerativeAI) return null;
-    const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const candidates = [
+      process.env.GEMINI_MODEL,
+      // Latest aliases first
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-pro-latest',
+      // Specific revisions
+      'gemini-1.5-flash-002',
+      'gemini-1.5-pro-002',
+      'gemini-1.5-flash-001',
+      'gemini-1.5-pro-001',
+      // 8B variants
+      'gemini-1.5-flash-8b-latest',
+      'gemini-1.5-flash-8b-001',
+      'gemini-1.5-flash-8b',
+      // Base names
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      // Legacy names for image
+      'gemini-pro-vision'
+    ].filter(Boolean);
     const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: modelName });
     const prompt = [
       'Bạn là engine OCR + trích xuất thời khoá biểu (tiếng Việt).',
       'Chỉ trả về JSON hợp lệ theo schema. Không giải thích hay Markdown.',
@@ -124,41 +169,50 @@ async function tryGeminiVisionToStructured(buffer){
       '- weekday: Thứ 2..7 => 2..7; Chủ nhật => 7',
       '- from/to: số tiết theo "Tiết a-b"; nếu bảng dùng 9–12 cho buổi chiều, vẫn ghi 9..12',
       '- startDate/endDate: nếu có ngày bắt đầu/kết thúc, điền ISO; nếu không rõ để ""',
+      userPrompt ? `Yêu cầu bổ sung của người dùng: ${String(userPrompt).slice(0, 500)}` : '',
     ].join('\n');
     const b64 = buffer.toString('base64');
-    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision structured model=${modelName}`);
-    const result = await model.generateContent({
-      contents: [ { role:'user', parts:[ { text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: b64 } } ] } ],
-      generationConfig: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'object',
-          properties: {
-            items: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: { type:'string' },
-                  weekday: { type:'integer' },
-                  from: { type:'integer' },
-                  to: { type:'integer' },
-                  startDate: { type:'string' },
-                  endDate: { type:'string' },
-                  location: { type:'string' },
-                  lecturer: { type:'string' },
-                  notes: { type:'string' }
-                },
-                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
-              }
+
+    let raw = '';
+    for(const name of candidates){
+      try{
+        if(OCR_DEBUG) console.log(`[OCR] Trying Gemini Vision structured model=${name}`);
+        const model = genAI.getGenerativeModel({ model: name });
+        const result = await model.generateContent({
+          contents: [ { role:'user', parts:[ { text: prompt }, { inlineData: { mimeType: 'image/jpeg', data: b64 } } ] } ],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'object',
+              properties: {
+                items: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type:'string' },
+                      weekday: { type:'integer' },
+                      from: { type:'integer' },
+                      to: { type:'integer' },
+                      startDate: { type:'string' },
+                      endDate: { type:'string' },
+                      location: { type:'string' },
+                      lecturer: { type:'string' },
+                      notes: { type:'string' }
+                    },
+                    required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+                  }
+                }
+              },
+              required: ['items']
             }
-          },
-          required: ['items']
-        }
-      }
-    });
-    const raw = String(result?.response?.text?.() || '').trim();
+          }
+        });
+        raw = String(result?.response?.text?.() || '').trim();
+        if(raw) break;
+      }catch(e){ if(OCR_DEBUG) console.log(`[OCR] structured model ${name} failed: ${e?.message||e}`); }
+    }
     let data = null; try { data = JSON.parse(raw); } catch(_) { data = null; }
     const items = Array.isArray(data?.items) ? data.items : [];
     if(items.length){ if(OCR_DEBUG) console.log(`[OCR] Vision structured items=${items.length}`); return items; }
@@ -167,15 +221,32 @@ async function tryGeminiVisionToStructured(buffer){
 }
 // Gemini text-only parse for progress timetable from raw text (PDF text or OCR text)
 // Returns array of { title, weekday (2..7 for Thu 2..7, 7 for Sunday), from, to, startDate, endDate, location }
-async function tryGeminiParseProgress(text){
+async function tryGeminiParseProgress(text, userPrompt){
   try{
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI) return null;
-    const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    const candidates = [
+      process.env.GEMINI_TASK_MODEL,
+      process.env.GEMINI_MODEL,
+      // Latest aliases first
+      'gemini-1.5-pro-latest',
+      'gemini-1.5-flash-latest',
+      // Specific revisions
+      'gemini-1.5-pro-002',
+      'gemini-1.5-pro-001',
+      'gemini-1.5-flash-002',
+      'gemini-1.5-flash-001',
+      // Smaller/older
+      'gemini-1.0-pro',
+      // Base names
+      'gemini-1.5-pro',
+      'gemini-1.5-flash',
+      // v1beta classic text model
+      'gemini-pro'
+    ].filter(Boolean);
     const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: modelName });
     const temp = isFinite(parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'')) ? parseFloat(process.env.GEMINI_TASK_TEMPERATURE||'') : 0.1;
-    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini text parse model=${modelName} keyPresent=${!!key}`);
+    if(OCR_DEBUG) console.log(`[OCR] Trying Gemini text parse candidates=${candidates.join(',')}`);
     const prompt = [
       'Bạn là trợ lý trích xuất thời khoá biểu từ văn bản (tiếng Việt).',
       'Hãy phân tích văn bản dưới đây và trả về JSON với dạng:',
@@ -184,40 +255,48 @@ async function tryGeminiParseProgress(text){
       '- from/to: là số tiết theo định dạng "Tiết a-b"',
       '- startDate, endDate: nếu có ngày bắt đầu/kết thúc học phần, hãy điền theo ISO; nếu không rõ, để trống ""',
       '- Không thêm bình luận khác. Chỉ trả JSON hợp lệ.',
+      userPrompt ? `Yêu cầu bổ sung của người dùng: ${String(userPrompt).slice(0, 500)}` : '',
     ].join('\n');
     const contents = [ { role:'user', parts:[ { text: prompt }, { text } ] } ];
-    const result = await model.generateContent({
-      contents,
-      generationConfig: {
-        temperature: temp,
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: 'object',
-          properties: {
-            items: {
-              type: 'array',
-              items: {
-                type: 'object',
-                properties: {
-                  title: { type: 'string' },
-                  weekday: { type: 'integer' },
-                  from: { type: 'integer' },
-                  to: { type: 'integer' },
-                  startDate: { type: 'string' },
-                  endDate: { type: 'string' },
-                  location: { type: 'string' },
-                  lecturer: { type: 'string' },
-                  notes: { type: 'string' }
-                },
-                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
-              }
+    let raw = '';
+    for(const name of candidates){
+      try{
+        const model = genAI.getGenerativeModel({ model: name });
+        const result = await model.generateContent({
+          contents,
+          generationConfig: {
+            temperature: temp,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: 'object',
+              properties: {
+                items: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type: 'string' },
+                      weekday: { type: 'integer' },
+                      from: { type: 'integer' },
+                      to: { type: 'integer' },
+                      startDate: { type: 'string' },
+                      endDate: { type: 'string' },
+                      location: { type: 'string' },
+                      lecturer: { type: 'string' },
+                      notes: { type: 'string' }
+                    },
+                    required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+                  }
+                }
+              },
+              required: ['items']
             }
-          },
-          required: ['items']
-        }
-      }
-    });
-    const raw = String(result?.response?.text?.() || '').trim();
+          }
+        });
+        raw = String(result?.response?.text?.() || '').trim();
+        if(raw) break;
+      }catch(e){ if(OCR_DEBUG) console.log(`[OCR] text parse model ${name} failed: ${e?.message||e}`); }
+    }
     let data = null;
     try { data = JSON.parse(raw); } catch(_) { data = null; }
     const items = Array.isArray(data?.items) ? data.items : [];
@@ -307,6 +386,89 @@ function parseProgressTable(text){
     return items;
   }catch(e){ if(OCR_DEBUG) console.log('[OCR] progress-table parse error', e.message); return []; }
 }
+
+// AI transform of structured timetable items according to a free-form user prompt
+exports.aiTransform = async (req, res) => {
+  try{
+    const userId = req.user.userId;
+    const prompt = String(req.body?.prompt || '').trim();
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if(OCR_DEBUG) console.log(`[AI-TRANSFORM] prompt.len=${prompt.length} items=${items.length}`);
+    if(!prompt){ return res.status(400).json({ message: 'Thiếu prompt' }); }
+    if(items.length === 0){ return res.status(400).json({ message: 'Thiếu danh sách items để biến đổi' }); }
+    const key = process.env.GEMINI_API_KEY;
+    if(!key || !GoogleGenerativeAI){ return res.status(500).json({ message: 'Máy chủ chưa cấu hình AI' }); }
+    const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: modelName });
+    const sys = [
+      'Bạn là trợ lý chuyển đổi thời khoá biểu. Dựa trên yêu cầu của người dùng, hãy LỌC/CHỈNH SỬA/CẬP NHẬT các mục trong danh sách dưới đây.',
+      'Trả về JSON hợp lệ theo schema, không kèm giải thích hay Markdown.',
+      'Yêu cầu quan trọng:',
+      '- Nếu người dùng không yêu cầu thay đổi một trường, giữ nguyên giá trị cũ.',
+      '- Có thể xoá mục không phù hợp với yêu cầu.',
+      '- Không bịa đặt dữ liệu mới không có căn cứ.',
+      '- Giữ weekday (2..7, Chủ nhật=7) và from/to (số tiết) trong phạm vi hợp lệ. startDate/endDate có thể giữ nguyên hoặc cập nhật theo yêu cầu.',
+    ].join('\n');
+    const user = [
+      `Yêu cầu người dùng: ${prompt}`,
+      'Danh sách items (JSON):',
+      JSON.stringify({ items }, null, 2)
+    ].join('\n');
+    const result = await model.generateContent({
+      contents: [ { role:'user', parts: [ { text: sys }, { text: user } ] } ],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type:'string' },
+                  weekday: { type:'integer' },
+                  from: { type:'integer' },
+                  to: { type:'integer' },
+                  startDate: { type:'string' },
+                  endDate: { type:'string' },
+                  location: { type:'string' },
+                  lecturer: { type:'string' },
+                  notes: { type:'string' }
+                },
+                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+              }
+            }
+          },
+          required: ['items']
+        }
+      }
+    });
+    const raw = String(result?.response?.text?.() || '').trim();
+    let data = null; try{ data = JSON.parse(raw); }catch(_){ data = null; }
+    const out = Array.isArray(data?.items) ? data.items : [];
+    if(OCR_DEBUG) console.log(`[AI-TRANSFORM] in=${items.length} out=${out.length}`);
+    if(out.length === 0){ return res.json({ items }); }
+    // Sanitize numeric ranges
+    const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+    const safe = out.map(it => ({
+      title: String(it.title||'').slice(0,120) || 'Lịch học',
+      weekday: clamp(parseInt(it.weekday,10), 2, 7) || 2,
+      from: clamp(parseInt(it.from,10), 1, 16),
+      to: clamp(parseInt(it.to,10), 1, 16),
+      startDate: String(it.startDate||''),
+      endDate: String(it.endDate||''),
+      location: String(it.location||''),
+      lecturer: String(it.lecturer||''),
+      notes: String(it.notes||'')
+    })).filter(it => it.from <= it.to);
+    return res.json({ items: safe });
+  }catch(e){
+    return res.status(500).json({ message: 'Lỗi AI transform', error: e.message });
+  }
+};
 
 exports.createEvent = async (req, res) => {
   try {
@@ -458,6 +620,7 @@ exports.scanImage = async (req, res) => {
   try {
     const userId = req.user.userId;
     let buffer = null;
+    const userPrompt = (req.body && req.body.prompt) ? String(req.body.prompt) : undefined;
     if (req.file && req.file.buffer) {
       buffer = req.file.buffer;
     } else if (req.body && req.body.imageBase64) {
@@ -478,7 +641,7 @@ exports.scanImage = async (req, res) => {
         .toBuffer();
       // Try Gemini Vision structured first
       try{
-        const gStruct = await tryGeminiVisionToStructured(base);
+        const gStruct = await tryGeminiVisionToStructured(base, userPrompt);
         if(gStruct && gStruct.length){
           if(OCR_DEBUG) console.log('[OCR] Using Gemini Vision structured result');
           return res.json({ structured: { kind:'progress-table', items: gStruct }, raw: '', rawLength: 0 });
@@ -486,7 +649,7 @@ exports.scanImage = async (req, res) => {
       }catch(_){ }
       // Try Gemini OCR text next
       try{
-        const gText = await tryGeminiOCR(base);
+        const gText = await tryGeminiOCR(base, userPrompt);
         if(gText && gText.trim().length>0){
           if(OCR_DEBUG) console.log('[OCR] Using Gemini result');
           const bestText = gText.trim();
@@ -604,7 +767,7 @@ exports.scanImage = async (req, res) => {
         if (!bestText && data?.text) bestText = String(data.text).trim();
       } catch(_) {}
     }
-    if (!bestText) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr', bytes: buffer?.length||0 });
+  if (!bestText) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr', bytes: buffer?.length||0 });
     if (!text) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr', bytes: buffer?.length||0 });
 
     // Parse basic fields
@@ -708,6 +871,7 @@ exports.scanFile = async (req, res) => {
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ message: 'Thiếu tệp tải lên (file)' });
     }
+    const userPrompt = (req.body && req.body.prompt) ? String(req.body.prompt) : undefined;
     const { mimetype = '', originalname = '' } = req.file;
     const isPdf = (mimetype && mimetype.includes('pdf')) || /\.pdf$/i.test(originalname);
     if (isPdf) {
@@ -721,7 +885,7 @@ exports.scanFile = async (req, res) => {
         // Try Gemini text parsing first (AI structuring)
         try{
           if(OCR_DEBUG) console.log('[OCR] PDF detected, attempting Gemini text parse...');
-          const aiItems = await tryGeminiParseProgress(text);
+          const aiItems = await tryGeminiParseProgress(text, userPrompt);
           if(aiItems && aiItems.length){
             return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items: aiItems } });
           }
@@ -748,14 +912,14 @@ exports.scanFile = async (req, res) => {
     } catch(_e) {}
     // Try Gemini Vision structured first, then Vision OCR text, then external DEMINI
     try{
-      const gStruct = await tryGeminiVisionToStructured(buffer);
+      const gStruct = await tryGeminiVisionToStructured(buffer, userPrompt);
       if(gStruct && gStruct.length){
         const best = gStruct;
         return res.json({ raw: '', rawLength: 0, structured: { kind:'progress-table', items: best } });
       }
     }catch(_){ }
     try{
-      const gText = await tryGeminiOCR(buffer);
+      const gText = await tryGeminiOCR(buffer, userPrompt);
       if(gText && gText.trim().length>0){
         const best = gText.trim();
         return res.json({ raw: best, rawLength: best.length, extracted: {} });
@@ -796,4 +960,150 @@ exports.scanFile = async (req, res) => {
   } catch (e) {
     return res.status(500).json({ message: 'Lỗi xử lý tệp', error: e.message });
   }
+};
+
+// AI generate timetable items purely from a user prompt (no files)
+exports.aiGenerate = async (req, res) => {
+  try{
+    const userId = req.user.userId;
+    const prompt = String(req.body?.prompt || '').trim();
+    if(OCR_DEBUG) console.log(`[AI-GENERATE] prompt.len=${prompt.length}`);
+    if(!prompt) return res.status(400).json({ message: 'Thiếu prompt' });
+    const key = process.env.GEMINI_API_KEY;
+    if(!key || !GoogleGenerativeAI) return res.status(500).json({ message: 'Máy chủ chưa cấu hình AI' });
+    const primaryModel = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    const fallbackModel = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash';
+    const candidates = [
+      primaryModel,
+      fallbackModel,
+      process.env.GEMINI_MODEL,
+      'gemini-1.5-flash-8b-latest',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-pro-latest',
+      'gemini-1.5-flash-8b',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      // v1beta-compatible text model
+      'gemini-pro'
+    ].filter(Boolean);
+    const genAI = new GoogleGenerativeAI(key);
+
+    const sys = [
+      'Bạn là trợ lý tạo thời khoá biểu từ mô tả (tiếng Việt).',
+      'Hãy tạo danh sách các buổi học/sự kiện theo yêu cầu người dùng.',
+      'Yêu cầu output: CHỈ JSON hợp lệ theo schema, không giải thích hay Markdown.',
+      'Schema: { "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }',
+      '- weekday: Thứ 2..7 => 2..7; Chủ nhật => 7',
+      '- from/to: tiết 1..16; nếu không rõ, ước lượng hợp lý và nhất quán',
+      '- startDate/endDate: nếu thiếu, để ""',
+      '- Không bịa đặt quá mức: dựa theo yêu cầu. Nếu thông tin thiếu hãy để trống.',
+    ].join('\n');
+    const user = `Yêu cầu người dùng:\n${prompt}`;
+
+    const extractJson = (raw) => {
+      try{
+        if(!raw) return null;
+        let s = String(raw).trim();
+        // Strip code fences if present
+        const fence = s.match(/```(?:json)?\n([\s\S]*?)```/i);
+        if(fence) s = fence[1].trim();
+        return JSON.parse(s);
+      }catch(_){ return null; }
+    };
+
+    const sanitizeItems = (items) => {
+      // Sanitize
+      const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+      return (Array.isArray(items)? items: []).map(it => ({
+        title: String(it.title||'').slice(0,120) || 'Lịch học',
+        weekday: clamp(parseInt(it.weekday,10), 1, 7) || 2,
+        from: clamp(parseInt(it.from,10), 1, 16),
+        to: clamp(parseInt(it.to,10), 1, 16),
+        startDate: String(it.startDate||''),
+        endDate: String(it.endDate||''),
+        location: String(it.location||''),
+        lecturer: String(it.lecturer||''),
+        notes: String(it.notes||'')
+      })).filter(it => it.from <= it.to && it.weekday>=1 && it.weekday<=7);
+    };
+
+    let modelUsed = primaryModel;
+    let items = [];
+    let raw = '';
+    let primaryErr = null;
+
+    async function tryWithModel(modelName, useSchema){
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const cfg = useSchema ? {
+        temperature: 0.1,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type:'string' },
+                  weekday: { type:'integer' },
+                  from: { type:'integer' },
+                  to: { type:'integer' },
+                  startDate: { type:'string' },
+                  endDate: { type:'string' },
+                  location: { type:'string' },
+                  lecturer: { type:'string' },
+                  notes: { type:'string' }
+                },
+                required: ['title','weekday','from','to','startDate','endDate','location','lecturer','notes']
+              }
+            }
+          },
+          required: ['items']
+        }
+      } : { temperature: 0.1 };
+      const result = await model.generateContent({ contents: [ { role:'user', parts:[ { text: sys }, { text: user } ] } ], generationConfig: cfg });
+      return String(result?.response?.text?.() || '').trim();
+    }
+
+    // Iterate candidates: for each, try schema then relaxed
+    for(const name of candidates){
+      if(items.length) break;
+      try{
+        raw = await tryWithModel(name, true);
+        const data = extractJson(raw);
+        items = sanitizeItems(data?.items);
+        modelUsed = name;
+        if(OCR_DEBUG) console.log(`[AI-GENERATE] model=${name} strict items=${items.length} raw.len=${raw.length}`);
+      }catch(e){ if(OCR_DEBUG) console.log(`[AI-GENERATE] ${name} strict failed: ${e?.message||e}`); }
+      if(!items.length){
+        try{
+          raw = await tryWithModel(name, false);
+          const data = extractJson(raw);
+          items = sanitizeItems(data?.items || data?.schedule || data?.timetable);
+          modelUsed = name;
+          if(OCR_DEBUG) console.log(`[AI-GENERATE] model=${name} relaxed items=${items.length}`);
+        }catch(e){ if(OCR_DEBUG) console.log(`[AI-GENERATE] ${name} relaxed failed: ${e?.message||e}`); }
+      }
+    }
+
+    if(!items.length){
+      // Provide a clear 400 with reason and minimal debug (first 200 chars) to avoid opaque 500
+      const debug = raw ? String(raw).slice(0, 200) : undefined;
+      return res.status(400).json({ message: 'AI không tạo được danh sách phù hợp', reason: 'empty-items', model: modelUsed, debug });
+    }
+
+    return res.json({ items, model: modelUsed });
+  }catch(e){
+    return res.status(500).json({ message: 'Lỗi AI generate', reason: 'exception', error: e?.message || String(e) });
+  }
+};
+
+// Debug: echo the prompt/items seen by server (no AI call)
+exports.aiEcho = async (req, res) => {
+  try{
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt : null;
+    const itemsLen = Array.isArray(req.body?.items) ? req.body.items.length : undefined;
+    return res.json({ prompt, promptLen: prompt? prompt.length: 0, itemsLen });
+  }catch(e){ return res.status(500).json({ message: 'echo failed', error: e.message }); }
 };

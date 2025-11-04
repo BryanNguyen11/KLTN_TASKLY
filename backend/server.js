@@ -80,6 +80,29 @@ app.get('/api/ai/health', (req, res) => {
   }
 });
 
+// AI models endpoint to see available models for current key
+app.get('/api/ai/models', async (req, res) => {
+  try{
+    const key = process.env.GEMINI_API_KEY;
+    let GoogleGenerativeAI;
+    try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) {}
+    if(!key || !GoogleGenerativeAI){
+      return res.status(400).json({ message: 'Thiếu GEMINI_API_KEY hoặc thiếu thư viện @google/generative-ai' });
+    }
+    const genAI = new GoogleGenerativeAI(key);
+    // listModels is available on the client in recent SDKs
+    let models = [];
+    try{
+      const r = await genAI.listModels();
+      models = Array.isArray(r?.models) ? r.models.map(m => ({ name: m.name, supportedGenerationMethods: m.supportedGenerationMethods })) : [];
+    }catch(e){
+      // If listModels not available or blocked, return a helpful message
+      return res.status(200).json({ models: [], note: 'Không thể gọi listModels với key hiện tại hoặc phiên bản SDK. Hãy dùng AI Studio key để kiểm tra hỗ trợ model.' });
+    }
+    return res.json({ models });
+  }catch(e){ return res.status(500).json({ message: 'Lỗi liệt kê models', error: e.message }); }
+});
+
 // Connect to MongoDB and start schedulers + server
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {

@@ -19,14 +19,16 @@ export default function ScanPreview() {
   const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
-    if (!payload?.raw) {
-      Alert.alert('Thiếu dữ liệu', 'Không có dữ liệu quét. Vui lòng quét lại.');
+    const hasStructured = !!(payload && payload.structured && payload.structured.kind === 'progress-table' && Array.isArray(payload.structured.items) && payload.structured.items.length);
+    const hasRaw = !!(payload && typeof payload.raw === 'string' && payload.raw.length > 0);
+    if (!hasStructured && !hasRaw) {
+      Alert.alert('Thiếu dữ liệu', 'Không có dữ liệu để xem trước. Vui lòng thử lại.');
       router.back();
       return;
     }
     // Prefer structured rows from backend (progress-table). If absent, fallback to raw weekly parser.
-    if (payload.structured?.kind === 'progress-table' && Array.isArray(payload.structured.items) && payload.structured.items.length) {
-      const items = payload.structured.items;
+    if (hasStructured && payload?.structured?.items) {
+      const items = payload.structured.items as any[];
       // Group by weekday; use startDate as column date (for display)
       const map = new Map<number, WeekdayBlock>();
       for (const it of items) {
@@ -55,7 +57,7 @@ export default function ScanPreview() {
       setDays(blocks as any);
       return;
     }
-    let parsed = parseWeeklyFromRaw(payload.raw);
+  let parsed = parseWeeklyFromRaw(payload.raw || '');
     const total = parsed.reduce((acc, d) => acc + d.events.length, 0);
     // Fallback: if weekly parser found no events but backend provided a single extracted event, surface it
     if (total === 0 && payload.extracted) {

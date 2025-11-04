@@ -395,14 +395,12 @@ Lý do: ${reason}` : message);
     }
   };
 
-  // Open choice sheet for Auto Create: Image or PDF/File
+  // Navigate to new AI auto-schedule screen
   const startAutoCreate = async () => {
-    const opts = [
-      { text: 'Chọn ảnh từ thư viện', onPress: () => scanFromImage() },
-      { text: 'Chọn PDF/Tệp', onPress: () => scanFromPdf() },
-      { text: 'Hủy', style: 'cancel' as const },
-    ];
-    Alert.alert('Tạo lịch tự động', 'Chọn nguồn dữ liệu', opts, { cancelable: true });
+    const q = new URLSearchParams();
+    if (form.typeId) q.set('typeId', form.typeId);
+    if (projectId) q.set('projectId', String(projectId));
+    router.push(`/auto-schedule?${q.toString()}`);
   };
 
   const selectedType = types.find(t => t._id === form.typeId);
