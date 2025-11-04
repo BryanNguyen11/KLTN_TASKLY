@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
@@ -13,6 +13,7 @@ export default function TasksPreview(){
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
   const payload = getOcrScanPayload();
   const [items, setItems] = useState<Array<any>>([]);
+  const [editing, setEditing] = useState<any|null>(null);
 
   useEffect(()=>{
     const list = (payload?.structured as any)?.kind === 'tasks-list' ? (payload?.structured as any)?.items || [] : [];
@@ -75,6 +76,46 @@ export default function TasksPreview(){
     }
   };
 
+  const createOne = async (t: any) => {
+    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    try{
+      const todayISO = new Date().toISOString().slice(0,10);
+      const clean = (s:any) => {
+        const v = typeof s === 'string' ? s.trim() : '';
+        return v || undefined;
+      };
+      const s = clean(t.startTime);
+      const e = clean(t.endTime);
+      let startTime = s;
+      let endTime = e;
+      let time: string | undefined = undefined;
+      if(!startTime && !endTime){
+        time = '09:00';
+      } else if(!startTime && endTime){
+        time = endTime; endTime = undefined;
+      }
+      const body:any = {
+        title: t.title || 'Tác vụ',
+        date: clean(t.date) || todayISO,
+        startTime,
+        endTime,
+        time,
+        priority: t.priority || 'medium',
+        importance: t.importance || 'medium',
+        type: 'personal',
+        tags: [],
+        subTasks: [],
+        description: t.notes || '',
+      };
+      if(payload?.projectId) body.projectId = String(payload.projectId);
+      await axios.post(`${API_BASE}/api/tasks`, body, { headers:{ Authorization: token ? `Bearer ${token}` : '' } });
+      Alert.alert('Thành công','Đã tạo tác vụ');
+      setEditing(null);
+    }catch(e:any){
+      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tạo tác vụ');
+    }
+  };
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }}>
       <View style={styles.header}>
@@ -108,9 +149,45 @@ export default function TasksPreview(){
               <TextInput style={[styles.input, { flex:1 }]} placeholder='HH:MM' value={it.endTime||''} onChangeText={(t)=> setItems(prev => prev.map(p=> p.id===it.id ? { ...p, endTime: t }: p))} />
             </View>
             <TextInput style={[styles.input, { marginTop:6 }]} placeholder='Ghi chú' value={it.notes||''} onChangeText={(t)=> setItems(prev => prev.map(p=> p.id===it.id ? { ...p, notes: t }: p))} />
+            <View style={{ flexDirection:'row', gap:10, marginTop:8 }}>
+              <Pressable onPress={()=> setEditing(it)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}>
+                <Text style={styles.secondaryText}>Xem & tạo nhanh</Text>
+              </Pressable>
+            </View>
           </View>
         ))}
       </ScrollView>
+
+      {/* small create modal */}
+      <Modal visible={!!editing} transparent animationType='fade' onRequestClose={()=> setEditing(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxWidth: 420 }] }>
+            <Text style={styles.modalTitle}>Tạo tác vụ mới</Text>
+            <Text style={styles.modalLabel}>Tiêu đề</Text>
+            <TextInput style={styles.input} value={editing?.title||''} onChangeText={t=> setEditing((p:any)=> p? { ...p, title: t }: p)} />
+            <View style={{ flexDirection:'row', gap:8 }}>
+              <View style={{ flex:1 }}>
+                <Text style={styles.modalLabel}>Ngày</Text>
+                <TextInput style={styles.input} value={editing?.date||''} placeholder='YYYY-MM-DD' onChangeText={t=> setEditing((p:any)=> p? { ...p, date: t }: p)} />
+              </View>
+              <View style={{ flex:1 }}>
+                <Text style={styles.modalLabel}>Bắt đầu</Text>
+                <TextInput style={styles.input} value={editing?.startTime||''} placeholder='HH:MM' onChangeText={t=> setEditing((p:any)=> p? { ...p, startTime: t }: p)} />
+              </View>
+              <View style={{ flex:1 }}>
+                <Text style={styles.modalLabel}>Kết thúc</Text>
+                <TextInput style={styles.input} value={editing?.endTime||''} placeholder='HH:MM' onChangeText={t=> setEditing((p:any)=> p? { ...p, endTime: t }: p)} />
+              </View>
+            </View>
+            <Text style={styles.modalLabel}>Ghi chú</Text>
+            <TextInput style={[styles.input, styles.textarea]} value={editing?.notes||''} multiline onChangeText={t=> setEditing((p:any)=> p? { ...p, notes: t }: p)} />
+            <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
+              <Pressable onPress={()=> setEditing(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
+              <Pressable onPress={()=> editing && createOne(editing)} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Tạo ngay</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -131,4 +208,9 @@ const styles = StyleSheet.create({
   on:{ color:'#16a34a' },
   off:{ color:'#b91c1c' },
   input:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:10, paddingHorizontal:10, paddingVertical:8, color:'#0f172a' },
+  modalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.35)', alignItems:'center', justifyContent:'center' },
+  modalCard:{ width:'92%', backgroundColor:'#fff', borderRadius:16, padding:14 },
+  modalTitle:{ fontSize:16, fontWeight:'700', color:'#16425b', marginBottom:8 },
+  modalLabel:{ fontSize:12, color:'#2f6690', marginTop:8, marginBottom:4 },
+  textarea:{ minHeight:80, textAlignVertical:'top' },
 });

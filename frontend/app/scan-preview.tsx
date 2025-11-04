@@ -147,6 +147,45 @@ export default function ScanPreview() {
     setEdit(null);
   };
 
+  const createOne = async (e: Editable) => {
+    if (!token) { Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    try{
+      // Resolve typeId like createAll
+      let typeId = payload?.defaultTypeId || '';
+      if(!typeId){
+        try { const res = await axios.get(`${API_BASE}/api/event-types`, { headers: { Authorization: token ? `Bearer ${token}` : '' } }); typeId = (res.data?.find?.((t:any)=>t.isDefault)?._id) || (res.data?.[0]?._id) || ''; } catch {}
+        if(!typeId){ Alert.alert('Thiếu loại lịch','Không có loại lịch mặc định để tạo. Hãy tạo loại lịch trước.'); return; }
+      }
+      // Compute date similar to bulk creation
+      let date = e.date || deriveDateFromWeekday(days, e);
+      const metaWeekday = (e as any)._weekday as number | undefined;
+      const repeatEnd = (e as any)._repeatEndDate as string | undefined;
+      if (metaWeekday && (e.date || payload?.structured)) {
+        const base = (e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date)) ? e.date : (payload as any)?.structured?.items?.find((it:any)=> it.weekday===metaWeekday)?.startDate;
+        if (base) date = firstWeekdayOnOrAfter(base, metaWeekday);
+      }
+      const body:any = {
+        title: e.title || 'Lịch học',
+        typeId,
+        date,
+        startTime: e.startTime,
+        endTime: e.endTime,
+        location: e.location,
+        notes: [e.notes, e.lecturer ? `GV: ${e.lecturer}` : ''].filter(Boolean).join('\n'),
+        props: {},
+      };
+      if (repeatEnd && /^\d{4}-\d{2}-\d{2}$/.test(repeatEnd)) {
+        body.repeat = { frequency: 'weekly', endMode: 'onDate', endDate: repeatEnd };
+      }
+      if(payload?.projectId) body.projectId = String(payload.projectId);
+      await axios.post(`${API_BASE}/api/events`, body, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
+      Alert.alert('Thành công','Đã tạo lịch');
+      setEdit(null);
+    }catch(err:any){
+      Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tạo lịch');
+    }
+  };
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor: '#f1f5f9' }}>
       <View style={styles.header}>
@@ -205,8 +244,8 @@ export default function ScanPreview() {
       {/* Edit Modal */}
       <Modal visible={!!edit} transparent animationType='fade' onRequestClose={()=> setEdit(null)}>
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Chỉnh sửa</Text>
+          <View style={[styles.modalCard, { maxWidth: 420 }] }>
+            <Text style={styles.modalTitle}>Tạo lịch mới</Text>
             <Text style={styles.modalLabel}>Tiêu đề</Text>
             <TextInput style={styles.input} value={edit?.title||''} onChangeText={t=> setEdit(prev => prev? { ...prev, title: t }: prev)} />
             <View style={{ flexDirection:'row', gap:8 }}>
@@ -219,13 +258,15 @@ export default function ScanPreview() {
                 <TextInput style={styles.input} value={edit?.endTime||''} onChangeText={t=> setEdit(prev => prev? { ...prev, endTime: t }: prev)} placeholder='HH:MM' />
               </View>
             </View>
+            <Text style={styles.modalLabel}>Ngày</Text>
+            <TextInput style={styles.input} value={edit?.date||''} onChangeText={t=> setEdit(prev => prev? { ...prev, date: t }: prev)} placeholder='YYYY-MM-DD' />
             <Text style={styles.modalLabel}>Phòng</Text>
             <TextInput style={styles.input} value={edit?.location||''} onChangeText={t=> setEdit(prev => prev? { ...prev, location: t }: prev)} />
             <Text style={styles.modalLabel}>Ghi chú</Text>
             <TextInput style={[styles.input, styles.textarea]} multiline value={edit?.notes||''} onChangeText={t=> setEdit(prev => prev? { ...prev, notes: t }: prev)} />
             <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-              <Pressable onPress={()=> setEdit(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Hủy</Text></Pressable>
-              <Pressable onPress={()=> edit && onEditSave(edit)} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Lưu</Text></Pressable>
+              <Pressable onPress={()=> setEdit(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
+              <Pressable onPress={()=> edit && createOne(edit)} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Tạo ngay</Text></Pressable>
             </View>
           </View>
         </View>

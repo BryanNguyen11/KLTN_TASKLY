@@ -32,6 +32,18 @@ export default function AutoScheduleScreen(){
   ]);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
+  const QUICK_PROMPTS: { id: string; text: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+    { id:'q1', text:'Tạo lịch học Toán mỗi Thứ 2, Thứ 5 từ 07:20–09:00 trong 8 tuần bắt đầu từ 10/11/2025.', icon:'calendar-outline' },
+    { id:'q2', text:'Lên lịch ôn thi KTLT bắt đầu lúc 19:00 mỗi tối từ 05/11 đến 15/11/2025.', icon:'moon-outline' },
+    { id:'q3', text:'Tạo lịch họp dự án bắt đầu lúc 09:00 Thứ 3 hàng tuần đến hết 31/12/2025.', icon:'people-outline' },
+    { id:'q4', text:'Tạo lịch báo cáo đồ án đến hạn lúc 21:00 ngày 10/11/2025.', icon:'time-outline' },
+    { id:'q5', text:'Xếp lịch tập gym bắt đầu lúc 06:30 Thứ 2,4,6 trong 4 tuần.', icon:'fitness-outline' },
+    { id:'q6', text:'Tạo danh sách tác vụ tuần này: làm bài tập Toán (đến hạn 21:00 10/11), đọc chương 3, chuẩn bị thuyết trình.', icon:'checkmark-done-outline' },
+    { id:'q7', text:'Tạo tác vụ "Nộp báo cáo" đến hạn 23:59 ngày 08/11/2025, ưu tiên cao.', icon:'alert-circle-outline' },
+    { id:'q8', text:'Chia nhỏ tác vụ "Ôn thi KTLT" thành các việc hằng ngày đến hạn 15/11/2025.', icon:'list-outline' },
+    { id:'q9', text:'Lập kế hoạch sprint 1 tuần cho dự án: backlog grooming, coding, review, demo.', icon:'flash-outline' },
+    { id:'q10', text:'Lên danh sách việc sáng mai bắt đầu lúc 08:00: kiểm tra email, cập nhật README, tạo issue.', icon:'sunny-outline' },
+  ];
   const onCheckOllama = async () => {
     try{
       const [h, p] = await Promise.all([
@@ -156,17 +168,18 @@ export default function AutoScheduleScreen(){
     );
   };
 
-  const onSend = async () => {
-    const text = prompt.trim();
-    if(!text && images.length===0 && files.length===0){
+  // Core send routine that works with an explicit text (used by composer and quick prompts)
+  const performSend = async (text: string) => {
+    const trimmed = text.trim();
+    if(!trimmed && images.length===0 && files.length===0){
       Alert.alert('Thiếu dữ liệu','Nhập yêu cầu hoặc đính kèm ảnh/tệp.');
       return;
     }
     if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
     try { inputRef.current?.blur?.(); } catch {}
     const uid = `u_${Date.now()}`;
-    if(text){ appendMsg({ id: uid, role:'user', text }); }
-    setPrompt(''); setBusy(true);
+    if(trimmed){ appendMsg({ id: uid, role:'user', text: trimmed }); }
+    setBusy(true);
     try{
       // Collect events from attachments (if any)
       let combinedRaw = '';
@@ -200,9 +213,9 @@ export default function AutoScheduleScreen(){
       // Prompt-only or prompt+attachments: run AI for both events/tasks in parallel
       let aiEvItems: any[] = [];
       let aiTkItems: any[] = [];
-      if(text){
-        const evReq = axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: text }, authHeader).catch(e=>({ error:e } as any));
-        const tkReq = axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: text }, authHeader).catch(e=>({ error:e } as any));
+      if(trimmed){
+        const evReq = axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any));
+        const tkReq = axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any));
         const [evRes, tkRes] = await Promise.all([evReq, tkReq]);
         aiEvItems = (evRes as any)?.data?.items || [];
         aiTkItems = (tkRes as any)?.data?.tasks || [];
@@ -210,9 +223,9 @@ export default function AutoScheduleScreen(){
       // Merge event candidates: attachments first then AI prompt items
       let mergedEvents = [...evItems, ...aiEvItems];
       // Optional transform when both prompt and events present
-      if(text && mergedEvents.length){
+      if(trimmed && mergedEvents.length){
         try{
-          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: text, items: mergedEvents }, authHeader);
+          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: trimmed, items: mergedEvents }, authHeader);
           if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
         }catch{ /* fallback to mergedEvents */ }
       }
@@ -233,6 +246,23 @@ export default function AutoScheduleScreen(){
     }finally{
       setBusy(false);
     }
+  };
+
+  // Original composer send uses performSend with current input and clears it
+  const onSend = async () => {
+    const text = prompt;
+    setPrompt('');
+    await performSend(text);
+  };
+
+  const onQuickTap = (t: string) => {
+    // Immediate send using the quick prompt text
+    performSend(t);
+  };
+  const onQuickLong = (t: string) => {
+    // Prefill composer for user to edit
+    setPrompt(t);
+    try{ inputRef.current?.focus?.(); }catch{}
   };
 
   const onPreviewEvents = (items: any[]) => {
@@ -328,6 +358,21 @@ export default function AutoScheduleScreen(){
               <Ionicons name='sparkles' size={18} color='#fff' />
             </Pressable>
           </View>
+
+          {/* Quick prompt suggestions */}
+          {!busy && (
+            <View style={styles.quickWrap}>
+              <Text style={styles.quickTitle}>Gợi ý nhanh</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal:12, paddingBottom:8 }}>
+                {QUICK_PROMPTS.map(q => (
+                  <Pressable key={q.id} onPress={()=> onQuickTap(q.text)} onLongPress={()=> onQuickLong(q.text)} style={styles.quickChip} accessibilityLabel={`Gợi ý: ${q.text}`}>
+                    <Ionicons name={q.icon} size={14} color='#16425b' />
+                    <Text style={styles.quickText} numberOfLines={1}>{q.text}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          )}
         </View>
       </KeyboardAvoidingView>
 
@@ -379,4 +424,8 @@ const styles = StyleSheet.create({
    overlayCard:{},
    starRow:{ flexDirection:'row', alignItems:'center', justifyContent:'center', gap:8 },
    star:{ width:10, height:10, backgroundColor:'#3a7ca5', borderRadius:2, marginHorizontal:4 },
+  quickWrap:{ paddingVertical:8, backgroundColor:'#f1f5f9' },
+  quickTitle:{ color:'#2f6690', fontWeight:'700', paddingHorizontal:16, marginBottom:6 },
+  quickChip:{ flexDirection:'row', alignItems:'center', gap:6, maxWidth:260, paddingHorizontal:10, paddingVertical:8, marginRight:8, borderRadius:14, backgroundColor:'#e2e8f0', borderWidth:1, borderColor:'#e5e7eb' },
+  quickText:{ color:'#16425b', fontSize:12, fontWeight:'700', flexShrink:1 },
 });
