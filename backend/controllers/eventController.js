@@ -9,6 +9,24 @@ try { pdfParse = require('pdf-parse'); } catch(_) { pdfParse = null; }
 let GoogleGenerativeAI;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 const OCR_DEBUG = process.env.OCR_DEBUG === '1' || process.env.OCR_DEBUG === 'true';
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
+
+// Minimal Ollama chat caller (optional, when LLM_PROVIDER=ollama)
+async function ollamaChat(messages, opts={}){
+  try{
+    const base = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+    const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
+    const body = { model, messages, stream: false, options: { temperature: 0.1, ...opts } };
+    const ctrl = new AbortController();
+    const to = setTimeout(()=> ctrl.abort(), Math.min(15000, Number(process.env.OLLAMA_TIMEOUT_MS||5000))); // 5s default, cap 15s
+    const url = `${base}/api/chat`;
+    const resp = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }).finally(()=> clearTimeout(to));
+    if(!resp.ok) throw new Error(`ollama http ${resp.status}`);
+    const data = await resp.json();
+    const content = String(data?.message?.content || '').trim();
+    return content;
+  }catch(e){ if(OCR_DEBUG) console.log('[OLLAMA] chat failed', e?.message||e); return null; }
+}
 
 // Notification helpers (similar to tasks)
 function evToDisplayDate(iso){ try{ const [y,m,d] = String(iso||'').split('-').map(n=>parseInt(n,10)); if(!y||!m||!d) return ''; return `${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`; }catch{ return String(iso||''); } }
@@ -77,6 +95,7 @@ async function tryExternalOCR(buffer){
 // Google Gemini Vision OCR (free tier friendly) – returns plain text
 async function tryGeminiOCR(buffer, userPrompt){
   try{
+    if(LLM_PROVIDER === 'ollama') return null; // skip vision when using local provider
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI) return null;
     const candidates = [
@@ -140,6 +159,7 @@ async function tryGeminiOCR(buffer, userPrompt){
 // Vision → structured JSON (skip OCR text step, ask directly for JSON items)
 async function tryGeminiVisionToStructured(buffer, userPrompt){
   try{
+    if(LLM_PROVIDER === 'ollama') return null; // skip vision when using local provider
     const key = process.env.GEMINI_API_KEY; if(!key || !GoogleGenerativeAI) return null;
     const candidates = [
       process.env.GEMINI_MODEL,
@@ -223,6 +243,28 @@ async function tryGeminiVisionToStructured(buffer, userPrompt){
 // Returns array of { title, weekday (2..7 for Thu 2..7, 7 for Sunday), from, to, startDate, endDate, location }
 async function tryGeminiParseProgress(text, userPrompt){
   try{
+    if(LLM_PROVIDER === 'ollama'){
+      // Use local Ollama to parse text into items JSON
+      const sys = [
+        'Bạn là trợ lý trích xuất thời khoá biểu từ văn bản (tiếng Việt).',
+        'Chỉ trả về JSON hợp lệ theo schema, không kèm giải thích hay Markdown.',
+        '{ "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }',
+        '- weekday: Thứ 2..7 => 2..7; Chủ nhật => 7',
+        '- from/to: số tiết theo định dạng "Tiết a-b"',
+      ].join('\n');
+      const user = [ userPrompt? `Yêu cầu thêm: ${String(userPrompt).slice(0, 500)}` : '', 'Văn bản cần phân tích:', String(text||'').slice(0, 8000) ].filter(Boolean).join('\n');
+      const content = await ollamaChat([
+        { role:'system', content: sys },
+        { role:'user', content: user }
+      ]);
+      let data = null; if(content){
+        let s = content.replace(/^```json\n|```$/g,'').trim();
+        try{ data = JSON.parse(s); }catch(_){ data=null; }
+      }
+      const items = Array.isArray(data?.items)? data.items: [];
+      if(items.length) return items;
+      return null;
+    }
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI) return null;
     const candidates = [
@@ -396,6 +438,34 @@ exports.aiTransform = async (req, res) => {
     if(OCR_DEBUG) console.log(`[AI-TRANSFORM] prompt.len=${prompt.length} items=${items.length}`);
     if(!prompt){ return res.status(400).json({ message: 'Thiếu prompt' }); }
     if(items.length === 0){ return res.status(400).json({ message: 'Thiếu danh sách items để biến đổi' }); }
+    if(LLM_PROVIDER === 'ollama'){
+      const sys = [
+        'Bạn là trợ lý chuyển đổi thời khoá biểu. Dựa trên yêu cầu của người dùng, hãy LỌC/CHỈNH SỬA/CẬP NHẬT các mục trong danh sách dưới đây.',
+        'Chỉ trả về JSON hợp lệ theo schema, không giải thích.',
+        '{ "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }'
+      ].join('\n');
+      const userMsg = [ `Yêu cầu người dùng: ${prompt}`, 'Danh sách items:', JSON.stringify({ items }, null, 2) ].join('\n');
+      const content = await ollamaChat([
+        { role:'system', content: sys },
+        { role:'user', content: userMsg }
+      ]);
+      let data = null; if(content){ let s = content.replace(/^```json\n|```$/g,'').trim(); try{ data = JSON.parse(s); }catch(_){ data=null; } }
+      const out = Array.isArray(data?.items)? data.items: [];
+      const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+      const safe = out.map(it => ({
+        title: String(it.title||'').slice(0,120) || 'Lịch học',
+        weekday: clamp(parseInt(it.weekday,10), 1, 7) || 2,
+        from: clamp(parseInt(it.from,10), 1, 16),
+        to: clamp(parseInt(it.to,10), 1, 16),
+        startDate: String(it.startDate||''),
+        endDate: String(it.endDate||''),
+        location: String(it.location||''),
+        lecturer: String(it.lecturer||''),
+        notes: String(it.notes||'')
+      })).filter(it => it.from <= it.to && it.weekday>=1 && it.weekday<=7);
+      if(safe.length===0) return res.json({ items });
+      return res.json({ items: safe });
+    }
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI){ return res.status(500).json({ message: 'Máy chủ chưa cấu hình AI' }); }
     const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
@@ -969,6 +1039,73 @@ exports.aiGenerate = async (req, res) => {
     const prompt = String(req.body?.prompt || '').trim();
     if(OCR_DEBUG) console.log(`[AI-GENERATE] prompt.len=${prompt.length}`);
     if(!prompt) return res.status(400).json({ message: 'Thiếu prompt' });
+    if(LLM_PROVIDER === 'ollama'){
+      const sys = [
+        'Bạn là trợ lý tạo thời khoá biểu từ mô tả (tiếng Việt).',
+        'Chỉ trả về JSON hợp lệ theo schema, không giải thích hay Markdown.',
+        '{ "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }'
+      ].join('\n');
+      const userMsg = `Yêu cầu người dùng:\n${prompt}`;
+      const content = await ollamaChat([
+        { role:'system', content: sys },
+        { role:'user', content: userMsg }
+      ]);
+      if(content === null){
+        return res.status(503).json({ message: 'Không kết nối được Ollama', reason: 'ollama-connect', base: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434' });
+      }
+      // Try parse JSON strictly, then relaxed extraction
+      let data = null; let raw = String(content||'');
+      const tryParse = (s)=>{ try{ return JSON.parse(s); }catch(_){ return null; } };
+      const stripFences = (s)=> s.replace(/^```json\n|```$/g,'').trim();
+      const tryExtractJson = (s)=>{
+        // Try code-fence first
+        let m = s.match(/```json\n([\s\S]*?)```/i); if(m){ const d = tryParse(m[1]); if(d) return d; }
+        // Try first {...} block (best-effort)
+        const i = s.indexOf('{'); const j = s.lastIndexOf('}');
+        if(i>=0 && j>i){ const cand = s.slice(i, Math.min(j+1, i+20000)); const d = tryParse(cand); if(d) return d; }
+        return null;
+      };
+      if(raw){
+        data = tryParse(stripFences(raw));
+        if(!data) data = tryExtractJson(raw);
+      }
+      let items = Array.isArray(data?.items)? data.items: [];
+      // If empty, try a stricter second pass
+      if(!items.length){
+        const strictSys = [
+          'Chỉ trả về JSON hợp lệ theo đúng schema, không thêm chữ, không Markdown.',
+          '{ "items": [ { "title": string, "weekday": number, "from": number, "to": number, "startDate": "YYYY-MM-DD"|"", "endDate": "YYYY-MM-DD"|"", "location": string, "lecturer": string, "notes": string } ] }',
+          'Bắt đầu bằng { và kết thúc bằng }.'
+        ].join('\n');
+        const content2 = await ollamaChat([
+          { role:'system', content: strictSys },
+          { role:'user', content: userMsg }
+        ], { temperature: 0 });
+        if(content2){
+          let d2 = tryParse(stripFences(content2));
+          if(!d2) d2 = tryExtractJson(content2);
+          items = Array.isArray(d2?.items)? d2.items: [];
+          raw = content2;
+        }
+      }
+      const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+      items = items.map(it => ({
+        title: String(it.title||'').slice(0,120) || 'Lịch học',
+        weekday: clamp(parseInt(it.weekday,10), 1, 7) || 2,
+        from: clamp(parseInt(it.from,10), 1, 16),
+        to: clamp(parseInt(it.to,10), 1, 16),
+        startDate: String(it.startDate||''),
+        endDate: String(it.endDate||''),
+        location: String(it.location||''),
+        lecturer: String(it.lecturer||''),
+        notes: String(it.notes||'')
+      })).filter(it => it.from <= it.to && it.weekday>=1 && it.weekday<=7);
+      if(!items.length){
+        const debug = raw ? String(raw).slice(0, 220) : undefined;
+        return res.status(400).json({ message: 'AI không tạo được danh sách phù hợp', reason: 'ollama-empty', debug });
+      }
+      return res.json({ items, model: process.env.OLLAMA_MODEL || 'llama3.1:8b', provider: 'ollama' });
+    }
     const key = process.env.GEMINI_API_KEY;
     if(!key || !GoogleGenerativeAI) return res.status(500).json({ message: 'Máy chủ chưa cấu hình AI' });
     const primaryModel = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';

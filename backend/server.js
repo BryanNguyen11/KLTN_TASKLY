@@ -73,8 +73,17 @@ app.get('/api/ai/health', (req, res) => {
     const hasKey = !!process.env.GEMINI_API_KEY;
     // Lazy check for library presence
     let libOk = true;
+    let libVersion = null;
     try { require.resolve('@google/generative-ai'); } catch(_) { libOk = false; }
-    return res.json({ gemini: { hasKey, libOk, model: process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro' } });
+    try { libVersion = require('@google/generative-ai/package.json')?.version || null; } catch(_) {}
+    return res.json({
+      provider: (process.env.LLM_PROVIDER || 'gemini').toLowerCase(),
+      gemini: { hasKey, libOk, libVersion, model: process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro' },
+      ollama: {
+        base: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+        model: process.env.OLLAMA_MODEL || 'llama3.1:8b'
+      }
+    });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
@@ -101,6 +110,22 @@ app.get('/api/ai/models', async (req, res) => {
     }
     return res.json({ models });
   }catch(e){ return res.status(500).json({ message: 'Lỗi liệt kê models', error: e.message }); }
+});
+
+// Ollama ping endpoint: verifies local server and loaded model availability
+app.get('/api/ai/ollama-ping', async (req, res) => {
+  try{
+    const base = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+    const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
+    // Check server
+    const ctrl = new AbortController();
+    const to = setTimeout(()=> ctrl.abort(), Math.min(10000, Number(process.env.OLLAMA_TIMEOUT_MS||5000)));
+    const v = await fetch(`${base}/api/tags`, { signal: ctrl.signal }).then(r => r.json()).catch((e)=>({ error: String(e?.message||e) })).finally(()=> clearTimeout(to));
+    // Check model loaded (ollama returns models list in /api/tags)
+    const hasModel = Array.isArray(v?.models) ? v.models.some(m => (m?.name||'').toLowerCase() === model.toLowerCase()) : undefined;
+    const serverOk = !!v && !v.error;
+    return res.json({ base, model, serverOk, hasModel, error: v?.error });
+  }catch(e){ return res.status(500).json({ message: 'Ollama ping failed', error: e.message }); }
 });
 
 // Connect to MongoDB and start schedulers + server

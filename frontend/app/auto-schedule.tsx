@@ -28,6 +28,23 @@ export default function AutoScheduleScreen(){
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<'prompt'|'files'|'mixed'>('prompt');
   const inputRef = useRef<TextInput>(null);
+  const onCheckOllama = async () => {
+    try{
+      const [h, p] = await Promise.all([
+        axios.get(`${API_BASE}/api/ai/health`, authHeader),
+        axios.get(`${API_BASE}/api/ai/ollama-ping`, authHeader)
+      ]);
+      const provider = h?.data?.provider || 'unknown';
+      const base = p?.data?.base;
+      const model = p?.data?.model;
+      const serverOk = p?.data?.serverOk;
+      const hasModel = p?.data?.hasModel;
+      Alert.alert('Kiểm tra Ollama', `Provider: ${provider}\nBase: ${base}\nModel: ${model}\nServer: ${serverOk ? 'OK' : 'Không kết nối được'}\nModel sẵn sàng: ${hasModel===undefined? 'Không rõ' : (hasModel? 'Có' : 'Không')}`);
+    }catch(e:any){
+      const msg = e?.response?.data?.message || e?.message || 'Lỗi không xác định';
+      Alert.alert('Kiểm tra Ollama', msg);
+    }
+  };
 
   const authHeader = useMemo(() => ({ headers: { Authorization: token ? `Bearer ${token}` : '' } }), [token]);
 
@@ -199,7 +216,9 @@ export default function AutoScheduleScreen(){
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Ionicons name='arrow-back' size={22} color='#16425b' /></Pressable>
         <Text style={styles.headerTitle}>Tạo lịch tự động (AI)</Text>
-        <View style={{ width: 40 }} />
+        <Pressable onPress={onCheckOllama} style={styles.healthBtn} accessibilityLabel='Kiểm tra Ollama'>
+          <Ionicons name='link-outline' size={20} color='#16425b' />
+        </Pressable>
       </View>
 
       <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={56} style={{ flex:1 }}>
@@ -293,6 +312,7 @@ const styles = StyleSheet.create({
   header:{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop:4, paddingBottom:8, backgroundColor:'#f1f5f9' },
   backBtn:{ width:40, height:40, borderRadius:20, alignItems:'center', justifyContent:'center' },
   headerTitle:{ fontSize:18, fontWeight:'600', color:'#16425b' },
+  healthBtn:{ width:40, height:40, borderRadius:20, alignItems:'center', justifyContent:'center' },
   body:{ padding:16 },
   card:{ backgroundColor:'#fff', borderRadius:20, padding:16, marginBottom:16, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:2 },
   sectionTitle:{ fontSize:16, fontWeight:'700', color:'#16425b', marginBottom:8 },
