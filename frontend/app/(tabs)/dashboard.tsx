@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform, Dimensions } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
@@ -99,6 +99,27 @@ export default function DashboardScreen() {
   const [projDue, setProjDue] = useState('');
   const [savingProject, setSavingProject] = useState(false);
   const menuAnim = useSharedValue(0); // 0 closed, 1 open
+  // Slide animation for project full-screen view
+  const screenW = Dimensions.get('window').width;
+  const projectSlide = useSharedValue(1); // 1: off-screen right, 0: on-screen
+  const projectSlideStyle = useAnimatedStyle(() => ({ transform:[{ translateX: projectSlide.value * screenW }] }));
+  useEffect(() => {
+    if (activeProject) {
+      // reset to off-screen and slide in
+      projectSlide.value = 1;
+      projectSlide.value = withTiming(0, { duration: 280, easing: Easing.out(Easing.cubic) });
+    }
+  }, [activeProject?._id]);
+  const closeProjectFull = () => {
+    // slide out then dismiss, avoid modal fade showing underlying sheet
+    projectSlide.value = withTiming(1, { duration: 240, easing: Easing.in(Easing.cubic) });
+    setTimeout(() => {
+      setProjectModalAnim('none');
+      setShowProjectsModal(false);
+      // clear active after modal hidden to prevent a flash of the sheet
+      setTimeout(() => setActiveProject(null), 0);
+    }, 240);
+  };
   const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
   const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [celebrateId, setCelebrateId] = useState<string|null>(null);
@@ -738,8 +759,8 @@ export default function DashboardScreen() {
     }catch(e){ /* silent */ }
   };
   useEffect(()=>{ fetchProjects(); },[token]);
-  // Reset modal animation to fade when opening the modal
-  useEffect(()=>{ if(showProjectsModal) setProjectModalAnim('fade'); },[showProjectsModal]);
+  // Reset modal animation to fade when opening the list sheet (avoid overriding 'none' for direct detail open)
+  useEffect(()=>{ if(showProjectsModal && !activeProject) setProjectModalAnim('fade'); },[showProjectsModal, activeProject]);
   // Quick lookup: projectId -> name
   const projectNameById = React.useMemo(() => {
     const m: Record<string,string> = {};
@@ -750,17 +771,25 @@ export default function DashboardScreen() {
     const sub = DeviceEventEmitter.addListener('projectsUpdated', () => { fetchProjects(); });
     return () => sub.remove();
   }, [token]);
+  // Helper: open project detail without flashing the list
+  const openProjectDirect = (p: any) => {
+    if(!p) return;
+    setProjectModalAnim('none');
+    setActiveProject(p);
+    // ensure first render sees activeProject truthy
+    requestAnimationFrame(() => {
+      setShowProjectsModal(true);
+      fetchProjectDetail(p._id);
+    });
+  };
 
   // Allow returning from members screen to open project detail directly
-  useEffect(()=>{
+  useEffect(()=> {
     const sub = DeviceEventEmitter.addListener('openProjectDetail', (payload:any) => {
       const pid = payload?.id || payload;
       if(!pid) return;
-      setShowProjectsModal(true);
-      // set a minimal active project to switch modal view immediately
-      const existing = projects.find(p=> p._id===pid);
-      setActiveProject(existing || { _id: pid, name: 'Dự án' } as any);
-      fetchProjectDetail(pid);
+      const existing = projects.find(p=> p._id===pid) || { _id: pid, name: 'Dự án' } as any;
+      openProjectDirect(existing);
     });
     return () => sub.remove();
   }, [projects]);
@@ -1255,9 +1284,9 @@ export default function DashboardScreen() {
                   <Ionicons name='notifications-outline' size={18} color='#2f6690' />
                   {unreadCount>0 && <View style={styles.notifDot}><Text style={styles.notifDotText}>{Math.min(unreadCount,9)}</Text></View>}
                 </Pressable>
-                <Pressable onPress={()=> setAiMode(m=>!m)} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
-                  <Ionicons name='sparkles' size={18} color={aiMode? '#fff':'#2f6690'} />
-                  <Text style={[styles.aiTopText, aiMode && styles.aiTopTextActive]}>AI</Text>
+                <Pressable onPress={()=> router.push('/auto-schedule')} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
+                  <Ionicons name='sparkles' size={18} color={'#2f6690'} />
+                  <Text style={[styles.aiTopText]}>AI</Text>
                 </Pressable>
               </View>
             </View>
@@ -1793,17 +1822,27 @@ export default function DashboardScreen() {
             if(!managed.length) return null;
             return (
               <View style={{ marginTop: 8 }}>
-                <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+                <View style={styles.projectsHeaderRow}>
+                  <View style={styles.headerLeftRow}>
+                    <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+                  </View>
+                  <View style={styles.countPillSmall}><Text style={styles.countPillSmallText}>{managed.length}</Text></View>
+                </View>
                 {managed.map(p => {
                   // Backend already includes owner in members as admin on creation
                   const membersCount = (p.members?.length || 0);
+                  const myId = (user as any)?._id || (user as any)?.id;
+                  const myMember = (p.members||[]).find((m:any)=> String(m.user)===String(myId));
+                  const myRole = p.owner === myId ? 'owner' : (myMember?.role || 'member');
                   return (
-                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
+                    <Pressable key={p._id} style={[styles.projectCard, styles.projectCardOwner]} onPress={()=> openProjectDirect(p)}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                         <View style={{ flex:1, paddingRight:8 }}>
                           <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
                         </View>
-                        <Text style={styles.leaderBadge}>Trưởng nhóm</Text>
+                        <Text style={myRole==='owner' ? styles.leaderBadge : styles.coLeaderBadge}>
+                          {myRole==='owner' ? 'Trưởng nhóm' : 'Phó nhóm'}
+                        </Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
                         <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
@@ -1823,16 +1862,21 @@ export default function DashboardScreen() {
             if(!participating.length) return null;
             return (
               <View style={{ marginTop: 16 }}>
-                <Text style={styles.projectsTitle}>Dự án tham gia</Text>
+                <View style={styles.projectsHeaderRow}>
+                  <View style={styles.headerLeftRow}>
+                    <Text style={styles.projectsTitle}>Dự án tham gia</Text>
+                  </View>
+                  <View style={[styles.countPillSmall,{ backgroundColor:'rgba(47,102,144,0.12)' }]}><Text style={[styles.countPillSmallText,{ color:'#2f6690' }]}>{participating.length}</Text></View>
+                </View>
                 {participating.map(p => {
                   const membersCount = (p.members?.length || 0);
                   return (
-                    <Pressable key={p._id} style={styles.projectCard} onPress={()=> { setActiveProject(p); setShowProjectsModal(true); fetchProjectDetail(p._id); }}>
+                    <Pressable key={p._id} style={[styles.projectCard, styles.projectCardMember]} onPress={()=> openProjectDirect(p)}>
                       <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                         <View style={{ flex:1, paddingRight:8 }}>
                           <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
                         </View>
-                        <Text style={[styles.leaderBadge,{ backgroundColor:'#2f6690' }]}>Thành viên</Text>
+                        <Text style={styles.memberBadge}>Thành viên</Text>
                       </View>
                       <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
                         <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
@@ -1851,7 +1895,7 @@ export default function DashboardScreen() {
             <View style={styles.quickGrid}>
               <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' onPress={()=> router.push('/create-task')} />
               <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' onPress={()=> setShowProjectsModal(true)} />
-              <QuickAction iconName='flag' label={aiMode ? 'Bỏ AI' : 'AI Gợi ý'} bg='rgba(47,102,144,0.12)' color={aiMode? '#dc2626':'#2f6690'} onPress={()=> setAiMode(m=>!m)} />
+              <QuickAction iconName='flag' label='TASKLY AI' bg='rgba(47,102,144,0.12)' color='#2f6690' onPress={()=> router.push('/auto-schedule')} />
               <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
             </View>
           </View>
@@ -1911,7 +1955,7 @@ export default function DashboardScreen() {
       </View>
     )}
     {/* Projects list (sheet) & full-screen detail */}
-  <Modal visible={showProjectsModal} transparent animationType={projectModalAnim} onRequestClose={()=>{ setShowProjectsModal(false); setActiveProject(null); }}>
+  <Modal visible={showProjectsModal} transparent animationType={projectModalAnim} onRequestClose={()=>{ if(activeProject){ closeProjectFull(); } else { setShowProjectsModal(false); setActiveProject(null); } }}>
       {!activeProject && (
         <Pressable style={styles.modalBackdrop} onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }}>
           <View style={styles.projectsSheet}>
@@ -1943,9 +1987,10 @@ export default function DashboardScreen() {
         </Pressable>
       )}
       {activeProject && (
-        <SafeAreaView style={styles.projectFullContainer} edges={['left','right','bottom']}>
+        <Animated.View style={[styles.projectFullContainer, projectSlideStyle]}>
+          <SafeAreaView style={{ flex:1 }} edges={['left','right','bottom']}>
           <View style={[styles.projectFullHeader, { paddingTop: insets.top + 4 }]}>
-            <Pressable onPress={()=> setActiveProject(null)} style={styles.projectFullBack} hitSlop={10}>
+            <Pressable onPress={closeProjectFull} style={styles.projectFullBack} hitSlop={10}>
               <Ionicons name='chevron-back' size={22} color='#16425b' />
             </Pressable>
             <Text style={styles.projectFullTitle} numberOfLines={1}>{activeProject.name}</Text>
@@ -1953,7 +1998,7 @@ export default function DashboardScreen() {
               <Pressable onPress={()=> { const pid = activeProject?._id; if(pid){ setProjectModalAnim('none'); setShowProjectsModal(false); setActiveProject(null); router.push({ pathname:'/project-settings/[id]', params:{ id: pid } }); } }} style={styles.projectFullClose} hitSlop={10}>
                 <Ionicons name='settings-outline' size={20} color='#16425b' />
               </Pressable>
-              <Pressable onPress={()=> { setShowProjectsModal(false); setActiveProject(null); }} style={styles.projectFullClose} hitSlop={10}>
+              <Pressable onPress={closeProjectFull} style={styles.projectFullClose} hitSlop={10}>
                 <Ionicons name='close' size={22} color='#16425b' />
               </Pressable>
             </View>
@@ -2237,7 +2282,8 @@ export default function DashboardScreen() {
             })()}
             <View style={{ height: Platform.OS==='ios'? 40: 20 }} />
           </KeyboardAwareScrollView>
-        </SafeAreaView>
+          </SafeAreaView>
+        </Animated.View>
       )}
     </Modal>
     {/* Subtasks Modal */}
@@ -2396,10 +2442,19 @@ const styles = StyleSheet.create({
   subProgressBarFill:{ height:6, backgroundColor:'#3a7ca5' },
   subProgressText:{ fontSize:10, color:'#2f6690', fontWeight:'600', width:42, textAlign:'right' },
   projectsTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
+  projectsHeaderRow: { flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:10 },
+  headerLeftRow: { flexDirection:'row', alignItems:'center', gap:8 },
+  countPillSmall: { paddingHorizontal:8, paddingVertical:2, backgroundColor:'rgba(22,66,91,0.12)', borderRadius:10 },
+  countPillSmallText: { fontSize:11, color:'#16425b', fontWeight:'700' },
+  headerIcon:{ marginTop:1 },
   projectCard: { backgroundColor:'rgba(58,124,165,0.08)', borderRadius:18, padding:14, marginBottom:12 },
-  projectName: { fontSize:14, fontWeight:'600', color:'#16425b' },
-  leaderBadge: { fontSize:10, backgroundColor:'#3a7ca5', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12 },
-  projectMeta: { fontSize:12, color:'#2f6690' },
+  projectCardOwner: { backgroundColor:'rgba(22,66,91,0.05)', borderWidth:1, borderColor:'rgba(22,66,91,0.12)' },
+  projectCardMember: { backgroundColor:'rgba(47,102,144,0.05)', borderWidth:1, borderColor:'rgba(47,102,144,0.12)' },
+  projectName: { fontSize:14, fontWeight:'600', color:'#16425b', lineHeight:18 },
+  leaderBadge: { fontSize:10, backgroundColor:'#dc2626', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12, lineHeight:12 },
+  coLeaderBadge: { fontSize:10, backgroundColor:'#f59e0b', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12, lineHeight:12 },
+  memberBadge: { fontSize:10, backgroundColor:'#2563eb', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12 },
+  projectMeta: { fontSize:12, color:'#2f6690', lineHeight:16 },
   quickTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:14 },
   quickGrid: { flexDirection:'row', flexWrap:'wrap', justifyContent:'space-between' },
   quickBtn: { width:'48%', borderRadius:18, paddingVertical:18, alignItems:'center', marginBottom:12 },

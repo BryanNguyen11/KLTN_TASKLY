@@ -1,5 +1,6 @@
 const Task = require('../models/Task');
 const User = require('../models/User');
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 let GoogleGenerativeAI;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 
@@ -384,5 +385,110 @@ exports.aiSort = async (req, res) => {
     return res.json({ ordered: data.ordered, reasons: Array.isArray(data.reasons)? data.reasons : [] });
   } catch(e){
     return res.status(500).json({ message:'Lỗi AI sort', error: e.message });
+  }
+};
+
+// AI generate tasks from a free-form prompt
+exports.aiGenerateTasks = async (req, res) => {
+  try {
+    const prompt = String(req.body?.prompt || '').trim();
+    if(!prompt) return res.status(400).json({ message: 'Thiếu prompt' });
+    // Local Ollama provider
+    if(LLM_PROVIDER === 'ollama'){
+      // Lazy inline chat similar to event AI; avoid extra deps
+      async function ollamaChat(messages, opts={}){
+        try{
+          const base = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+          const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
+          const body = { model, messages, stream: false, options: { temperature: 0.1, ...opts } };
+          const ctrl = new AbortController();
+          const to = setTimeout(()=> ctrl.abort(), Math.min(15000, Number(process.env.OLLAMA_TIMEOUT_MS||7000)));
+          const url = `${base}/api/chat`;
+          const resp = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }).finally(()=> clearTimeout(to));
+          if(!resp.ok) throw new Error(`ollama http ${resp.status}`);
+          const data = await resp.json();
+          return String(data?.message?.content || '').trim();
+        }catch(e){ return null; }
+      }
+      const sys = [
+        'Bạn là trợ lý tạo danh sách TÁC VỤ học tập/công việc từ mô tả (tiếng Việt).',
+        'Chỉ trả về JSON hợp lệ theo schema, không giải thích hay Markdown.',
+        '{ "tasks": [ { "title": string, "date": "YYYY-MM-DD"|"", "startTime": string|"", "endTime": string|"", "priority": "low"|"medium"|"high"|"", "importance": "low"|"medium"|"high"|"", "notes": string } ] }'
+      ].join('\n');
+      const user = `Yêu cầu người dùng:\n${prompt}`;
+      let raw = await ollamaChat([ { role:'system', content: sys }, { role:'user', content: user } ]);
+      if(raw === null){ return res.status(503).json({ message:'Không kết nối được Ollama', reason:'ollama-connect' }); }
+      const tryParse = (s)=>{ try{ return JSON.parse(s); }catch{ return null; } };
+      const stripFences = (s)=> s.replace(/^```json\n?|```$/g,'').trim();
+      const extract = (s)=>{ const m = s.match(/```json\n([\s\S]*?)```/i); if(m){ const d=tryParse(m[1]); if(d) return d; } const i=s.indexOf('{'); const j=s.lastIndexOf('}'); if(i>=0&&j>i){ const d=tryParse(s.slice(i,j+1)); if(d) return d; } return tryParse(stripFences(s)); };
+      const data = extract(String(raw));
+      let tasks = Array.isArray(data?.tasks)? data.tasks: [];
+      const sanitize = (arr)=> (Array.isArray(arr)? arr: []).map(it=>({
+        title: String(it.title||'').slice(0,140) || 'Tác vụ',
+        date: String(it.date||''),
+        startTime: String(it.startTime||''),
+        endTime: String(it.endTime||''),
+        priority: ['low','medium','high'].includes(String(it.priority||'').toLowerCase())? String(it.priority).toLowerCase(): undefined,
+        importance: ['low','medium','high'].includes(String(it.importance||'').toLowerCase())? String(it.importance).toLowerCase(): undefined,
+        notes: String(it.notes||'')
+      }));
+      tasks = sanitize(tasks);
+      if(!tasks.length){ return res.status(400).json({ message:'AI không tạo được danh sách phù hợp', reason:'empty-tasks' }); }
+      return res.json({ tasks, provider: 'ollama', model: process.env.OLLAMA_MODEL || 'llama3.1:8b' });
+    }
+
+    // Gemini provider
+    if(!GoogleGenerativeAI){ return res.status(500).json({ message:'Máy chủ chưa cấu hình AI' }); }
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const candidates = [
+      process.env.GEMINI_TASK_MODEL,
+      process.env.GEMINI_MODEL,
+      'gemini-1.5-pro-latest',
+      'gemini-1.5-flash-latest',
+      'gemini-1.5-flash-8b-latest',
+      'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-pro'
+    ].filter(Boolean);
+    const sys = [
+      'Bạn là trợ lý tạo danh sách TÁC VỤ học tập/công việc từ mô tả (tiếng Việt).',
+      'Chỉ trả về JSON hợp lệ theo schema, không giải thích hoặc Markdown.',
+      'Schema: { "tasks": [ { "title": string, "date": "YYYY-MM-DD"|"", "startTime": string|"", "endTime": string|"", "priority": "low"|"medium"|"high"|"", "importance": "low"|"medium"|"high"|"", "notes": string } ] }',
+      '- Nếu thiếu thời gian, để trống "startTime"/"endTime". Nếu thiếu ngày, để trống "date".',
+      '- Tránh bịa đặt quá mức; nếu thông tin không có, để trống.'
+    ].join('\n');
+    const user = `Yêu cầu người dùng:\n${prompt}`;
+    const extract = (raw)=>{
+      try{
+        if(!raw) return null; let s=String(raw).trim();
+        const m=s.match(/```(?:json)?\n([\s\S]*?)```/i); if(m) s=m[1].trim();
+        return JSON.parse(s);
+      }catch{ return null; }
+    };
+    const sanitize = (arr)=> (Array.isArray(arr)? arr: []).map(it=>({
+      title: String(it.title||'').slice(0,140) || 'Tác vụ',
+      date: String(it.date||''),
+      startTime: String(it.startTime||''),
+      endTime: String(it.endTime||''),
+      priority: ['low','medium','high'].includes(String(it.priority||'').toLowerCase())? String(it.priority).toLowerCase(): undefined,
+      importance: ['low','medium','high'].includes(String(it.importance||'').toLowerCase())? String(it.importance).toLowerCase(): undefined,
+      notes: String(it.notes||'')
+    }));
+    let used = '';
+    for(const name of candidates){
+      try{
+        const model = genAI.getGenerativeModel({ model: name });
+        const result = await model.generateContent({
+          contents: [ { role:'user', parts:[ { text: sys }, { text: user } ] } ],
+          generationConfig: { temperature: 0.2 }
+        });
+        const raw = String(result?.response?.text?.() || '').trim();
+        const data = extract(raw);
+        const tasks = sanitize(data?.tasks);
+        used = name;
+        if(tasks && tasks.length){ return res.json({ tasks, model: name }); }
+      }catch(_e){ /* try next */ }
+    }
+    return res.status(400).json({ message:'AI không tạo được danh sách phù hợp', reason:'empty-tasks' });
+  } catch(e){
+    return res.status(500).json({ message:'Lỗi AI generate tasks', error: e?.message || String(e) });
   }
 };

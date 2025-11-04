@@ -11,6 +11,106 @@ try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { 
 const OCR_DEBUG = process.env.OCR_DEBUG === '1' || process.env.OCR_DEBUG === 'true';
 const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 
+// --- Time semantics helpers (map HH:MM to school periods like frontend) ---
+const PERIOD_TIME = {
+  1: { start: '06:30', end: '07:20' },
+  2: { start: '07:20', end: '08:10' },
+  3: { start: '08:10', end: '09:00' },
+  4: { start: '09:10', end: '10:00' },
+  5: { start: '10:00', end: '10:50' },
+  6: { start: '10:50', end: '11:40' },
+  7: { start: '12:30', end: '13:20' },
+  8: { start: '13:20', end: '14:10' },
+  9: { start: '14:10', end: '15:00' },
+  10: { start: '15:10', end: '16:00' },
+  11: { start: '16:00', end: '16:50' },
+  12: { start: '16:50', end: '17:40' },
+  13: { start: '18:00', end: '18:50' },
+  14: { start: '18:50', end: '19:40' },
+  15: { start: '19:50', end: '20:40' },
+  16: { start: '20:40', end: '21:30' },
+};
+const __hm = (s)=>{ const [h,m] = String(s).split(':'); return (Math.min(23,Math.max(0,parseInt(h||'0',10)))*60) + (Math.min(59,Math.max(0,parseInt(m||'0',10)))); };
+const __mins = Object.keys(PERIOD_TIME).map(n=>parseInt(n,10)).map(i=>({ i, s: __hm(PERIOD_TIME[i].start), e: __hm(PERIOD_TIME[i].end) }));
+function hhmmToPeriodStart(hhmm){
+  const t = __hm(hhmm);
+  // choose the period whose start is <= t and closest to t; fallback to first
+  let best = __mins[0].i; let bestDiff = 1e9;
+  for(const p of __mins){
+    if(p.s <= t){ const d = t - p.s; if(d < bestDiff){ bestDiff = d; best = p.i; } }
+  }
+  return best;
+}
+function hhmmToPeriodEnd(hhmm){
+  const t = __hm(hhmm);
+  // choose the period whose end is >= t and closest; fallback to last
+  let best = __mins[__mins.length-1].i; let bestDiff = 1e9; let found=false;
+  for(const p of __mins){
+    if(p.e >= t){ const d = p.e - t; if(d < bestDiff){ bestDiff = d; best = p.i; found=true; } }
+  }
+  return found? best : __mins[__mins.length-1].i;
+}
+function parseTimeFromText(txt){
+  try{
+    const s = String(txt||'');
+    const re1 = /\b(\d{1,2}):(\d{2})\b/; const m1 = s.match(re1);
+    if(m1){ const h=m1[1], m=m1[2]; return `${String(Math.min(23,Math.max(0,parseInt(h,10)))).padStart(2,'0')}:${String(Math.min(59,Math.max(0,parseInt(m,10)))).padStart(2,'0')}`; }
+    const re2 = /\b(\d{1,2})h(\d{2})?\b/i; const m2 = s.match(re2);
+    if(m2){ const h=m2[1], m=m2[2]||'00'; return `${String(Math.min(23,Math.max(0,parseInt(h,10)))).padStart(2,'0')}:${String(Math.min(59,Math.max(0,parseInt(m,10)))).padStart(2,'0')}`; }
+    return null;
+  }catch{ return null; }
+}
+function parseDateFromText(txt){
+  try{
+    const s = String(txt||'');
+    let m = s.match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/); // DD/MM/YYYY
+    if(m){ const dd=String(m[1]).padStart(2,'0'); const mm=String(m[2]).padStart(2,'0'); const yyyy=String(m[3]); return `${yyyy}-${mm}-${dd}`; }
+    m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/); // YYYY-MM-DD
+    if(m){ const yyyy=String(m[1]); const mm=String(m[2]).padStart(2,'0'); const dd=String(m[3]).padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; }
+    m = s.match(/(\d{1,2})[\/-](\d{1,2})(?![\/-]\d)/); // DD/MM
+    if(m){ const now=new Date(); const yyyy=now.getFullYear(); const dd=String(m[1]).padStart(2,'0'); const mm=String(m[2]).padStart(2,'0'); return `${yyyy}-${mm}-${dd}`; }
+    return null;
+  }catch{ return null; }
+}
+function detectSemanticsFromPrompt(prompt){
+  const p = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
+  // Detect "due/deadline" semantics vs "start" semantics in Vietnamese (diacritics stripped)
+  const due = /(\bhan\b|\bhan chot\b|deadline|\btruoc\b|\bden han\b|\bnop\b|phai xong|phai hoan thanh)/i.test(p);
+  const start = /(bat ?dau|khoi ?dong|start)/i.test(p);
+  const time = parseTimeFromText(p);
+  const date = parseDateFromText(p);
+  return { mode: due? 'due' : (start? 'start' : 'none'), time, date };
+}
+function normalizeItemsBySemantics(items, prompt){
+  try{
+    const out = Array.isArray(items)? items.slice() : [];
+    const sem = detectSemanticsFromPrompt(prompt);
+    if(sem.mode==='none') return out;
+    // If a time is specified in prompt, align period range accordingly
+    const t = sem.time;
+    for(const it of out){
+      if(!it) continue;
+      if(sem.mode==='due' && t){
+        const to = hhmmToPeriodEnd(t);
+        const from = Math.max(1, to - 1); // single-period by default
+        it.from = from; it.to = Math.max(from, to);
+        // If a date mentioned and endDate is empty, treat it as the repeat end date
+        if(sem.date && !it.endDate){ it.endDate = sem.date; }
+      } else if(sem.mode==='start' && t){
+        const from = hhmmToPeriodStart(t);
+        const to = Math.min(16, from + 1);
+        it.from = from; it.to = Math.max(from, to);
+        if(sem.date && !it.startDate){ it.startDate = sem.date; }
+      } else {
+        // No explicit time: if a date present, fill startDate in start-mode, endDate in due-mode
+        if(sem.mode==='start' && sem.date && !it.startDate) it.startDate = sem.date;
+        if(sem.mode==='due' && sem.date && !it.endDate) it.endDate = sem.date;
+      }
+    }
+    return out;
+  }catch{ return Array.isArray(items)? items: []; }
+}
+
 // Minimal Ollama chat caller (optional, when LLM_PROVIDER=ollama)
 async function ollamaChat(messages, opts={}){
   try{
@@ -450,9 +550,9 @@ exports.aiTransform = async (req, res) => {
         { role:'user', content: userMsg }
       ]);
       let data = null; if(content){ let s = content.replace(/^```json\n|```$/g,'').trim(); try{ data = JSON.parse(s); }catch(_){ data=null; } }
-      const out = Array.isArray(data?.items)? data.items: [];
+      let out = Array.isArray(data?.items)? data.items: [];
       const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
-      const safe = out.map(it => ({
+      let safe = out.map(it => ({
         title: String(it.title||'').slice(0,120) || 'Lịch học',
         weekday: clamp(parseInt(it.weekday,10), 1, 7) || 2,
         from: clamp(parseInt(it.from,10), 1, 16),
@@ -463,6 +563,7 @@ exports.aiTransform = async (req, res) => {
         lecturer: String(it.lecturer||''),
         notes: String(it.notes||'')
       })).filter(it => it.from <= it.to && it.weekday>=1 && it.weekday<=7);
+      safe = normalizeItemsBySemantics(safe, prompt);
       if(safe.length===0) return res.json({ items });
       return res.json({ items: safe });
     }
@@ -479,6 +580,7 @@ exports.aiTransform = async (req, res) => {
       '- Có thể xoá mục không phù hợp với yêu cầu.',
       '- Không bịa đặt dữ liệu mới không có căn cứ.',
       '- Giữ weekday (2..7, Chủ nhật=7) và from/to (số tiết) trong phạm vi hợp lệ. startDate/endDate có thể giữ nguyên hoặc cập nhật theo yêu cầu.',
+      '- Nếu người dùng mô tả HẠN (deadline, đến hạn) lúc HH:MM thì coi đó là thời điểm KẾT THÚC (end) và chọn from/to sao cho "to" gần HH:MM nhất. Nếu mô tả BẮT ĐẦU lúc HH:MM thì chọn from/to sao cho "from" gần HH:MM nhất.',
     ].join('\n');
     const user = [
       `Yêu cầu người dùng: ${prompt}`,
@@ -523,7 +625,7 @@ exports.aiTransform = async (req, res) => {
     if(out.length === 0){ return res.json({ items }); }
     // Sanitize numeric ranges
     const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
-    const safe = out.map(it => ({
+    let safe = out.map(it => ({
       title: String(it.title||'').slice(0,120) || 'Lịch học',
       weekday: clamp(parseInt(it.weekday,10), 2, 7) || 2,
       from: clamp(parseInt(it.from,10), 1, 16),
@@ -534,6 +636,8 @@ exports.aiTransform = async (req, res) => {
       lecturer: String(it.lecturer||''),
       notes: String(it.notes||'')
     })).filter(it => it.from <= it.to);
+    // Apply due/start-time semantics inferred from prompt
+    safe = normalizeItemsBySemantics(safe, prompt);
     return res.json({ items: safe });
   }catch(e){
     return res.status(500).json({ message: 'Lỗi AI transform', error: e.message });
@@ -1100,6 +1204,7 @@ exports.aiGenerate = async (req, res) => {
         lecturer: String(it.lecturer||''),
         notes: String(it.notes||'')
       })).filter(it => it.from <= it.to && it.weekday>=1 && it.weekday<=7);
+      items = normalizeItemsBySemantics(items, prompt);
       if(!items.length){
         const debug = raw ? String(raw).slice(0, 220) : undefined;
         return res.status(400).json({ message: 'AI không tạo được danh sách phù hợp', reason: 'ollama-empty', debug });
@@ -1134,6 +1239,7 @@ exports.aiGenerate = async (req, res) => {
       '- from/to: tiết 1..16; nếu không rõ, ước lượng hợp lý và nhất quán',
       '- startDate/endDate: nếu thiếu, để ""',
       '- Không bịa đặt quá mức: dựa theo yêu cầu. Nếu thông tin thiếu hãy để trống.',
+      '- Nếu người dùng nói "có hạn (deadline) lúc HH:MM" thì hiểu đó là thời điểm kết thúc và chọn "to" gần HH:MM nhất. Nếu nói "bắt đầu lúc HH:MM" thì chọn "from" gần HH:MM nhất.',
     ].join('\n');
     const user = `Yêu cầu người dùng:\n${prompt}`;
 
@@ -1230,7 +1336,9 @@ exports.aiGenerate = async (req, res) => {
       return res.status(400).json({ message: 'AI không tạo được danh sách phù hợp', reason: 'empty-items', model: modelUsed, debug });
     }
 
-    return res.json({ items, model: modelUsed });
+    // Apply semantic normalization from prompt (due/start time)
+    const norm = normalizeItemsBySemantics(items, prompt);
+    return res.json({ items: norm, model: modelUsed });
   }catch(e){
     return res.status(500).json({ message: 'Lỗi AI generate', reason: 'exception', error: e?.message || String(e) });
   }

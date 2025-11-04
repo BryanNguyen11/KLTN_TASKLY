@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, Alert, Image, Modal, ActivityIndicator, Platform, Linking, ScrollView, KeyboardAvoidingView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, Image, Platform, Linking, ScrollView, KeyboardAvoidingView, Animated, Easing } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +16,7 @@ try { ImageManipulator = require('expo-image-manipulator'); } catch { ImageManip
 
 type PickedImage = { uri: string; name: string };
 type PickedFile = { uri: string; name: string; mimeType: string };
+type Msg = { id: string; role: 'user'|'assistant'; text: string; meta?: { evItems?: any[]; tkItems?: any[] } };
 
 export default function AutoScheduleScreen(){
   const router = useRouter();
@@ -26,7 +27,10 @@ export default function AutoScheduleScreen(){
   const [images, setImages] = useState<PickedImage[]>([]);
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<'prompt'|'files'|'mixed'>('prompt');
+  const [messages, setMessages] = useState<Msg[]>([
+    { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch (events) và tác vụ (tasks). Bạn có thể đính kèm ảnh/PDF nếu cần.' }
+  ]);
+  const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
   const onCheckOllama = async () => {
     try{
@@ -102,7 +106,6 @@ export default function AutoScheduleScreen(){
       }
       setImages(prev => {
         const next = [ ...prev, { uri, name: (a.fileName || 'image.jpg') } ];
-        setMode(prompt.trim()? 'mixed' : 'files');
         return next;
       });
     }
@@ -120,102 +123,132 @@ export default function AutoScheduleScreen(){
     if (!asset?.uri) return;
     const name: string = (asset.name as string) || (String(asset.uri).split('/').pop() || 'upload');
     const mime: string = (asset.mimeType as string) || (name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/*');
-    setFiles(prev => {
-      const next = [ ...prev, { uri: String(asset.uri), name, mimeType: mime } ];
-      setMode(prompt.trim()? 'mixed' : 'files');
-      return next;
-    });
+    setFiles(prev => [ ...prev, { uri: String(asset.uri), name, mimeType: mime } ]);
   };
 
   const removeImage = (idx: number) => setImages(prev => prev.filter((_, i) => i !== idx));
   const removeFile = (idx: number) => setFiles(prev => prev.filter((_, i) => i !== idx));
 
-  const analyze = async () => {
-    if (!token) { Alert.alert('Lỗi','Chưa đăng nhập'); return; }
-    if (!prompt.trim() && images.length === 0 && files.length === 0) {
-      Alert.alert('Thiếu dữ liệu', 'Nhập yêu cầu hoặc đính kèm ảnh/tệp.');
+  const appendMsg = (m: Msg) => setMessages(prev => [...prev, m]);
+
+  // Tiny Gemini-like star loader (4-point diamonds pulsing)
+  const StarLoader = () => {
+    const stars = [0,1,2];
+    const anims = stars.map(()=> new Animated.Value(0));
+    React.useEffect(()=>{
+      anims.forEach((v, i) => {
+        const loop = () => {
+          Animated.sequence([
+            Animated.delay(i*150),
+            Animated.timing(v, { toValue: 1, duration: 450, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+            Animated.timing(v, { toValue: 0, duration: 450, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+          ]).start(() => loop());
+        };
+        loop();
+      });
+    }, []);
+    return (
+      <View style={styles.starRow}>
+        {anims.map((v, idx) => (
+          <Animated.View key={idx} style={[styles.star, { opacity: v.interpolate({ inputRange:[0,1], outputRange:[0.35,1] }), transform:[ { scale: v.interpolate({ inputRange:[0,1], outputRange:[0.8,1.2] }) }, { rotate: '45deg' } ] }]} />
+        ))}
+      </View>
+    );
+  };
+
+  const onSend = async () => {
+    const text = prompt.trim();
+    if(!text && images.length===0 && files.length===0){
+      Alert.alert('Thiếu dữ liệu','Nhập yêu cầu hoặc đính kèm ảnh/tệp.');
       return;
     }
-    // Blur input to avoid web aria-hidden focus conflicts when showing overlay
+    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
     try { inputRef.current?.blur?.(); } catch {}
-    setBusy(true);
-    try {
+    const uid = `u_${Date.now()}`;
+    if(text){ appendMsg({ id: uid, role:'user', text }); }
+    setPrompt(''); setBusy(true);
+    try{
+      // Collect events from attachments (if any)
       let combinedRaw = '';
-      let items: any[] = [];
-      // If user wants prompt-only generation
-      if (prompt.trim() && images.length === 0 && files.length === 0) {
-        try {
-          // Quick echo to ensure backend receives prompt
-          try {
-            const echo = await axios.post(`${API_BASE}/api/events/ai-echo`, { prompt: prompt.trim() }, authHeader);
-            if (echo?.data && typeof echo.data.promptLen === 'number' && echo.data.promptLen === 0) {
-              Alert.alert('Lỗi', 'Máy chủ nhận prompt rỗng. Vui lòng thử lại hoặc kiểm tra kết nối/backend.');
-            }
-          } catch {}
-          const gen = await axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: prompt.trim() }, authHeader);
-          if (Array.isArray(gen.data?.items)) {
-            items = gen.data.items;
-          }
-        } catch (e:any) {
-          // Surface backend debug snippet in dev console if available
-          try { if (e?.response?.data?.debug) console.warn('[ai-generate debug]', e.response.data.debug); } catch {}
-          throw e;
+      let evItems: any[] = [];
+      if(images.length){
+        for(const im of images){
+          const form = new FormData();
+          // @ts-ignore
+          form.append('image', { uri: im.uri, name: im.name || 'image.jpg', type: 'image/jpeg' });
+          if(text) form.append('prompt', text);
+          const res = await axios.post(`${API_BASE}/api/events/scan-image`, form, authHeader);
+          const raw = String(res.data?.raw || '');
+          if(raw) combinedRaw += (combinedRaw?'\n\n':'')+raw;
+          const st = res.data?.structured;
+          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
-      // Images first
-      for (const im of images) {
-        const formData = new FormData();
-        // @ts-ignore
-        formData.append('image', { uri: im.uri, name: im.name || 'image.jpg', type: 'image/jpeg' });
-        if (prompt.trim()) formData.append('prompt', prompt.trim());
-        const res = await axios.post(`${API_BASE}/api/events/scan-image`, formData, authHeader);
-        const raw = String(res.data?.raw || '');
-        const structured = res.data?.structured;
-        if (raw) combinedRaw += (combinedRaw ? '\n\n' : '') + raw;
-        if (structured?.kind === 'progress-table' && Array.isArray(structured.items)) {
-          items = items.concat(structured.items);
+      if(files.length){
+        for(const f of files){
+          const form = new FormData();
+          // @ts-ignore
+          form.append('file', { uri: f.uri, name: f.name, type: f.mimeType });
+          if(text) form.append('prompt', text);
+          const res = await axios.post(`${API_BASE}/api/events/scan-file`, form, authHeader);
+          const raw = String(res.data?.raw || '');
+          if(raw) combinedRaw += (combinedRaw?'\n\n':'')+raw;
+          const st = res.data?.structured;
+          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
-      // Files next
-      for (const f of files) {
-        const formData = new FormData();
-        // @ts-ignore
-        formData.append('file', { uri: f.uri, name: f.name, type: f.mimeType });
-        if (prompt.trim()) formData.append('prompt', prompt.trim());
-        const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, authHeader);
-        const raw = String(res.data?.raw || '');
-        const structured = res.data?.structured;
-        if (raw) combinedRaw += (combinedRaw ? '\n\n' : '') + raw;
-        if (structured?.kind === 'progress-table' && Array.isArray(structured.items)) {
-          items = items.concat(structured.items);
-        }
+      // Prompt-only or prompt+attachments: run AI for both events/tasks in parallel
+      let aiEvItems: any[] = [];
+      let aiTkItems: any[] = [];
+      if(text){
+        const evReq = axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: text }, authHeader).catch(e=>({ error:e } as any));
+        const tkReq = axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: text }, authHeader).catch(e=>({ error:e } as any));
+        const [evRes, tkRes] = await Promise.all([evReq, tkReq]);
+        aiEvItems = (evRes as any)?.data?.items || [];
+        aiTkItems = (tkRes as any)?.data?.tasks || [];
       }
-      let finalItems = items;
-      if (prompt.trim() && items.length) {
-        try {
-          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: prompt.trim(), items }, authHeader);
-          if (Array.isArray(tr.data?.items) && tr.data.items.length) {
-            finalItems = tr.data.items;
-          }
-        } catch (e) { /* If transform fails, fall back to original items */ }
+      // Merge event candidates: attachments first then AI prompt items
+      let mergedEvents = [...evItems, ...aiEvItems];
+      // Optional transform when both prompt and events present
+      if(text && mergedEvents.length){
+        try{
+          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: text, items: mergedEvents }, authHeader);
+          if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
+        }catch{ /* fallback to mergedEvents */ }
       }
-      const structured = finalItems.length ? { kind: 'progress-table', items: finalItems } : undefined;
-      setOcrScanPayload({ raw: combinedRaw, extracted: {}, structured, defaultTypeId: typeId? String(typeId): undefined, projectId: projectId? String(projectId): undefined } as any);
-      router.push('/scan-preview');
-    } catch (e: any) {
-      const reason = e?.response?.data?.reason;
-      const message = e?.response?.data?.message || 'Không xử lý được dữ liệu';
-      Alert.alert('Lỗi', reason ? `${message}\nLý do: ${reason}` : message);
-    } finally {
+      const parts: string[] = [];
+      if(mergedEvents.length) parts.push(`• Lịch gợi ý: ${mergedEvents.length}`);
+      if(aiTkItems.length) parts.push(`• Tác vụ gợi ý: ${aiTkItems.length}`);
+      if(!parts.length){
+        const errMsg = 'Mình chưa tạo được mục nào từ yêu cầu này. Hãy mô tả rõ hơn hoặc thử đính kèm ảnh/PDF.';
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: errMsg });
+      } else {
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, tkItems: aiTkItems } });
+      }
+      // Auto-scroll to bottom
+      setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
+    }catch(e:any){
+      const message = e?.response?.data?.message || e?.message || 'Lỗi không xác định';
+      appendMsg({ id:`a_${Date.now()}`, role:'assistant', text:`Có lỗi khi xử lý: ${message}` });
+    }finally{
       setBusy(false);
     }
+  };
+
+  const onPreviewEvents = (items: any[]) => {
+    setOcrScanPayload({ raw: '', extracted: {}, structured: items?.length ? { kind:'progress-table', items } as any : undefined, defaultTypeId: typeId? String(typeId): undefined, projectId: projectId? String(projectId): undefined } as any);
+    router.push('/scan-preview');
+  };
+  const onPreviewTasks = (items: any[]) => {
+    setOcrScanPayload({ raw: '', extracted: {}, structured: items?.length ? { kind:'tasks-list', items } as any : undefined, projectId: projectId? String(projectId): undefined } as any);
+    router.push('/tasks-preview');
   };
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }}>
       <View style={styles.header}>
         <Pressable onPress={()=>router.back()} style={styles.backBtn}><Ionicons name='arrow-back' size={22} color='#16425b' /></Pressable>
-        <Text style={styles.headerTitle}>Tạo lịch tự động (AI)</Text>
+        <Text style={styles.headerTitle}>TASKLY AI</Text>
         <Pressable onPress={onCheckOllama} style={styles.healthBtn} accessibilityLabel='Kiểm tra Ollama'>
           <Ionicons name='link-outline' size={20} color='#16425b' />
         </Pressable>
@@ -223,87 +256,82 @@ export default function AutoScheduleScreen(){
 
       <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={56} style={{ flex:1 }}>
         <View style={{ flex:1 }}>
-          <ScrollView contentContainerStyle={{ padding:16, paddingBottom:16 }} keyboardShouldPersistTaps='handled'>
-          <View style={{ marginBottom:12 }}>
-            <Text style={styles.hint}>Nhập yêu cầu như bạn làm với Gemini. Bạn cũng có thể đính kèm ảnh/PDF, nhưng không bắt buộc.</Text>
-          </View>
-          {(images.length>0) && (
-            <View style={styles.card}>
-              <Text style={styles.subTitle}>Ảnh ({images.length})</Text>
-              <View style={styles.grid}>
-                {images.map((im, idx) => (
-                  <View key={idx} style={styles.thumbWrap}>
-                    <Image source={{ uri: im.uri }} style={styles.thumb} />
-                    <Pressable onPress={()=>removeImage(idx)} style={styles.removeBtn}><Text style={styles.removeText}>×</Text></Pressable>
+          <ScrollView ref={scrollRef} contentContainerStyle={{ padding:16, paddingBottom:16 }} keyboardShouldPersistTaps='handled'>
+            {/* Attachments (optional) */}
+            {(images.length>0) && (
+              <View style={styles.card}>
+                <Text style={styles.subTitle}>Ảnh ({images.length})</Text>
+                <View style={styles.grid}>
+                  {images.map((im, idx) => (
+                    <View key={idx} style={styles.thumbWrap}>
+                      <Image source={{ uri: im.uri }} style={styles.thumb} />
+                      <Pressable onPress={()=>removeImage(idx)} style={styles.removeBtn}><Text style={styles.removeText}>×</Text></Pressable>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+            {(files.length>0) && (
+              <View style={styles.card}>
+                <Text style={styles.subTitle}>Tệp ({files.length})</Text>
+                {files.map((f, idx) => (
+                  <View key={idx} style={styles.fileRow}>
+                    <Text style={styles.fileName} numberOfLines={1}>{f.name}</Text>
+                    <Pressable onPress={()=>removeFile(idx)}><Text style={styles.removeText}>Xoá</Text></Pressable>
                   </View>
                 ))}
               </View>
-            </View>
-          )}
-          {(files.length>0) && (
-            <View style={styles.card}>
-              <Text style={styles.subTitle}>Tệp ({files.length})</Text>
-              {files.map((f, idx) => (
-                <View key={idx} style={styles.fileRow}>
-                  <Text style={styles.fileName} numberOfLines={1}>{f.name}</Text>
-                  <Pressable onPress={()=>removeFile(idx)}><Text style={styles.removeText}>Xoá</Text></Pressable>
-                </View>
-              ))}
-            </View>
-          )}
-
-          {/* Suggestion chips */}
-          <View style={{ flexDirection:'row', flexWrap:'wrap', gap:8, paddingHorizontal:4 }}>
-            {[
-              'Chỉ giữ buổi sáng',
-              'Bỏ lớp trực tuyến',
-              'Tiêu đề = tên môn',
-              'Thêm phòng vào ghi chú',
-            ].map(sug => (
-              <Pressable key={sug} onPress={()=> setPrompt(p => (p? p+ (p.endsWith(' ')? '' : ' ') : '') + sug)} style={[styles.typeChip, { backgroundColor:'rgba(58,124,165,0.08)' }]}>
-                <Text style={styles.typeChipText}>{sug}</Text>
-              </Pressable>
+            )}
+            {/* Chat messages */}
+            {messages.map(m => (
+              <View key={m.id} style={[styles.bubble, m.role==='user'? styles.userBubble: styles.aiBubble]}>
+                <Text style={[styles.bubbleText]}>{m.text}</Text>
+                {m.role==='assistant' && (m.meta?.evItems?.length || m.meta?.tkItems?.length) ? (
+                  <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
+                    {!!m.meta?.evItems?.length && (
+                      <Pressable style={[styles.actionBtn, styles.primary]} onPress={()=> onPreviewEvents(m.meta!.evItems!)}>
+                        <Ionicons name='calendar-outline' size={16} color='#fff' />
+                        <Text style={styles.actionText}>Xem trước lịch</Text>
+                      </Pressable>
+                    )}
+                    {!!m.meta?.tkItems?.length && (
+                      <Pressable style={[styles.actionBtn, styles.secondary]} onPress={()=> onPreviewTasks(m.meta!.tkItems!)}>
+                        <Ionicons name='checkmark-done-outline' size={16} color='#16425b' />
+                        <Text style={styles.actionTextAlt}>Xem trước tác vụ</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ) : null}
+              </View>
             ))}
-          </View>
+            {busy && (
+              <View style={[styles.bubble, styles.aiBubble]}> 
+                <StarLoader />
+                <Text style={[styles.bubbleText, { marginTop:6, textAlign:'center', color:'#2f6690' }]}>Đang suy nghĩ…</Text>
+              </View>
+            )}
           </ScrollView>
 
           {/* Bottom composer */}
           <View style={styles.composer}>
-          <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={20} color='#16425b' /></Pressable>
-          <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={20} color='#16425b' /></Pressable>
-          <TextInput
-            style={styles.composerInput}
-            placeholder='Nhập yêu cầu…'
-            multiline
-            value={prompt}
-            onChangeText={(t)=> { setPrompt(t); setMode((t.trim()? (images.length||files.length? 'mixed':'prompt'):'files') as any); }}
-          />
-          <Pressable onPress={analyze} style={[styles.sendBtn, (!prompt.trim() && images.length===0 && files.length===0) && { opacity:0.5 }]} disabled={!prompt.trim() && images.length===0 && files.length===0}>
-            <Ionicons name='sparkles' size={18} color='#fff' />
-          </Pressable>
+            <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={20} color='#16425b' /></Pressable>
+            <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={20} color='#16425b' /></Pressable>
+            <TextInput
+              ref={inputRef}
+              style={styles.composerInput}
+              placeholder='Nhập yêu cầu…'
+              multiline
+              value={prompt}
+              onChangeText={setPrompt}
+            />
+            <Pressable onPress={onSend} style={[styles.sendBtn, (!prompt.trim() && images.length===0 && files.length===0) && { opacity:0.5 }]} disabled={!prompt.trim() && images.length===0 && files.length===0}>
+              <Ionicons name='sparkles' size={18} color='#fff' />
+            </Pressable>
           </View>
         </View>
-  </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
 
-      {busy && (
-        Platform.OS === 'web' ? (
-          <View style={styles.overlay} pointerEvents='auto' aria-modal={true} accessibilityViewIsModal>
-            <View style={styles.overlayCard}>
-              <ActivityIndicator size='large' color='#3a7ca5' />
-              <Text style={{ marginTop:10, color:'#16425b', fontWeight:'600' }}>Đang xử lý…</Text>
-            </View>
-          </View>
-        ) : (
-          <Modal transparent animationType='fade'>
-            <View style={styles.overlay}>
-              <View style={styles.overlayCard}>
-                <ActivityIndicator size='large' color='#3a7ca5' />
-                <Text style={{ marginTop:10, color:'#16425b', fontWeight:'600' }}>Đang xử lý…</Text>
-              </View>
-            </View>
-          </Modal>
-        )
-      )}
+      {/* No blocking overlay; loader is inline in the chat bubble */}
     </SafeAreaView>
   );
 }
@@ -336,13 +364,19 @@ const styles = StyleSheet.create({
   actionOn:{ backgroundColor:'#4f46e5' },
   disabled:{ backgroundColor:'#94a3b8' },
   actionText:{ color:'#fff', fontWeight:'800' },
-  // New styles for Gemini-like composer & chips
-  typeChip:{ paddingHorizontal:12, paddingVertical:8, borderRadius:20 },
-  typeChipText:{ color:'#2f6690', fontWeight:'700', fontSize:12 },
+  // Chat bubbles + actions
+  bubble:{ padding:12, borderRadius:16, marginBottom:10, maxWidth:'92%' },
+  userBubble:{ alignSelf:'flex-end', backgroundColor:'#e0f2fe' },
+  aiBubble:{ alignSelf:'flex-start', backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0' },
+  bubbleText:{ fontSize:14, lineHeight:20, color:'#0f172a' },
+  actionBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:10, paddingVertical:8, borderRadius:12 },
+  actionTextAlt:{ color:'#16425b', fontWeight:'700', fontSize:12 },
   composer:{ flexDirection:'row', alignItems:'flex-end', padding:10, backgroundColor:'#ffffffee', borderTopWidth:1, borderColor:'#e2e8f0', gap:8 },
   iconBtn:{ width:38, height:38, borderRadius:12, alignItems:'center', justifyContent:'center', backgroundColor:'#e2e8f0' },
   composerInput:{ flex:1, maxHeight:120, minHeight:40, backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, paddingHorizontal:12, paddingVertical:10, color:'#0f172a' },
   sendBtn:{ width:42, height:42, borderRadius:14, alignItems:'center', justifyContent:'center', backgroundColor:'#4f46e5' },
-  overlay:{ position:'absolute', top:0, left:0, right:0, bottom:0, backgroundColor:'rgba(0,0,0,0.35)', alignItems:'center', justifyContent:'center' },
-  overlayCard:{ backgroundColor:'#fff', borderRadius:16, padding:20, alignItems:'center' },
+   overlay:{},
+   overlayCard:{},
+   starRow:{ flexDirection:'row', alignItems:'center', justifyContent:'center', gap:8 },
+   star:{ width:10, height:10, backgroundColor:'#3a7ca5', borderRadius:2, marginHorizontal:4 },
 });

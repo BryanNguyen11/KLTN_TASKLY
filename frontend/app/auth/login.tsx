@@ -19,7 +19,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
 
   const goDashboard = () => {
-    router.replace('/(tabs)/dashboard');
+    router.replace('/post-login-loading');
   };
 
   const handleLogin = async () => {
