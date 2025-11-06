@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, Alert, TextInput, Modal } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
+import EventForm from '@/components/EventForm';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOcrScanPayload, setOcrScanPayload } from '@/contexts/OcrScanStore';
 import { parseWeeklyFromRaw, WeekdayBlock, CandidateEvent, periodsRangeToTime, periodsToSlot } from '@/utils/ocrTimetable';
@@ -16,6 +17,8 @@ export default function ScanPreview() {
   const payload = getOcrScanPayload();
   const [days, setDays] = useState<WeekdayBlock[]>([]);
   const [edit, setEdit] = useState<Editable | null>(null);
+  const [types, setTypes] = useState<Array<{ _id:string; name:string; isDefault?:boolean }>>([]);
+  const [loadingTypes, setLoadingTypes] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
@@ -90,6 +93,19 @@ export default function ScanPreview() {
     }));
     setDays(withIds as any);
   }, []);
+
+  useEffect(()=>{
+    const loadTypes = async () => {
+      if(!token) return;
+      setLoadingTypes(true);
+      try{
+        const res = await axios.get(`${API_BASE}/api/event-types`, { headers:{ Authorization: token? `Bearer ${token}`:'' } });
+        setTypes(Array.isArray(res.data)? res.data: []);
+      }catch{}
+      finally{ setLoadingTypes(false); }
+    };
+    loadTypes();
+  }, [token]);
 
   const allSelected = useMemo(() => days.length>0 && days.every(d => (d.events as any).every((e: any) => e.selected)), [days]);
   const totalEvents = useMemo(() => days.reduce((acc,d)=> acc + (d.events as any).length, 0), [days]);
@@ -174,6 +190,7 @@ export default function ScanPreview() {
         notes: [e.notes, e.lecturer ? `GV: ${e.lecturer}` : ''].filter(Boolean).join('\n'),
         props: {},
       };
+      if((e as any).link){ body.link = String((e as any).link); }
       if (repeatEnd && /^\d{4}-\d{2}-\d{2}$/.test(repeatEnd)) {
         body.repeat = { frequency: 'weekly', endMode: 'onDate', endDate: repeatEnd };
       }
@@ -241,33 +258,29 @@ export default function ScanPreview() {
         ))}
       </ScrollView>
 
-      {/* Edit Modal */}
+      {/* Edit Modal now uses EventForm (compact) for full parity */}
       <Modal visible={!!edit} transparent animationType='fade' onRequestClose={()=> setEdit(null)}>
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { maxWidth: 420 }] }>
-            <Text style={styles.modalTitle}>Tạo lịch mới</Text>
-            <Text style={styles.modalLabel}>Tiêu đề</Text>
-            <TextInput style={styles.input} value={edit?.title||''} onChangeText={t=> setEdit(prev => prev? { ...prev, title: t }: prev)} />
-            <View style={{ flexDirection:'row', gap:8 }}>
-              <View style={{ flex:1 }}>
-                <Text style={styles.modalLabel}>Bắt đầu</Text>
-                <TextInput style={styles.input} value={edit?.startTime||''} onChangeText={t=> setEdit(prev => prev? { ...prev, startTime: t }: prev)} placeholder='HH:MM' />
-              </View>
-              <View style={{ flex:1 }}>
-                <Text style={styles.modalLabel}>Kết thúc</Text>
-                <TextInput style={styles.input} value={edit?.endTime||''} onChangeText={t=> setEdit(prev => prev? { ...prev, endTime: t }: prev)} placeholder='HH:MM' />
-              </View>
-            </View>
-            <Text style={styles.modalLabel}>Ngày</Text>
-            <TextInput style={styles.input} value={edit?.date||''} onChangeText={t=> setEdit(prev => prev? { ...prev, date: t }: prev)} placeholder='YYYY-MM-DD' />
-            <Text style={styles.modalLabel}>Phòng</Text>
-            <TextInput style={styles.input} value={edit?.location||''} onChangeText={t=> setEdit(prev => prev? { ...prev, location: t }: prev)} />
-            <Text style={styles.modalLabel}>Ghi chú</Text>
-            <TextInput style={[styles.input, styles.textarea]} multiline value={edit?.notes||''} onChangeText={t=> setEdit(prev => prev? { ...prev, notes: t }: prev)} />
-            <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-              <Pressable onPress={()=> setEdit(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
-              <Pressable onPress={()=> edit && createOne(edit)} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Tạo ngay</Text></Pressable>
-            </View>
+          <View style={[styles.modalCard, { maxWidth: 440 }]}>
+            {edit && (
+              <EventForm
+                mode='compact'
+                initialValues={{
+                  title: edit.title || 'Lịch mới',
+                  date: edit.date || deriveDateFromWeekday(days, edit),
+                  startTime: edit.startTime || '09:00',
+                  endTime: edit.endTime || '',
+                  location: edit.location || '',
+                  notes: edit.notes || '',
+                  link: (edit as any).link || '',
+                  repeat: ((edit as any)._repeatEndDate && /^\d{4}-\d{2}-\d{2}$/.test((edit as any)._repeatEndDate)) ? { frequency: 'weekly', endMode:'onDate', endDate: (edit as any)._repeatEndDate } : undefined,
+                  typeId: String(payload?.defaultTypeId || ''),
+                }}
+                projectId={payload?.projectId? String(payload.projectId): undefined}
+                onClose={()=> setEdit(null)}
+                onSaved={()=>{ setEdit(null); }}
+              />
+            )}
           </View>
         </View>
       </Modal>
@@ -348,4 +361,8 @@ const styles = StyleSheet.create({
   modalLabel:{ fontSize:12, color:'#2f6690', marginTop:8, marginBottom:4 },
   input:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:12, paddingHorizontal:10, paddingVertical:10, color:'#0f172a' },
   textarea:{ minHeight:80, textAlignVertical:'top' },
+  typeChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20 },
+  typeChipActive:{ backgroundColor:'#3a7ca5' },
+  typeChipText:{ color:'#2f6690', fontWeight:'600' },
+  typeChipTextActive:{ color:'#fff' },
 });

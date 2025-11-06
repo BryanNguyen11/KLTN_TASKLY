@@ -4,6 +4,51 @@ const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'gemini').toLowerCase();
 let GoogleGenerativeAI;
 try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) { GoogleGenerativeAI = null; }
 
+// --- Strict/relative helpers (mirroring eventController where relevant) ---
+function detectStrictFromPrompt(prompt){
+  try{
+    const p = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
+    return /(chinh\s*xac|chuan\s*xac|that\s*sat|exact|strict|nguyen\s*van)/i.test(p);
+  }catch{ return false; }
+}
+function detectSemanticsFromPrompt(prompt){
+  try{
+    const p = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
+    const due = /(\bhan\b|\bhan chot\b|deadline|\btruoc\b|\bden han\b|\bnop\b|phai xong|phai hoan thanh)/i.test(p);
+    const start = /(bat ?dau|khoi ?dong|start)/i.test(p);
+    return { mode: due? 'due' : (start? 'start' : 'none') };
+  }catch{ return { mode:'none' }; }
+}
+function resolveRelativeDateTime(prompt){
+  try{
+    const s = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
+    const now = new Date();
+    const pad2 = (n)=> String(n).padStart(2,'0');
+    const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+    const weekdayNames = { 'thu 2':1, 'thu 3':2, 'thu 4':3, 'thu 5':4, 'thu 6':5, 'thu 7':6, 'chu nhat':0, 'cn':0 };
+    const findWeekdayToken = ()=>{ 
+      for(const [k,v] of Object.entries(weekdayNames)){ if(s.includes(k)) return v; }
+      const m = s.match(/\bt\s*(2|3|4|5|6|7)\b/); if(m){ return parseInt(m[1],10)-1; }
+      return null; 
+    };
+    const hhmm = (()=>{ let m = s.match(/\b(\d{1,2}):(\d{2})\b/); if(m) return `${pad2(Math.min(23,Math.max(0,parseInt(m[1],10))))}:${pad2(Math.min(59,Math.max(0,parseInt(m[2],10))))}`; m = s.match(/\b(\d{1,2})h(\d{2})?\b/i); if(m){ const h=parseInt(m[1],10)||0; const mm=parseInt(m[2]||'0',10)||0; return `${pad2(Math.min(23,Math.max(0,h)))}:${pad2(Math.min(59,Math.max(0,mm)))}`; } return null; })();
+    const thisWeek = /(tuan nay|tuan\s*nay)/i.test(s);
+    const nextWeek = /(tuan sau|tuan toi)/i.test(s);
+    const wd = findWeekdayToken();
+    if(wd!==null){
+      const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const baseDow = base.getDay(); // 0=Sun..6=Sat
+      const targetDow = wd; // 0..6
+      const delta = ((targetDow - baseDow + 7) % 7) + (nextWeek? 7 : 0);
+      let dayOffset = delta;
+      if(thisWeek && delta===0){ dayOffset = 0; }
+      const target = new Date(base.getFullYear(), base.getMonth(), base.getDate()+dayOffset);
+      return { date: toISO(target), time: hhmm || null };
+    }
+    return null;
+  }catch{ return null; }
+}
+
 // Helpers for more informative notifications
 function toDisplayDate(iso){
   try { const [y,m,d] = String(iso||'').split('-').map(n=>parseInt(n,10)); if(!y||!m||!d) return ''; return `${String(d).padStart(2,'0')}/${String(m).padStart(2,'0')}/${y}`; } catch { return String(iso||''); }
@@ -392,6 +437,8 @@ exports.aiSort = async (req, res) => {
 exports.aiGenerateTasks = async (req, res) => {
   try {
     const prompt = String(req.body?.prompt || '').trim();
+    const strictFlag = !!req.body?.strict;
+    const strict = strictFlag || detectStrictFromPrompt(prompt);
     if(!prompt) return res.status(400).json({ message: 'Thiếu prompt' });
     // Local Ollama provider
     if(LLM_PROVIDER === 'ollama'){
@@ -402,7 +449,8 @@ exports.aiGenerateTasks = async (req, res) => {
           const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
           const body = { model, messages, stream: false, options: { temperature: 0.1, ...opts } };
           const ctrl = new AbortController();
-          const to = setTimeout(()=> ctrl.abort(), Math.min(15000, Number(process.env.OLLAMA_TIMEOUT_MS||7000)));
+          const timeoutMs = Math.min(30000, Number(process.env.OLLAMA_TIMEOUT_MS||15000));
+          const to = setTimeout(()=> ctrl.abort(), timeoutMs);
           const url = `${base}/api/chat`;
           const resp = await fetch(url, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }).finally(()=> clearTimeout(to));
           if(!resp.ok) throw new Error(`ollama http ${resp.status}`);
@@ -417,11 +465,11 @@ exports.aiGenerateTasks = async (req, res) => {
       ].join('\n');
       const user = `Yêu cầu người dùng:\n${prompt}`;
       let raw = await ollamaChat([ { role:'system', content: sys }, { role:'user', content: user } ]);
-      if(raw === null){ return res.status(503).json({ message:'Không kết nối được Ollama', reason:'ollama-connect' }); }
+      // If Ollama fails/aborts, fall back to Gemini below
       const tryParse = (s)=>{ try{ return JSON.parse(s); }catch{ return null; } };
       const stripFences = (s)=> s.replace(/^```json\n?|```$/g,'').trim();
       const extract = (s)=>{ const m = s.match(/```json\n([\s\S]*?)```/i); if(m){ const d=tryParse(m[1]); if(d) return d; } const i=s.indexOf('{'); const j=s.lastIndexOf('}'); if(i>=0&&j>i){ const d=tryParse(s.slice(i,j+1)); if(d) return d; } return tryParse(stripFences(s)); };
-      const data = extract(String(raw));
+      const data = raw ? extract(String(raw)) : null;
       let tasks = Array.isArray(data?.tasks)? data.tasks: [];
       const sanitize = (arr)=> (Array.isArray(arr)? arr: []).map(it=>({
         title: String(it.title||'').slice(0,140) || 'Tác vụ',
@@ -433,8 +481,20 @@ exports.aiGenerateTasks = async (req, res) => {
         notes: String(it.notes||'')
       }));
       tasks = sanitize(tasks);
-      if(!tasks.length){ return res.status(400).json({ message:'AI không tạo được danh sách phù hợp', reason:'empty-tasks' }); }
-      return res.json({ tasks, provider: 'ollama', model: process.env.OLLAMA_MODEL || 'llama3.1:8b' });
+      // Strict fill: preserve AI output but fill relative date/time if present in prompt
+      if(strict){
+        const rel = resolveRelativeDateTime(prompt);
+        const sem = detectSemanticsFromPrompt(prompt);
+        if(rel){
+          tasks = tasks.map(it => ({
+            ...it,
+            date: it.date || rel.date || it.date,
+            ...(rel.time ? ( sem.mode==='due' ? { endTime: it.endTime || rel.time } : { startTime: it.startTime || rel.time } ) : {}),
+          }));
+        }
+      }
+      if(tasks.length){ return res.json({ tasks, provider: 'ollama', model: process.env.OLLAMA_MODEL || 'llama3.1:8b' }); }
+      // Else fall through to Gemini implementation below
     }
 
     // Gemini provider
@@ -453,7 +513,8 @@ exports.aiGenerateTasks = async (req, res) => {
       'Chỉ trả về JSON hợp lệ theo schema, không giải thích hoặc Markdown.',
       'Schema: { "tasks": [ { "title": string, "date": "YYYY-MM-DD"|"", "startTime": string|"", "endTime": string|"", "priority": "low"|"medium"|"high"|"", "importance": "low"|"medium"|"high"|"", "notes": string } ] }',
       '- Nếu thiếu thời gian, để trống "startTime"/"endTime". Nếu thiếu ngày, để trống "date".',
-      '- Tránh bịa đặt quá mức; nếu thông tin không có, để trống.'
+      '- Tránh bịa đặt quá mức; nếu thông tin không có, để trống.',
+      strict ? '- CHẾ ĐỘ CHÍNH XÁC: Không suy diễn. Giữ nguyên các giá trị thời gian/ngày nếu không được chỉ định rõ. Không tự ý đặt giờ.' : ''
     ].join('\n');
     const user = `Yêu cầu người dùng:\n${prompt}`;
     const extract = (raw)=>{
@@ -484,7 +545,21 @@ exports.aiGenerateTasks = async (req, res) => {
         const data = extract(raw);
         const tasks = sanitize(data?.tasks);
         used = name;
-        if(tasks && tasks.length){ return res.json({ tasks, model: name }); }
+        if(tasks && tasks.length){
+          let out = tasks;
+          if(strict){
+            const rel = resolveRelativeDateTime(prompt);
+            const sem = detectSemanticsFromPrompt(prompt);
+            if(rel){
+              out = out.map(it => ({
+                ...it,
+                date: it.date || rel.date || it.date,
+                ...(rel.time ? ( sem.mode==='due' ? { endTime: it.endTime || rel.time } : { startTime: it.startTime || rel.time } ) : {}),
+              }));
+            }
+          }
+          return res.json({ tasks: out, model: name });
+        }
       }catch(_e){ /* try next */ }
     }
     return res.status(400).json({ message:'AI không tạo được danh sách phù hợp', reason:'empty-tasks' });

@@ -1,0 +1,807 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, Switch, ActivityIndicator, Modal, Platform } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { DeviceEventEmitter } from 'react-native';
+import { useAuth } from '@/contexts/AuthContext';
+import axios from 'axios';
+import { TaskPriority, TaskType } from '@/utils/dashboard';
+import { Ionicons } from '@expo/vector-icons';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+
+export interface TaskFormState {
+  title: string;
+  description: string;
+  date: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD (ngày kết thúc)
+  startTime: string; // HH:mm
+  endTime: string; // HH:mm
+  priority: TaskPriority; // tính từ importance + urgency
+  importance: TaskPriority; // nhập
+  urgency: TaskPriority;    // nhập
+  type: TaskType;
+  estimatedHours: string;
+  tags: string[];
+  subTasks: { id: string; title: string; completed: boolean }[]; // local id
+  isRepeating?: boolean;
+  repeat?: { frequency: 'daily'|'weekly'|'monthly'|'yearly'; endMode: 'never'|'onDate'|'after'; endDate?: string; count?: string };
+  assignedTo?: string; // user id
+  reminders?: Array<{ type:'relative'; minutes:number } | { type:'absolute'; at:string }>;
+}
+
+type Tag = { _id: string; name: string; slug: string };
+
+export interface TaskFormProps {
+  mode: 'full' | 'compact';
+  editId?: string;
+  occDate?: string;
+  projectId?: string;
+  initialValues?: Partial<TaskFormState>;
+  onClose?: () => void;
+  onSaved?: (task: any) => void;
+}
+
+export default function TaskForm({ mode, editId, occDate, projectId, initialValues, onClose, onSaved }: TaskFormProps){
+  const router = useRouter();
+  const { user, token } = useAuth();
+  const isLeader = user?.role === 'leader' || user?.role === 'admin';
+  const [saving, setSaving] = useState(false);
+  const [showPicker, setShowPicker] = useState<{mode:'date'|'time'; field:'date'|'endDate'|'startTime'|'endTime'|'repeatEndDate'|null}>({mode:'date', field:null});
+  const [tempDate, setTempDate] = useState<Date | null>(null);
+  const [projectInfo, setProjectInfo] = useState<any | null>(null);
+  const [loadingProject, setLoadingProject] = useState(false);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [loadingTags, setLoadingTags] = useState(false);
+  const [creatingTag, setCreatingTag] = useState(false);
+  const [newTag, setNewTag] = useState('');
+  const [errors, setErrors] = useState<{start?:string; end?:string; sub?:string}>({});
+
+  const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
+  const authHeader = () => ({ headers: { Authorization: token ? `Bearer ${token}` : '' } });
+
+  const toLocalISODate = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const today = toLocalISODate(new Date());
+
+  const [form, setForm] = useState<TaskFormState>({
+    title: '',
+    description: '',
+    date: today,
+    endDate: '',
+    startTime: '09:00',
+    endTime: '',
+    priority: 'medium',
+    importance: 'medium',
+    urgency: 'medium',
+    type: 'personal',
+    estimatedHours: '1',
+    tags: [],
+    subTasks: [],
+    isRepeating: false,
+    repeat: undefined,
+    assignedTo: undefined,
+    reminders: [],
+    ...(initialValues || {} as any),
+  });
+
+  const update = useCallback(<K extends keyof TaskFormState>(key: K, value: TaskFormState[K]) => {
+    setForm(prev => ({ ...prev, [key]: value }));
+  }, []);
+
+  const fetchTags = async () => {
+    if(!token) return;
+    setLoadingTags(true);
+    try { const res = await axios.get(`${API_BASE}/api/tags`, authHeader()); setTags(res.data); }
+    catch{} finally { setLoadingTags(false); }
+  };
+  useEffect(()=>{ fetchTags(); }, [token]);
+
+  // If creating under a project, fetch project detail and force group type
+  useEffect(() => {
+    const load = async () => {
+      if(!token || !projectId) return;
+      setLoadingProject(true);
+      try {
+        const res = await axios.get(`${API_BASE}/api/projects/${projectId}`, authHeader());
+        setProjectInfo(res.data);
+        setForm(prev => ({ ...prev, type: 'group', assignedTo: (user as any)?._id || (user as any)?.id }));
+      } catch{} finally { setLoadingProject(false); }
+    };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, token]);
+
+  // Ensure default assignee in project mode
+  useEffect(() => {
+    if(!projectId || !projectInfo) return;
+    const normalizeId = (val:any): string => {
+      if(!val) return '';
+      if(typeof val === 'string') return val;
+      if(typeof val === 'object'){
+        if(val._id) return String(val._id);
+        if(val.id) return String(val.id);
+        try { return String(val); } catch { return ''; }
+      }
+      return String(val);
+    };
+    const currentUserId = normalizeId((user as any)?._id || (user as any)?.id);
+    const seen = new Set<string>();
+    const ownerId = normalizeId(projectInfo.owner);
+    const list: string[] = [];
+    if(ownerId && !seen.has(ownerId)){ list.push(ownerId); seen.add(ownerId); }
+    (projectInfo.members||[]).forEach((m:any)=>{ const id = normalizeId(m?.user); if(id && !seen.has(id)){ list.push(id); seen.add(id); } });
+    if(!form.assignedTo && list.length){ setForm(prev => ({ ...prev, assignedTo: list[0] })); }
+  }, [projectId, projectInfo, user, form.assignedTo]);
+
+  const score = (v: TaskPriority) => v === 'high' ? 3 : v === 'medium' ? 2 : 1;
+  const computePriority = (importance: TaskPriority, urgency: TaskPriority): TaskPriority => {
+    const s = score(importance) + score(urgency);
+    if (s >= 5) return 'high';
+    if (s >= 3) return 'medium';
+    return 'low';
+  };
+  useEffect(() => { setForm(prev => ({ ...prev, priority: computePriority(prev.importance, prev.urgency) })); }, [form.importance, form.urgency]);
+
+  const toDisplayDate = (iso: string) => {
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso;
+    const [y,m,d] = iso.split('-'); return `${d}/${m}/${y}`;
+  };
+
+  const createTag = async () => {
+    if(!newTag.trim()) return; if(!token){ Alert.alert('Lỗi','Chưa có token'); return; }
+    setCreatingTag(true);
+    try {
+      const res = await axios.post(`${API_BASE}/api/tags`, { name: newTag.trim() }, authHeader());
+      const tag:Tag = res.data;
+      setTags(prev => prev.find(t=>t._id===tag._id)? prev : [...prev, tag]);
+      setForm(prev => ({ ...prev, tags: [...prev.tags, tag._id] }));
+      setNewTag('');
+    } catch { Alert.alert('Lỗi','Không tạo được tag'); }
+    finally { setCreatingTag(false); }
+  };
+
+  const parseDateValue = (field:'date'|'endDate') => {
+    const raw = (form as any)[field];
+    if(/^\d{4}-\d{2}-\d{2}$/.test(raw)) return new Date(raw + 'T00:00:00');
+    return new Date();
+  };
+  const parseTimeValue = (field:'startTime'|'endTime') => {
+    const raw = (form as any)[field];
+    if(/^[0-2]\d:[0-5]\d$/.test(raw)){ const [h,m] = raw.split(':').map((n:string)=>parseInt(n,10)); const d = new Date(); d.setHours(h,m,0,0); return d; }
+    return new Date();
+  };
+  const openDate = (field:'date'|'endDate') => { setTempDate(parseDateValue(field)); setShowPicker({mode:'date', field}); };
+  const openTime = (field:'startTime'|'endTime') => { setTempDate(parseTimeValue(field)); setShowPicker({mode:'time', field}); };
+
+  const onNativeChange = (e:DateTimePickerEvent, selected?:Date) => {
+    if(Platform.OS !== 'android') return;
+    if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; }
+    if(selected && showPicker.field){
+      if(showPicker.mode==='date'){
+        const iso = toLocalISODate(selected);
+        if(showPicker.field === 'endDate'){
+          setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
+        } else if (showPicker.field === 'repeatEndDate'){
+          setForm(prev => ({ ...prev, repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'onDate' }), endDate: iso, endMode:'onDate' } }));
+        } else update(showPicker.field as any, iso);
+      } else {
+        const hh = selected.getHours().toString().padStart(2,'0');
+        const mm = selected.getMinutes().toString().padStart(2,'0');
+        update(showPicker.field as any, `${hh}:${mm}`);
+      }
+    }
+    setShowPicker({mode:'date', field:null});
+  };
+
+  const confirmIOS = () => {
+    if(tempDate && showPicker.field){
+      if(showPicker.mode==='date'){
+        const iso = toLocalISODate(tempDate);
+        if(showPicker.field === 'endDate'){
+          setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
+        } else if (showPicker.field === 'repeatEndDate'){
+          setForm(prev => ({ ...prev, repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'onDate' }), endDate: iso, endMode:'onDate' } }));
+        } else update(showPicker.field as any, iso);
+      } else {
+        const hh = tempDate.getHours().toString().padStart(2,'0');
+        const mm = tempDate.getMinutes().toString().padStart(2,'0');
+        update(showPicker.field as any, `${hh}:${mm}`);
+      }
+    }
+    setShowPicker({mode:'date', field:null}); setTempDate(null);
+  };
+
+  const updateRepeat = <K extends keyof NonNullable<TaskFormState['repeat']>>(key: K, value: NonNullable<TaskFormState['repeat']>[K]) => {
+    setForm(prev => ({ ...prev, repeat: { ...(prev.repeat || { frequency:'weekly', endMode:'never' }), [key]: value } as any }));
+  };
+  const openRepeatEndDate = () => {
+    const raw = form.repeat?.endDate; const base = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? new Date(raw+'T00:00:00') : new Date();
+    setTempDate(base); setShowPicker({ mode:'date', field:'repeatEndDate' });
+  };
+
+  useEffect(()=>{
+    const newErr: typeof errors = {} as any;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) newErr.start = 'Ngày bắt đầu sai định dạng';
+    if(form.endDate){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
+      else {
+        if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
+        if(form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+      }
+    } else {
+      if(form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+    }
+    if(form.subTasks.some(st=>!st.title.trim())) newErr.sub = 'Có tác vụ con chưa nhập tên';
+    setErrors(newErr);
+  }, [form.date, form.endDate, form.startTime, form.endTime, form.subTasks]);
+
+  const priorityLabel = (p: TaskPriority) => p==='high'?'Cao':p==='medium'?'Trung bình':'Thấp';
+
+  const save = async () => {
+    if (!form.title.trim()) { Alert.alert('Thiếu thông tin','Vui lòng nhập tên tác vụ'); return; }
+    if(!token) { Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    // validate
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)) { Alert.alert('Lỗi','Ngày bắt đầu không hợp lệ'); return; }
+    if(form.endDate){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
+      if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
+      if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    } else {
+      if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+    }
+    if(form.subTasks.some(st=>!st.title.trim())) { Alert.alert('Lỗi','Vui lòng nhập tên cho tất cả tác vụ con'); return; }
+
+    setSaving(true);
+    const payload: any = {
+      title: form.title.trim(),
+      description: form.description,
+      date: form.date,
+      endDate: form.endDate || undefined,
+      startTime: form.startTime,
+      endTime: form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined),
+      priority: form.priority,
+      importance: form.importance,
+      urgency: form.urgency,
+      type: projectId ? 'group' : form.type,
+      estimatedHours: parseFloat(form.estimatedHours)||1,
+      tags: form.tags,
+      subTasks: form.subTasks.filter(st=>st.title.trim()).map(st=> ({ title: st.title.trim(), completed: st.completed })),
+      reminders: form.reminders,
+    };
+    if(projectId){ payload.projectId = projectId; if(form.assignedTo) payload.assignedTo = form.assignedTo; }
+    if(form.isRepeating && form.repeat){
+      payload.repeat = {
+        frequency: form.repeat.frequency,
+        endMode: form.repeat.endMode,
+        endDate: form.repeat.endMode==='onDate' ? form.repeat.endDate : undefined,
+        count: form.repeat.endMode==='after' ? (parseInt(form.repeat.count||'0',10)||undefined) : undefined,
+      };
+    }
+    try {
+      if(editId){
+        const res = await axios.put(`${API_BASE}/api/tasks/${editId}`, payload, authHeader());
+        DeviceEventEmitter.emit('taskUpdated', res.data);
+        DeviceEventEmitter.emit('toast','Đã lưu thay đổi');
+        if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
+        else { router.back(); }
+      } else {
+        const res = await axios.post(`${API_BASE}/api/tasks`, payload, authHeader());
+        DeviceEventEmitter.emit('taskCreated', res.data);
+        DeviceEventEmitter.emit('toast','Đã tạo tác vụ');
+        if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
+        else { router.back(); }
+      }
+    } catch(e:any){
+      Alert.alert('Lỗi', e?.response?.data?.message || (editId? 'Không cập nhật được':'Không thể tạo tác vụ'));
+    } finally { setSaving(false); }
+  };
+
+  const onDelete = async () => {
+    if(!editId || !token) return;
+    // reuse original logic minimally: in compact, we still support delete confirmation
+    Alert.alert('Xóa tác vụ', 'Bạn có chắc muốn xóa tác vụ này?', [
+      { text:'Hủy', style:'cancel' },
+      { text:'Xóa', style:'destructive', onPress: async ()=>{
+        try { await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader()); DeviceEventEmitter.emit('taskDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa tác vụ'); if(mode==='compact'){ onClose?.(); } else { router.back(); } }
+        catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
+      } }
+    ]);
+  };
+
+  // Load task if edit mode
+  useEffect(()=>{
+    const load = async () => {
+      if(!editId || !token) return;
+      try {
+        const res = await axios.get(`${API_BASE}/api/tasks/${editId}`, authHeader());
+        const t = res.data;
+        const origStart = t.date?.split('T')[0] || toLocalISODate(new Date());
+        const origEnd = t.endDate || '';
+        let baseStart = origStart;
+        let baseEnd = origEnd;
+        if(occDate && t.repeat){
+          const spanDays = (() => {
+            if(!origEnd) return 0;
+            const isoToDate = (iso:string)=>{ const [y,m,d]=iso.split('-').map(n=>parseInt(String(n),10)); return new Date(y,(m||1)-1,d||1); };
+            const d0 = isoToDate(origStart); const d1 = isoToDate(origEnd);
+            const ms = d1.getTime() - d0.getTime();
+            const days = Math.round(ms/86400000);
+            return days < 0 ? 0 : days;
+          })();
+          baseStart = String(occDate);
+          if(origEnd){
+            if(spanDays>0){
+              const [y,m,d] = String(occDate).split('-').map(n=>parseInt(String(n),10));
+              const dt = new Date(y,(m||1)-1,d||1); dt.setDate(dt.getDate()+spanDays);
+              baseEnd = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+            } else { baseEnd = String(occDate); }
+          } else { baseEnd = ''; }
+        }
+        setForm(prev => ({
+          ...prev,
+          title: t.title,
+          description: t.description||'',
+          date: baseStart,
+          endDate: baseEnd,
+          startTime: t.startTime || prev.startTime,
+          endTime: t.endTime || '',
+          priority: t.priority || 'medium',
+          importance: t.importance || 'medium',
+          urgency: (t as any).urgency || 'medium',
+          type: t.type || (projectId? 'group':'personal'),
+          estimatedHours: String(t.estimatedHours||1),
+          tags: (t.tags||[]).map((x:any)=> typeof x === 'string'? x : x._id),
+          subTasks: (t.subTasks||[]).map((st:any)=> ({ id: st._id || Math.random().toString(36).slice(2), title: st.title, completed: !!st.completed })),
+          isRepeating: !!t.repeat,
+          repeat: t.repeat ? { frequency: t.repeat.frequency, endMode: t.repeat.endMode || 'never', endDate: t.repeat.endDate, count: t.repeat.count ? String(t.repeat.count) : undefined } : undefined,
+          assignedTo: (t as any).assignedTo || (projectId ? ((user as any)?._id || (user as any)?.id) : undefined)
+        }));
+      } catch{ Alert.alert('Lỗi','Không tải được tác vụ để sửa'); }
+    };
+    load();
+  }, [editId, token, occDate]);
+
+  const header = (
+    <View style={styles.header}>
+      {mode==='full' ? (
+        <>
+          <Pressable onPress={()=> router.back()} style={styles.backBtn}>
+            <Ionicons name='arrow-back' size={22} color='#16425b' />
+          </Pressable>
+          <Text style={styles.headerTitle}>{editId? 'Chỉnh sửa tác vụ' : 'Tạo tác vụ mới'}</Text>
+          <Pressable onPress={onDelete} style={{ width:40, alignItems:'flex-end' }}>
+            {editId ? <Ionicons name='trash-outline' size={20} color='#dc2626' /> : <View style={{ width:20 }} />}
+          </Pressable>
+        </>
+      ) : (
+        <>
+          <Text style={[styles.headerTitle,{ flex:1, textAlign:'center' }]}>{editId? 'Chỉnh sửa tác vụ' : 'Tạo tác vụ'}</Text>
+          <Pressable onPress={onClose} style={{ position:'absolute', right:12, top:6, padding:8 }}><Ionicons name='close' size={22} color='#16425b' /></Pressable>
+        </>
+      )}
+    </View>
+  );
+
+  const body = (
+    <KeyboardAwareScrollView contentContainerStyle={styles.body} showsVerticalScrollIndicator={false} enableOnAndroid extraScrollHeight={100} keyboardShouldPersistTaps='handled'>
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Thông tin cơ bản</Text>
+        <View style={styles.field}>
+          <Text style={styles.label}>Tên tác vụ *</Text>
+          <TextInput style={styles.input} placeholder='VD: Một công việc bạn cần hoàn thành' value={form.title} onChangeText={t=>update('title', t)} />
+        </View>
+        <View style={styles.field}>
+          <Text style={styles.label}>Mô tả</Text>
+          <TextInput style={[styles.input, styles.textarea]} multiline placeholder='Mô tả chi tiết...' value={form.description} onChangeText={t=>update('description', t)} />
+        </View>
+        <View style={styles.row}>
+          <View style={[styles.field, styles.half]}>
+            <Text style={styles.label}>Ngày bắt đầu</Text>
+            <Pressable onPress={()=>openDate('date')} style={[styles.pickerBtn, errors.start && styles.pickerBtnError]}> 
+              <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{toDisplayDate(form.date)}</Text>
+            </Pressable>
+          </View>
+          <View style={[styles.field, styles.half]}>
+            <Text style={styles.label}>Giờ bắt đầu</Text>
+            <Pressable onPress={()=>openTime('startTime')} style={[styles.pickerBtn, errors.start && styles.pickerBtnError]}> 
+              <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{form.startTime}</Text>
+            </Pressable>
+          </View>
+        </View>
+        <View style={styles.row}>
+          <View style={[styles.field, styles.half]}>
+            <Text style={styles.label}>Ngày kết thúc</Text>
+            <Pressable onPress={()=>openDate('endDate')} style={[styles.pickerBtn, errors.end && styles.pickerBtnError]}> 
+              <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endDate? toDisplayDate(form.endDate): 'Không chọn'}</Text>
+            </Pressable>
+          </View>
+          <View style={[styles.field, styles.half]}>
+            <Text style={styles.label}>Giờ kết thúc</Text>
+            <Pressable onPress={()=>openTime('endTime')} style={[styles.pickerBtn, errors.end && styles.pickerBtnError]}> 
+              <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endTime || (form.endDate? '23:59' : '')}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Tầm quan trọng & Khẩn cấp</Text>
+        <Text style={styles.sub}>Mức độ quan trọng</Text>
+        <View style={styles.priorityRow}>
+          {(['low','medium','high'] as TaskPriority[]).map(p => {
+            const active = form.importance === p;
+            return (
+              <Pressable key={p} onPress={()=>update('importance', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
+                <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={[styles.sub,{ marginTop:4 }]}>Mức độ khẩn cấp</Text>
+        <View style={styles.priorityRow}>
+          {(['low','medium','high'] as TaskPriority[]).map(p => {
+            const active = form.urgency === p;
+            return (
+              <Pressable key={p} onPress={()=>update('urgency', p)} style={[styles.priorityBtn, active && styles.priorityBtnActive]}>                  
+                <Text style={[styles.priorityText, active && styles.priorityTextActive]}>{priorityLabel(p)}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {!projectId ? (
+          <View style={[styles.typeRow, { opacity: isLeader ? 1 : 0.65 }]}>            
+            <View>
+              <Text style={styles.label}>{form.type === 'group' ? 'Tác vụ nhóm' : 'Tác vụ cá nhân'}</Text>
+              <Text style={styles.sub}>{form.type==='group'? 'Có thể giao thành viên khác':'Chỉ bạn thực hiện'}</Text>
+            </View>
+            <Switch value={form.type === 'group'} disabled={!isLeader} onValueChange={(v)=> update('type', v? 'group':'personal')} />
+          </View>
+        ) : (
+          <View style={[styles.typeRow, { paddingVertical: 6 }]}>            
+            <View>
+              <Text style={styles.label}>Thuộc dự án</Text>
+              <Text style={styles.sub}>{projectInfo?.name || `ID: ${projectId}`}</Text>
+            </View>
+            <View style={{ alignItems:'flex-end' }}>
+              <Text style={[styles.label,{ marginBottom:0 }]}>Loại</Text>
+              <Text style={styles.sub}>Tác vụ nhóm (cố định)</Text>
+            </View>
+          </View>
+        )}
+        {projectId && (
+          <View style={styles.field}>
+            <Text style={styles.label}>Giao cho</Text>
+            <View style={styles.assignList}>
+              {(() => {
+                const normalizeId = (val:any): string => {
+                  if(!val) return '';
+                  if(typeof val === 'string') return val;
+                  if(typeof val === 'object'){
+                    if(val._id) return String(val._id);
+                    if(val.id) return String(val.id);
+                    try { return String(val); } catch { return ''; }
+                  }
+                  return String(val);
+                };
+                const currentUserId = normalizeId((user as any)?._id || (user as any)?.id);
+                const list: Array<{ id:string; label:string }> = [];
+                const seen = new Set<string>();
+                if(projectInfo){
+                  const ownerId = normalizeId(projectInfo.owner);
+                  if(ownerId && !seen.has(ownerId)){
+                    list.push({ id: ownerId, label: ownerId === currentUserId ? 'Chủ dự án (Bạn)' : 'Chủ dự án' });
+                    seen.add(ownerId);
+                  }
+                  (projectInfo.members||[]).forEach((m:any)=>{
+                    const id = normalizeId(m?.user); if(!id || seen.has(id)) return;
+                    const lbl = id === currentUserId ? 'Bạn' : `Thành viên ${m?.role||''}`.trim();
+                    list.push({ id, label: lbl }); seen.add(id);
+                  });
+                } else { if(currentUserId){ list.push({ id: currentUserId, label: 'Bạn' }); } }
+                if(!form.assignedTo && list.length){ update('assignedTo', list[0].id as any); }
+                return list.map((m, idx) => {
+                  const active = form.assignedTo === m.id;
+                  return (
+                    <Pressable key={`${m.id}-${idx}`} onPress={()=> update('assignedTo', m.id as any)} style={[styles.assignChip, active && styles.assignChipActive]}>
+                      <Text style={[styles.assignText, active && styles.assignTextActive]}>{m.label}</Text>
+                    </Pressable>
+                  );
+                });
+              })()}
+            </View>
+            {loadingProject && <Text style={styles.sub}>Đang tải thành viên dự án...</Text>}
+          </View>
+        )}
+        {(!projectId && isLeader && form.type==='group') && (
+          <View style={styles.field}>              
+            <Text style={styles.label}>Thời gian ước tính (giờ)</Text>
+            <TextInput style={styles.input} keyboardType='numeric' value={form.estimatedHours} onChangeText={t=>update('estimatedHours', t)} />
+          </View>
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Tags</Text>
+        {loadingTags ? <ActivityIndicator color="#3a7ca5" /> : (
+          <View style={styles.tagsWrap}>
+            {tags.map(tag => {
+              const active = form.tags.includes(tag._id);
+              return (
+                <Pressable key={tag._id} onPress={()=> setForm(prev => ({ ...prev, tags: active ? prev.tags.filter(t=>t!==tag._id) : [...prev.tags, tag._id] }))} style={[styles.tag, active && styles.tagActive]}>
+                  <Text style={[styles.tagText, active && styles.tagTextActive]}>{tag.name}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+        <View style={styles.newTagRow}>
+          <TextInput style={[styles.input,{ flex:1, paddingVertical:10 }]} placeholder='Tag mới' value={newTag} onChangeText={setNewTag} />
+          <Pressable disabled={creatingTag || !newTag.trim()} onPress={createTag} style={[styles.addTagBtn, (creatingTag || !newTag.trim()) && { opacity:0.5 }]}>
+            <Text style={styles.addTagText}>{creatingTag? '...' : 'Thêm'}</Text>
+          </Pressable>
+        </View>
+        {form.tags.length>0 && (<Text style={styles.chosenTags}>Đã chọn: {form.tags.length}</Text>)}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Tác vụ con (Subtasks)</Text>
+        {form.subTasks.map(st => (
+          <View key={st.id} style={styles.subTaskRow}>
+            <Pressable onPress={()=> setForm(prev => ({ ...prev, subTasks: prev.subTasks.map(x => x.id===st.id? { ...x, completed: !x.completed }: x) }))} style={styles.subChkBtn} hitSlop={8}>
+              <View style={[styles.subChkCircle, st.completed && styles.subChkCircleDone]}>
+                {st.completed && <Ionicons name='checkmark' size={14} color='#fff' />}
+              </View>
+            </Pressable>
+            <TextInput style={[styles.input, styles.subTaskInput, errors.sub && !st.title.trim() && { borderColor:'#dc2626', backgroundColor:'#fef2f2' }, st.completed && { textDecorationLine:'line-through', opacity:0.6 }]} placeholder='Tên tác vụ con' value={st.title} onChangeText={(t)=> setForm(prev => ({ ...prev, subTasks: prev.subTasks.map(x => x.id===st.id? { ...x, title: t }: x) }))} />
+            <Pressable onPress={()=> setForm(prev => ({ ...prev, subTasks: prev.subTasks.filter(x => x.id!==st.id) }))} style={styles.removeSubBtn}><Text style={styles.removeSubText}>✕</Text></Pressable>
+          </View>
+        ))}
+        {!!errors.sub && <Text style={styles.errorText}>{errors.sub}</Text>}
+        <Pressable onPress={()=> setForm(prev => ({ ...prev, subTasks:[...prev.subTasks, { id: Math.random().toString(36).slice(2), title:'', completed:false }] }))} style={styles.addSubBtn}>
+          <Text style={styles.addSubText}>+ Thêm tác vụ con</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Lặp lại</Text>
+        <View style={[styles.typeRow,{ paddingVertical:0, marginBottom:6 }]}>            
+          <Text style={styles.label}>Lặp lại tác vụ</Text>
+          <Switch value={!!form.isRepeating} onValueChange={(v)=> setForm(prev => ({ ...prev, isRepeating: v, repeat: v? (prev.repeat || { frequency:'weekly', endMode:'never' }) : undefined }))} />
+        </View>
+        {!!form.isRepeating && (
+          <View>
+            <Text style={styles.label}>Tần suất</Text>
+            <View style={styles.typeList}>
+              {(['daily','weekly','monthly','yearly'] as const).map(freq => {
+                const active = form.repeat?.frequency === freq;
+                return (
+                  <Pressable key={freq} onPress={()=> updateRepeat('frequency', freq)} style={[styles.typeChip, active && styles.typeChipActive]}>
+                    <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{freq==='daily'?'Hàng ngày': freq==='weekly'?'Hàng tuần': freq==='monthly'?'Hàng tháng':'Hàng năm'}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={[styles.label,{ marginTop:6 }]}>Kết thúc</Text>
+            <View style={styles.typeList}>
+              {(['never','onDate','after'] as const).map(mode2 => {
+                const active = (form.repeat?.endMode || 'never') === mode2;
+                return (
+                  <Pressable key={mode2} onPress={()=> updateRepeat('endMode', mode2)} style={[styles.typeChip, active && styles.typeChipActive]}>
+                    <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{mode2==='never'?'Không bao giờ': mode2==='onDate'?'Vào ngày':'Sau số lần'}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {(form.repeat?.endMode === 'after') && (
+              <View style={styles.field}>
+                <Text style={styles.label}>Số lần lặp</Text>
+                <TextInput style={styles.input} keyboardType='number-pad' placeholder='VD: 10' value={String(form.repeat?.count||'')} onChangeText={(t)=> updateRepeat('count', t)} />
+              </View>
+            )}
+            {(form.repeat?.endMode === 'onDate') && (
+              <View style={styles.field}>
+                <Text style={styles.label}>Ngày kết thúc lặp</Text>
+                <Pressable onPress={openRepeatEndDate} style={styles.pickerBtn}>
+                  <Text style={styles.pickerText}>{form.repeat?.endDate? toDisplayDate(form.repeat.endDate): 'Không chọn'}</Text>
+                </Pressable>
+              </View>
+            )}
+          </View>
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Nhắc nhở</Text>
+        <View style={styles.remindRow}>
+          {[
+            { label:'Trước 1 ngày', minutes: 24*60 },
+            { label:'Trước 1 giờ', minutes: 60 },
+            { label:'Trước 30 phút', minutes: 30 },
+          ].map(p => {
+            const exists = (form.reminders||[]).some(r => r.type==='relative' && r.minutes===p.minutes);
+            return (
+              <Pressable key={p.minutes} onPress={()=> setForm(prev=> ({ ...prev, reminders: exists ? (prev.reminders||[]).filter(r => !(r.type==='relative' && r.minutes===p.minutes)) : [ ...(prev.reminders||[]), { type:'relative', minutes:p.minutes } ] }))} style={[styles.remindChip, exists && styles.remindChipActive]}>
+                <Text style={[styles.remindChipText, exists && styles.remindChipTextActive]}>{p.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      <View style={styles.card}>          
+        <Text style={styles.sectionTitle}>Tóm tắt</Text>
+        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Ưu tiên (tính):</Text><Text style={styles.summaryValue}>{priorityLabel(form.priority)}</Text></View>
+        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Loại:</Text><Text style={styles.summaryValue}>{form.type==='group'?'Nhóm':'Cá nhân'}</Text></View>
+        {(() => {
+          const startDate = form.date; const endDate = form.endDate; const sameDay = endDate && (startDate === endDate);
+          const fmt = (d:string) => { if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d; const [y,m,dd]=d.split('-'); return `${dd}/${m}/${y}`; };
+          let display = '';
+          if(!endDate){ display = `${fmt(startDate)} ${form.startTime || ''}${form.endTime ? '–' + form.endTime : ''}`; }
+          else if(sameDay){ display = `${fmt(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`; }
+          else { display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`; }
+          return (
+            <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Thời gian:</Text><Text style={styles.summaryValue}>{display}</Text></View>
+          );
+        })()}
+        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Quan trọng:</Text><Text style={styles.summaryValue}>{priorityLabel(form.importance)}</Text></View>
+        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Khẩn cấp:</Text><Text style={styles.summaryValue}>{priorityLabel(form.urgency)}</Text></View>
+        {form.tags.length>0 && <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Tags:</Text><Text style={styles.summaryValue}>{form.tags.join(', ')}</Text></View>}
+      </View>
+
+      <View style={{ height: 40 }} />
+    </KeyboardAwareScrollView>
+  );
+
+  const footer = (
+    mode==='full' ? (
+      <View style={styles.bottomBar}>        
+        <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>router.back()}>
+          <Text style={styles.cancelText}>Hủy</Text>
+        </Pressable>
+        <Pressable style={[styles.bottomBtn, !form.title.trim()||saving ? styles.disabledBtn: styles.saveBtn]} disabled={!form.title.trim()||saving} onPress={save}>
+          <Text style={styles.saveText}>{saving? (editId? 'Đang lưu...' : 'Đang lưu...') : (editId? 'Lưu thay đổi':'Tạo tác vụ')}</Text>
+        </Pressable>
+      </View>
+    ) : (
+      <View style={[styles.bottomBar, { position:'relative' }]}>        
+        <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={onClose}>
+          <Text style={styles.cancelText}>Đóng</Text>
+        </Pressable>
+        <Pressable style={[styles.bottomBtn, !form.title.trim()||saving ? styles.disabledBtn: styles.saveBtn]} disabled={!form.title.trim()||saving} onPress={save}>
+          <Text style={styles.saveText}>{saving? 'Đang lưu...' : (editId? 'Lưu thay đổi':'Tạo ngay')}</Text>
+        </Pressable>
+      </View>
+    )
+  );
+
+  return (
+    mode==='full' ? (
+      <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
+        {header}
+        {body}
+        {footer}
+        {showPicker.field && Platform.OS==='android' && (
+          <DateTimePicker value={tempDate || new Date()} mode={showPicker.mode} is24Hour display='default' onChange={onNativeChange} />
+        )}
+        {showPicker.field && Platform.OS==='ios' && (
+          <Modal transparent animationType='fade'>
+            <View style={styles.pickerBackdrop}>
+              <View style={styles.pickerModal}>                  
+                <DateTimePicker value={tempDate || new Date()} mode={showPicker.mode} display='spinner' themeVariant='light' onChange={(e, d)=>{ if(d) setTempDate(d); }} {...(showPicker.mode==='time'? { minuteInterval:5 } : {})} />
+                <View style={styles.pickerActions}>
+                  <Pressable onPress={()=>{ setShowPicker({mode:'date', field:null}); setTempDate(null); }} style={[styles.pickerActionBtn, styles.pickerCancel]}><Text style={styles.pickerActionText}>Hủy</Text></Pressable>
+                  <Pressable onPress={confirmIOS} style={[styles.pickerActionBtn, styles.pickerOk]}><Text style={[styles.pickerActionText,{color:'#fff'}]}>Chọn</Text></Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        )}
+      </SafeAreaView>
+    ) : (
+      <View style={{ maxHeight:'90%', backgroundColor:'#fff', borderRadius:16, overflow:'hidden' }}>
+        {header}
+        <View style={{ height: 1, backgroundColor:'#e2e8f0' }} />
+        {body}
+        {footer}
+        {showPicker.field && Platform.OS==='android' && (
+          <DateTimePicker value={tempDate || new Date()} mode={showPicker.mode} is24Hour display='default' onChange={onNativeChange} />
+        )}
+        {showPicker.field && Platform.OS==='ios' && (
+          <Modal transparent animationType='fade'>
+            <View style={styles.pickerBackdrop}>
+              <View style={styles.pickerModal}>                  
+                <DateTimePicker value={tempDate || new Date()} mode={showPicker.mode} display='spinner' themeVariant='light' onChange={(e, d)=>{ if(d) setTempDate(d); }} {...(showPicker.mode==='time'? { minuteInterval:5 } : {})} />
+                <View style={styles.pickerActions}>
+                  <Pressable onPress={()=>{ setShowPicker({mode:'date', field:null}); setTempDate(null); }} style={[styles.pickerActionBtn, styles.pickerCancel]}><Text style={styles.pickerActionText}>Hủy</Text></Pressable>
+                  <Pressable onPress={confirmIOS} style={[styles.pickerActionBtn, styles.pickerOk]}><Text style={[styles.pickerActionText,{color:'#fff'}]}>Chọn</Text></Pressable>
+                </View>
+              </View>
+            </View>
+          </Modal>
+        )}
+      </View>
+    )
+  );
+}
+
+const styles = StyleSheet.create({
+  header:{ flexDirection:'row', alignItems:'center', justifyContent:'space-between', paddingHorizontal:16, paddingTop:4, paddingBottom:8, backgroundColor:'#f1f5f9' },
+  backBtn:{ width:40, height:40, borderRadius:20, alignItems:'center', justifyContent:'center' },
+  headerTitle:{ fontSize:18, fontWeight:'600', color:'#16425b' },
+  body:{ padding:16, paddingBottom:24 },
+  card:{ backgroundColor:'#fff', borderRadius:20, padding:16, marginBottom:16, shadowColor:'#000', shadowOpacity:0.04, shadowRadius:6, elevation:2 },
+  sectionTitle:{ fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:12 },
+  field:{ marginBottom:14 },
+  label:{ fontSize:13, fontWeight:'500', color:'#2f6690', marginBottom:6 },
+  input:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, paddingHorizontal:12, paddingVertical:12, fontSize:14, color:'#16425b' },
+  textarea:{ minHeight:90, textAlignVertical:'top' },
+  row:{ flexDirection:'row', justifyContent:'space-between', gap:12 },
+  half:{ flex:1 },
+  priorityRow:{ flexDirection:'row', justifyContent:'space-between', marginBottom:10, marginTop:4 },
+  priorityBtn:{ flex:1, marginHorizontal:4, backgroundColor:'rgba(217,220,214,0.6)', paddingVertical:10, borderRadius:14, alignItems:'center' },
+  priorityBtnActive:{ backgroundColor:'#3a7ca5' },
+  priorityText:{ fontSize:13, color:'#2f6690', fontWeight:'500' },
+  priorityTextActive:{ color:'#fff' },
+  typeRow:{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', paddingVertical:10 },
+  typeList:{ flexDirection:'row', flexWrap:'wrap' },
+  typeChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  typeChipActive:{ backgroundColor:'#3a7ca5' },
+  typeChipText:{ color:'#2f6690', fontWeight:'600' },
+  typeChipTextActive:{ color:'#fff' },
+  sub:{ fontSize:11, color:'#607d8b', marginTop:2 },
+  tagsWrap:{ flexDirection:'row', flexWrap:'wrap' },
+  tag:{ paddingHorizontal:12, paddingVertical:6, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  tagActive:{ backgroundColor:'#3a7ca5' },
+  tagText:{ fontSize:12, color:'#2f6690', fontWeight:'500' },
+  tagTextActive:{ color:'#fff' },
+  chosenTags:{ fontSize:12, color:'#2f6690', marginTop:4 },
+  newTagRow:{ flexDirection:'row', alignItems:'center', gap:12, marginTop:8 },
+  addTagBtn:{ backgroundColor:'#3a7ca5', paddingHorizontal:16, paddingVertical:12, borderRadius:14 },
+  addTagText:{ color:'#fff', fontWeight:'600', fontSize:13 },
+  remindRow:{ flexDirection:'row', flexWrap:'wrap', gap:8 },
+  remindChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  remindChipActive:{ backgroundColor:'#3a7ca5' },
+  remindChipText:{ color:'#2f6690', fontWeight:'600' },
+  remindChipTextActive:{ color:'#fff' },
+  summaryRow:{ flexDirection:'row', justifyContent:'space-between', marginBottom:6 },
+  summaryLabel:{ fontSize:12, color:'#2f6690' },
+  summaryValue:{ fontSize:12, color:'#16425b', fontWeight:'500' },
+  bottomBar:{ position:'absolute', left:0, right:0, bottom:0, flexDirection:'row', padding:16, backgroundColor:'#ffffffee', gap:12, borderTopWidth:1, borderColor:'#e2e8f0' },
+  bottomBtn:{ flex:1, height:52, borderRadius:16, alignItems:'center', justifyContent:'center' },
+  cancelBtn:{ backgroundColor:'rgba(217,220,214,0.55)' },
+  cancelText:{ color:'#2f6690', fontWeight:'600', fontSize:14 },
+  saveBtn:{ backgroundColor:'#3a7ca5' },
+  disabledBtn:{ backgroundColor:'#94a3b8' },
+  saveText:{ color:'#fff', fontWeight:'600', fontSize:15 },
+  pickerBtn:{ backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, paddingHorizontal:12, height:48, justifyContent:'center' },
+  pickerBtnError:{ borderColor:'#dc2626', backgroundColor:'#fef2f2' },
+  pickerText:{ fontSize:14, color:'#16425b', fontWeight:'500' },
+  pickerTextError:{ color:'#b91c1c' },
+  pickerBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.35)', justifyContent:'flex-end' },
+  pickerModal:{ backgroundColor:'#fff', borderTopLeftRadius:24, borderTopRightRadius:24, paddingTop:8, paddingBottom:20 },
+  pickerActions:{ flexDirection:'row', justifyContent:'space-between', paddingHorizontal:16, marginTop:4 },
+  pickerActionBtn:{ flex:1, height:44, borderRadius:14, alignItems:'center', justifyContent:'center', marginHorizontal:6 },
+  pickerCancel:{ backgroundColor:'#e2e8f0' },
+  pickerOk:{ backgroundColor:'#3a7ca5' },
+  pickerActionText:{ fontSize:15, fontWeight:'600', color:'#16425b' },
+  errorText:{ fontSize:11, color:'#dc2626', marginTop:2, fontWeight:'500' },
+  subTaskRow:{ flexDirection:'row', alignItems:'center', marginBottom:10 },
+  subTaskInput:{ flex:1, marginRight:8, paddingVertical:10 },
+  removeSubBtn:{ width:40, height:48, borderRadius:14, backgroundColor:'#fee2e2', alignItems:'center', justifyContent:'center' },
+  removeSubText:{ color:'#b91c1c', fontWeight:'700' },
+  addSubBtn:{ marginTop:4, backgroundColor:'rgba(58,124,165,0.1)', paddingVertical:12, borderRadius:14, alignItems:'center' },
+  addSubText:{ color:'#2f6690', fontWeight:'600', fontSize:13 },
+  subChkBtn:{ width:40, height:48, justifyContent:'center', alignItems:'center', marginRight:4 },
+  subChkCircle:{ width:22, height:22, borderRadius:11, borderWidth:2, borderColor:'#3a7ca5', alignItems:'center', justifyContent:'center', backgroundColor:'#fff' },
+  subChkCircleDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  assignList:{ flexDirection:'row', flexWrap:'wrap' },
+  assignChip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20, marginRight:8, marginBottom:8 },
+  assignChipActive:{ backgroundColor:'#2f6690' },
+  assignText:{ color:'#2f6690', fontWeight:'600', fontSize:12 },
+  assignTextActive:{ color:'#fff' },
+});

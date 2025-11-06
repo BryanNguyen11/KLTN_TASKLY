@@ -9,6 +9,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { setOcrScanPayload } from '@/contexts/OcrScanStore';
+import useSpeechToText, { STTLanguage } from '@/hooks/useSpeechToText';
 
 // Optional ImageManipulator to normalize picked images
 let ImageManipulator: any;
@@ -27,11 +28,14 @@ export default function AutoScheduleScreen(){
   const [images, setImages] = useState<PickedImage[]>([]);
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<'events'|'tasks'|'both'>('both');
+  const [sttLang, setSttLang] = useState<STTLanguage>('vi-VN');
   const [messages, setMessages] = useState<Msg[]>([
     { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch (events) và tác vụ (tasks). Bạn có thể đính kèm ảnh/PDF nếu cần.' }
   ]);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
+  const { status: sttStatus, isRecording, partial: sttPartial, finalText: sttFinal, start: sttStart, stop: sttStop, abort: sttAbort } = useSpeechToText({ language: sttLang, interim: true, onFinal: (t)=> setPrompt(prev => (prev ? (prev + (prev.endsWith(' ')?'':' ') + t) : t)) });
   const QUICK_PROMPTS: { id: string; text: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { id:'q1', text:'Tạo lịch học Toán mỗi Thứ 2, Thứ 5 từ 07:20–09:00 trong 8 tuần bắt đầu từ 10/11/2025.', icon:'calendar-outline' },
     { id:'q2', text:'Lên lịch ôn thi KTLT bắt đầu lúc 19:00 mỗi tối từ 05/11 đến 15/11/2025.', icon:'moon-outline' },
@@ -210,15 +214,20 @@ export default function AutoScheduleScreen(){
           if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
-      // Prompt-only or prompt+attachments: run AI for both events/tasks in parallel
+      // Prompt-only or prompt+attachments: run AI per selected mode
       let aiEvItems: any[] = [];
       let aiTkItems: any[] = [];
       if(trimmed){
-        const evReq = axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any));
-        const tkReq = axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any));
-        const [evRes, tkRes] = await Promise.all([evReq, tkReq]);
-        aiEvItems = (evRes as any)?.data?.items || [];
-        aiTkItems = (tkRes as any)?.data?.tasks || [];
+        const doEvents = mode==='events' || mode==='both';
+        const doTasks = mode==='tasks' || mode==='both';
+        const reqs: Promise<any>[] = [];
+  if(doEvents){ reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any))); }
+  if(doTasks){ reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any))); }
+        const results = await Promise.all(reqs);
+        // Map results back according to which were requested
+        let idx = 0;
+        if(doEvents){ const evRes = results[idx++]; aiEvItems = (evRes as any)?.data?.items || []; }
+        if(doTasks){ const tkRes = results[idx++]; aiTkItems = (tkRes as any)?.data?.tasks || []; }
       }
       // Merge event candidates: attachments first then AI prompt items
       let mergedEvents = [...evItems, ...aiEvItems];
@@ -229,14 +238,17 @@ export default function AutoScheduleScreen(){
           if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
         }catch{ /* fallback to mergedEvents */ }
       }
-      const parts: string[] = [];
-      if(mergedEvents.length) parts.push(`• Lịch gợi ý: ${mergedEvents.length}`);
-      if(aiTkItems.length) parts.push(`• Tác vụ gợi ý: ${aiTkItems.length}`);
+  // Respect current mode when presenting results
+  if(mode==='tasks'){ mergedEvents = []; }
+  if(mode==='events'){ aiTkItems = []; }
+  const parts: string[] = [];
+  if(mergedEvents.length) parts.push(`• Lịch gợi ý: ${mergedEvents.length}`);
+  if(aiTkItems.length) parts.push(`• Tác vụ gợi ý: ${aiTkItems.length}`);
       if(!parts.length){
         const errMsg = 'Mình chưa tạo được mục nào từ yêu cầu này. Hãy mô tả rõ hơn hoặc thử đính kèm ảnh/PDF.';
         appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: errMsg });
       } else {
-        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, tkItems: aiTkItems } });
+  appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, tkItems: aiTkItems } });
       }
       // Auto-scroll to bottom
       setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
@@ -253,6 +265,17 @@ export default function AutoScheduleScreen(){
     const text = prompt;
     setPrompt('');
     await performSend(text);
+  };
+
+  const onToggleMic = async () => {
+    try{
+      if(isRecording){ await sttStop(); return; }
+      await sttStart();
+    }catch{}
+  };
+
+  const onSwitchLang = () => {
+    setSttLang(prev => prev === 'vi-VN' ? 'en-US' : 'vi-VN');
   };
 
   const onQuickTap = (t: string) => {
@@ -287,6 +310,24 @@ export default function AutoScheduleScreen(){
       <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={56} style={{ flex:1 }}>
         <View style={{ flex:1 }}>
           <ScrollView ref={scrollRef} contentContainerStyle={{ padding:16, paddingBottom:16 }} keyboardShouldPersistTaps='handled'>
+            {/* Mode toggles */}
+            <View style={[styles.card, { paddingVertical:12, paddingHorizontal:16 }]}> 
+              <Text style={styles.subTitle}>Chế độ tạo</Text>
+              <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap' }}>
+                <Pressable onPress={()=> setMode('events')} style={[styles.toggleBtn, mode==='events' && styles.toggleOn]} accessibilityLabel='Chỉ tạo lịch'>
+                  <Ionicons name='calendar-outline' size={14} color={mode==='events'?'#fff':'#16425b'} />
+                  <Text style={[styles.toggleText, mode==='events' && styles.toggleTextOn]}>Lịch</Text>
+                </Pressable>
+                <Pressable onPress={()=> setMode('tasks')} style={[styles.toggleBtn, mode==='tasks' && styles.toggleOn]} accessibilityLabel='Chỉ tạo tác vụ'>
+                  <Ionicons name='checkmark-done-outline' size={14} color={mode==='tasks'?'#fff':'#16425b'} />
+                  <Text style={[styles.toggleText, mode==='tasks' && styles.toggleTextOn]}>Tác vụ</Text>
+                </Pressable>
+                <Pressable onPress={()=> setMode('both')} style={[styles.toggleBtn, mode==='both' && styles.toggleOn]} accessibilityLabel='Tạo cả hai'>
+                  <Ionicons name='git-merge-outline' size={14} color={mode==='both'?'#fff':'#16425b'} />
+                  <Text style={[styles.toggleText, mode==='both' && styles.toggleTextOn]}>Cả hai</Text>
+                </Pressable>
+              </View>
+            </View>
             {/* Attachments (optional) */}
             {(images.length>0) && (
               <View style={styles.card}>
@@ -346,12 +387,18 @@ export default function AutoScheduleScreen(){
           <View style={styles.composer}>
             <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={20} color='#16425b' /></Pressable>
             <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={20} color='#16425b' /></Pressable>
+            <Pressable onPress={onToggleMic} style={[styles.iconBtn, isRecording && { backgroundColor:'rgba(220,38,38,0.1)' }]} accessibilityLabel='Ghi âm'>
+              <Ionicons name={isRecording? 'mic' : 'mic-outline'} size={20} color={isRecording? '#b91c1c' : '#16425b'} />
+            </Pressable>
+            <Pressable onPress={onSwitchLang} style={styles.langBtn} accessibilityLabel='Chuyển ngôn ngữ STT'>
+              <Text style={styles.langText}>{sttLang === 'vi-VN' ? 'VI' : 'EN'}</Text>
+            </Pressable>
             <TextInput
               ref={inputRef}
               style={styles.composerInput}
               placeholder='Nhập yêu cầu…'
               multiline
-              value={prompt}
+              value={isRecording && sttPartial ? (prompt ? `${prompt} ${sttPartial}` : sttPartial) : prompt}
               onChangeText={setPrompt}
             />
             <Pressable onPress={onSend} style={[styles.sendBtn, (!prompt.trim() && images.length===0 && files.length===0) && { opacity:0.5 }]} disabled={!prompt.trim() && images.length===0 && files.length===0}>
@@ -428,4 +475,10 @@ const styles = StyleSheet.create({
   quickTitle:{ color:'#2f6690', fontWeight:'700', paddingHorizontal:16, marginBottom:6 },
   quickChip:{ flexDirection:'row', alignItems:'center', gap:6, maxWidth:260, paddingHorizontal:10, paddingVertical:8, marginRight:8, borderRadius:14, backgroundColor:'#e2e8f0', borderWidth:1, borderColor:'#e5e7eb' },
   quickText:{ color:'#16425b', fontSize:12, fontWeight:'700', flexShrink:1 },
+  langBtn:{ paddingHorizontal:10, paddingVertical:6, borderRadius:10, backgroundColor:'#e2e8f0', alignItems:'center', justifyContent:'center' },
+  langText:{ color:'#16425b', fontWeight:'700', fontSize:11 },
+  toggleBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:12, paddingVertical:8, borderRadius:12, backgroundColor:'#e2e8f0', borderWidth:1, borderColor:'#e5e7eb' },
+  toggleOn:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  toggleText:{ color:'#16425b', fontWeight:'700', fontSize:12 },
+  toggleTextOn:{ color:'#fff', fontWeight:'700', fontSize:12 },
 });

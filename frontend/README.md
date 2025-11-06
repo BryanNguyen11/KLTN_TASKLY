@@ -65,6 +65,36 @@ Troubleshooting:
 
 Privacy note: Images/files are processed on your backend. If Gemini is configured, an image is sent to Google to obtain OCR text only.
 
+## Voice input (Speech-to-Text)
+
+You can dictate your prompt in Vietnamese or English:
+
+- Where: AI chat screen (TASKLY AI). Tap the mic icon next to the composer.
+- Languages: Toggle VI/EN with the language chip. Partial text shows while recording; final text is appended to the input.
+
+Platforms:
+
+- Web: Uses the browser Web Speech API (Chrome recommended). No extra setup.
+- iOS/Android: Uses `react-native-voice` and requires a Development Build or EAS build to access native speech APIs.
+
+Native setup checklist:
+
+- iOS: Microphone permission string is set in `app.json > ios.infoPlist.NSMicrophoneUsageDescription`.
+- Android: RECORD_AUDIO permission is declared in `app.json > android.permissions`.
+- Build a dev client once, then run the app inside it:
+
+```bash
+# optional: install deps
+cd frontend && npm install
+# build dev client (choose your platform)
+expo run:ios  # or expo run:android
+```
+
+Troubleshooting:
+
+- If the mic button does nothing on native, ensure the dev client contains `react-native-voice` (rebuild after dependency changes).
+- On web, if STT doesn't start, try Chrome and check site microphone permissions.
+
 ## Branding (App Icon, Splash, Favicon)
 
 To use your custom Taskly logo across the app:

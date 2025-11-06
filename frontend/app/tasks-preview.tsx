@@ -4,6 +4,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Alert, Modal 
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
+import TaskForm from '@/components/TaskForm';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOcrScanPayload, setOcrScanPayload } from '@/contexts/OcrScanStore';
 
@@ -60,7 +61,9 @@ export default function TasksPreview(){
           time,
           priority: t.priority || 'medium',
           importance: t.importance || 'medium',
+          urgency: t.urgency || 'medium',
           type: 'personal',
+          estimatedHours: typeof t.estimatedHours === 'number' ? t.estimatedHours : (parseFloat(String(t.estimatedHours||'1'))||1),
           tags: [],
           subTasks: [],
           description: t.notes || '',
@@ -76,45 +79,7 @@ export default function TasksPreview(){
     }
   };
 
-  const createOne = async (t: any) => {
-    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
-    try{
-      const todayISO = new Date().toISOString().slice(0,10);
-      const clean = (s:any) => {
-        const v = typeof s === 'string' ? s.trim() : '';
-        return v || undefined;
-      };
-      const s = clean(t.startTime);
-      const e = clean(t.endTime);
-      let startTime = s;
-      let endTime = e;
-      let time: string | undefined = undefined;
-      if(!startTime && !endTime){
-        time = '09:00';
-      } else if(!startTime && endTime){
-        time = endTime; endTime = undefined;
-      }
-      const body:any = {
-        title: t.title || 'Tác vụ',
-        date: clean(t.date) || todayISO,
-        startTime,
-        endTime,
-        time,
-        priority: t.priority || 'medium',
-        importance: t.importance || 'medium',
-        type: 'personal',
-        tags: [],
-        subTasks: [],
-        description: t.notes || '',
-      };
-      if(payload?.projectId) body.projectId = String(payload.projectId);
-      await axios.post(`${API_BASE}/api/tasks`, body, { headers:{ Authorization: token ? `Bearer ${token}` : '' } });
-      Alert.alert('Thành công','Đã tạo tác vụ');
-      setEditing(null);
-    }catch(e:any){
-      Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tạo tác vụ');
-    }
-  };
+  // createOne replaced by TaskForm compact save flow
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }}>
@@ -158,33 +123,44 @@ export default function TasksPreview(){
         ))}
       </ScrollView>
 
-      {/* small create modal */}
+      {/* compact TaskForm modal using official create form */}
       <Modal visible={!!editing} transparent animationType='fade' onRequestClose={()=> setEditing(null)}>
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { maxWidth: 420 }] }>
-            <Text style={styles.modalTitle}>Tạo tác vụ mới</Text>
-            <Text style={styles.modalLabel}>Tiêu đề</Text>
-            <TextInput style={styles.input} value={editing?.title||''} onChangeText={t=> setEditing((p:any)=> p? { ...p, title: t }: p)} />
-            <View style={{ flexDirection:'row', gap:8 }}>
-              <View style={{ flex:1 }}>
-                <Text style={styles.modalLabel}>Ngày</Text>
-                <TextInput style={styles.input} value={editing?.date||''} placeholder='YYYY-MM-DD' onChangeText={t=> setEditing((p:any)=> p? { ...p, date: t }: p)} />
-              </View>
-              <View style={{ flex:1 }}>
-                <Text style={styles.modalLabel}>Bắt đầu</Text>
-                <TextInput style={styles.input} value={editing?.startTime||''} placeholder='HH:MM' onChangeText={t=> setEditing((p:any)=> p? { ...p, startTime: t }: p)} />
-              </View>
-              <View style={{ flex:1 }}>
-                <Text style={styles.modalLabel}>Kết thúc</Text>
-                <TextInput style={styles.input} value={editing?.endTime||''} placeholder='HH:MM' onChangeText={t=> setEditing((p:any)=> p? { ...p, endTime: t }: p)} />
-              </View>
-            </View>
-            <Text style={styles.modalLabel}>Ghi chú</Text>
-            <TextInput style={[styles.input, styles.textarea]} value={editing?.notes||''} multiline onChangeText={t=> setEditing((p:any)=> p? { ...p, notes: t }: p)} />
-            <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-              <Pressable onPress={()=> setEditing(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
-              <Pressable onPress={()=> editing && createOne(editing)} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Tạo ngay</Text></Pressable>
-            </View>
+          <View style={[styles.modalCard, { maxWidth: 520, padding:0 }] }>
+            {editing && (
+              <TaskForm
+                mode='compact'
+                initialValues={{
+                  title: editing.title || 'Tác vụ',
+                  description: editing.notes || '',
+                  date: editing.date || new Date().toISOString().slice(0,10),
+                  startTime: editing.startTime || (editing.endTime ? undefined as any : '09:00'),
+                  endTime: editing.endTime || '',
+                  endDate: editing.endDate || '',
+                  importance: editing.importance || 'medium',
+                  urgency: editing.urgency || 'medium',
+                  priority: editing.priority || 'medium',
+                  type: payload?.projectId ? 'group' : 'personal',
+                  estimatedHours: String(typeof editing.estimatedHours === 'number' ? editing.estimatedHours : (parseFloat(String(editing.estimatedHours||'1'))||1)),
+                  tags: [],
+                  subTasks: [],
+                  isRepeating: !!editing.isRepeating,
+                  repeat: editing.repeat ? {
+                    frequency: editing.repeat.frequency || 'weekly',
+                    endMode: editing.repeat.endMode || 'onDate',
+                    endDate: editing.repeat.endDate || undefined,
+                    count: editing.repeat.count ? String(editing.repeat.count) : undefined,
+                  } : undefined,
+                  reminders: Array.isArray(editing.reminders) ? editing.reminders : [],
+                }}
+                projectId={payload?.projectId ? String(payload.projectId) : undefined}
+                onClose={()=> setEditing(null)}
+                onSaved={()=>{
+                  Alert.alert('Thành công','Đã tạo tác vụ');
+                  setEditing(null);
+                }}
+              />
+            )}
           </View>
         </View>
       </Modal>
@@ -213,4 +189,9 @@ const styles = StyleSheet.create({
   modalTitle:{ fontSize:16, fontWeight:'700', color:'#16425b', marginBottom:8 },
   modalLabel:{ fontSize:12, color:'#2f6690', marginTop:8, marginBottom:4 },
   textarea:{ minHeight:80, textAlignVertical:'top' },
+  chipsRow:{ flexDirection:'row', flexWrap:'wrap', gap:8, marginTop:6 },
+  chip:{ paddingHorizontal:12, paddingVertical:8, backgroundColor:'rgba(58,124,165,0.08)', borderRadius:20 },
+  chipActive:{ backgroundColor:'#3a7ca5' },
+  chipText:{ color:'#2f6690', fontWeight:'600', fontSize:12 },
+  chipTextActive:{ color:'#fff' },
 });
