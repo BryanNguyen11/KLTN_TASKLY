@@ -17,11 +17,20 @@ export default function ScanPreview() {
   const payload = getOcrScanPayload();
   const [days, setDays] = useState<WeekdayBlock[]>([]);
   const [edit, setEdit] = useState<Editable | null>(null);
+  // When structured.kind === 'events-form', we render a compact EventForm directly
+  const isEventsForm = (payload?.structured as any)?.kind === 'events-form';
+  const eventsFormItems: Array<any> = isEventsForm ? ((payload?.structured as any)?.items || []) : [];
+  const [formIdx, setFormIdx] = useState<number>(0);
   const [types, setTypes] = useState<Array<{ _id:string; name:string; isDefault?:boolean }>>([]);
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
 
   useEffect(() => {
+    // Short-circuit if we're in events-form mode
+    if (isEventsForm) {
+      // nothing to prep here; EventForm will be shown below
+      return;
+    }
     const hasStructured = !!(payload && payload.structured && payload.structured.kind === 'progress-table' && Array.isArray(payload.structured.items) && payload.structured.items.length);
     const hasRaw = !!(payload && typeof payload.raw === 'string' && payload.raw.length > 0);
     if (!hasStructured && !hasRaw) {
@@ -202,6 +211,56 @@ export default function ScanPreview() {
       Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tạo lịch');
     }
   };
+
+  // If using the new events-form flow: show a single compact EventForm and optional stepper when multiple items provided
+  if (isEventsForm) {
+    const current = eventsFormItems[formIdx] || eventsFormItems[0] || null;
+    return (
+      <SafeAreaView style={{ flex:1, backgroundColor: '#f1f5f9' }}>
+        <View style={styles.header}>
+          <Pressable onPress={()=>router.back()} style={styles.backBtn}><Text style={styles.backText}>{'‹'}</Text></Pressable>
+          <Text style={styles.headerTitle}>Xem trước lịch</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={{ padding:12 }}>
+          {current ? (
+            <View style={[styles.modalCard, { alignSelf:'center', maxWidth: 520 }]}> 
+              <EventForm
+                mode='compact'
+                initialValues={{
+                  title: current.title || 'Lịch mới',
+                  typeId: String((payload as any)?.defaultTypeId || ''),
+                  date: current.date,
+                  endDate: current.endDate || '',
+                  startTime: current.startTime || '09:00',
+                  endTime: current.endTime || '',
+                  location: current.location || '',
+                  notes: current.notes || '',
+                  link: current.link || '',
+                  repeat: current.repeat,
+                }}
+                projectId={payload?.projectId? String(payload.projectId): undefined}
+                onClose={()=> router.back()}
+                onSaved={()=>{
+                  if (formIdx + 1 < eventsFormItems.length) { setFormIdx(formIdx+1); }
+                  else { router.back(); }
+                }}
+              />
+              {eventsFormItems.length>1 && (
+                <View style={{ flexDirection:'row', justifyContent:'center', marginTop:8 }}>
+                  <Text style={{ color:'#16425b', fontWeight:'700' }}>{formIdx+1}/{eventsFormItems.length}</Text>
+                </View>
+              )}
+            </View>
+          ) : (
+            <View style={{ padding: 16 }}>
+              <Text style={{ color:'#16425b', fontWeight:'700' }}>Không có mục nào để tạo</Text>
+            </View>
+          )}
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor: '#f1f5f9' }}>

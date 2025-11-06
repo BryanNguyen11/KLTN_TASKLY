@@ -120,10 +120,18 @@ function detectStrictFromPrompt(prompt){
 }
 
 // Resolve Vietnamese relative expressions like "9h sáng ngày t7 tuần này"
-function resolveRelativeDateTime(prompt){
+function resolveRelativeDateTime(prompt, baseNowISO){
   try{
     const s = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
-    const now = new Date();
+    let now = new Date();
+    // If client passed local base date (YYYY-MM-DD), use it to anchor relative phrases like "ngày mai", "thứ 7 tuần sau"
+    if(typeof baseNowISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(baseNowISO)){
+      const [y,m,d] = baseNowISO.split('-').map(n=>parseInt(n,10));
+      if(y && m && d){
+        const cur = new Date();
+        now = new Date(y, (m||1)-1, d||1, cur.getHours(), cur.getMinutes(), 0, 0);
+      }
+    }
     const pad2 = (n)=> String(n).padStart(2,'0');
     const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
     // weekday mapping
@@ -623,7 +631,7 @@ exports.aiTransform = async (req, res) => {
         safe = normalizeItemsBySemantics(safe, prompt);
         // Then, overlay any relative date/time from the prompt (start by default if not explicitly 'due')
         const sem = detectSemanticsFromPrompt(prompt);
-        const rel = resolveRelativeDateTime(prompt);
+  const rel = resolveRelativeDateTime(prompt, req.body?.now);
         if(rel){
           safe = safe.map(it => ({
             ...it,
@@ -633,7 +641,7 @@ exports.aiTransform = async (req, res) => {
           }));
         }
       } else {
-        const rel = resolveRelativeDateTime(prompt);
+  const rel = resolveRelativeDateTime(prompt, req.body?.now);
         if(rel){
           safe = safe.map(it => ({
             ...it,
@@ -727,7 +735,7 @@ exports.aiTransform = async (req, res) => {
 exports.createEvent = async (req, res) => {
   try {
     const userId = req.user.userId;
-  const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {}, repeat, reminders, projectId } = req.body;
+    const { title, typeId, date, endDate, startTime, endTime, location, notes, link, tags = [], props = {}, repeat, reminders, projectId } = req.body;
     if (!title || !typeId || !date) return res.status(400).json({ message: 'Thiếu trường bắt buộc' });
     // check type exists
     const et = await EventType.findById(typeId);
@@ -1417,7 +1425,7 @@ exports.aiGenerate = async (req, res) => {
     // Always apply normalization + relative overlay: if prompt contains relative time/day, enforce it
     let finalItems = normalizeItemsBySemantics(items, prompt);
     const sem = detectSemanticsFromPrompt(prompt);
-    const rel = resolveRelativeDateTime(prompt);
+  const rel = resolveRelativeDateTime(prompt, req.body?.now);
     if(rel){
       finalItems = finalItems.map(it => ({
         ...it,
@@ -1439,4 +1447,122 @@ exports.aiEcho = async (req, res) => {
     const itemsLen = Array.isArray(req.body?.items) ? req.body.items.length : undefined;
     return res.json({ prompt, promptLen: prompt? prompt.length: 0, itemsLen });
   }catch(e){ return res.status(500).json({ message: 'echo failed', error: e.message }); }
+};
+
+// Convert AI schedule items into EventForm-ready objects (date & HH:mm)
+exports.aiGenerateForm = async (req, res) => {
+  try{
+    const prompt = String(req.body?.prompt || '').trim();
+    if(!prompt) return res.status(400).json({ message: 'Thiếu prompt' });
+    // Reuse aiGenerate to get normalized items (weekday/from/to/startDate/endDate)
+    // Call the internal logic by simulating a request: to avoid duplication we call our own endpoint handler in-process
+    // Here we re-run the core generation logic inline to stay within same process context
+    const key = process.env.GEMINI_API_KEY;
+    let GoogleGenerativeAI;
+    try { ({ GoogleGenerativeAI } = require('@google/generative-ai')); } catch(_) {}
+    let items = [];
+    // Try ollama first if configured
+    if(LLM_PROVIDER === 'ollama'){
+      const content = await (async ()=>{
+        try{
+          const c = await (async()=>{
+            const base = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
+            const model = process.env.OLLAMA_MODEL || 'llama3.1:8b';
+            const sys = 'Bạn là trợ lý tạo thời khoá biểu từ mô tả (tiếng Việt). Chỉ trả về JSON {"items": [...]} theo schema.';
+            const body = { model, messages: [ { role:'system', content: sys }, { role:'user', content: `Yêu cầu:\n${prompt}` } ], stream:false, options:{ temperature: 0.1 } };
+            const resp = await fetch(`${base}/api/chat`, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+            if(!resp.ok) return '';
+            const data = await resp.json();
+            return String(data?.message?.content||'');
+          })();
+          return c || '';
+        }catch{ return ''; }
+      })();
+      const tryParse = (s)=>{ try{ return JSON.parse(s); }catch{ return null; } };
+      const code = (s)=>{ const m = s.match(/```json\n([\s\S]*?)```/i); return m? m[1]: s; };
+      const data = tryParse(code(content));
+      const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+      items = Array.isArray(data?.items)? data.items.map(it => ({
+        title: String(it.title||'').slice(0,120) || 'Lịch',
+        weekday: clamp(parseInt(it.weekday,10),1,7)||2,
+        from: clamp(parseInt(it.from,10),1,16),
+        to: clamp(parseInt(it.to,10),1,16),
+        startDate: String(it.startDate||''),
+        endDate: String(it.endDate||''),
+        location: String(it.location||''),
+        notes: String(it.notes||'')
+      })) : [];
+    }
+    if(!items.length){
+      if(!key || !GoogleGenerativeAI) return res.status(500).json({ message: 'Máy chủ chưa cấu hình AI' });
+      const genAI = new GoogleGenerativeAI(key);
+      const modelName = process.env.GEMINI_TASK_MODEL || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent({ contents:[ { role:'user', parts:[ { text: 'Trả về JSON {"items":[{"title": string, "weekday": number, "from": number, "to": number, "startDate": string, "endDate": string, "location": string, "notes": string}] }' }, { text: `Yêu cầu:\n${prompt}` } ] } ], generationConfig:{ responseMimeType:'application/json', temperature: 0.1 } });
+      const raw = String(result?.response?.text?.()||'');
+      let data = null; try{ data = JSON.parse(raw); }catch{ /* ignore */ }
+      const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n)? n : lo));
+      items = Array.isArray(data?.items)? data.items.map(it => ({
+        title: String(it.title||'').slice(0,120) || 'Lịch',
+        weekday: clamp(parseInt(it.weekday,10),1,7)||2,
+        from: clamp(parseInt(it.from,10),1,16),
+        to: clamp(parseInt(it.to,10),1,16),
+        startDate: String(it.startDate||''),
+        endDate: String(it.endDate||''),
+        location: String(it.location||''),
+        notes: String(it.notes||'')
+      })) : [];
+      if(!items.length) return res.status(400).json({ message: 'AI không tạo được items', reason:'empty-items' });
+    }
+    // Normalize by semantics + relative phrases
+    items = normalizeItemsBySemantics(items, prompt);
+  const rel = resolveRelativeDateTime(prompt, req.body?.now);
+    const sem = detectSemanticsFromPrompt(prompt);
+    if(rel){
+      items = items.map(it => ({
+        ...it,
+        startDate: it.startDate || rel.date || it.startDate,
+        endDate: it.endDate || '',
+        ...(rel.time ? ( ()=>{ if(sem.mode==='due'){ const to = hhmmToPeriodEnd(rel.time); const from = Math.max(1, to-1); return { from, to }; } else { const from = hhmmToPeriodStart(rel.time); const to = Math.min(16, from+1); return { from, to }; } } )() : {}),
+      }));
+    }
+    // Convert to form
+    const pad2 = (n)=> String(n).padStart(2,'0');
+    const toHHMM = (from,to)=>{
+      const st = PERIOD_TIME[from]?.start || '09:00';
+      const en = PERIOD_TIME[to]?.end || '';
+      return { startTime: st, endTime: en };
+    };
+    const firstWeekdayOnOrAfter = (baseISO, weekday)=>{
+      try{
+        const [y,m,d] = String(baseISO||'').split('-').map(n=>parseInt(n,10));
+        const dt = new Date(y||new Date().getFullYear(), (m||1)-1, d||1);
+        const js = dt.getDay() || 7; // 1..7
+        const w = Math.min(7,Math.max(1,weekday));
+        const diff = (w - js + 7) % 7;
+        if(diff>0) dt.setDate(dt.getDate()+diff);
+        return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`;
+      }catch{ const now=new Date(); return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`; }
+    };
+    const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${pad2(n.getMonth()+1)}-${pad2(n.getDate())}`; })();
+    const forms = items.map(it => {
+      const { startTime, endTime } = toHHMM(it.from, it.to);
+      const base = it.startDate || todayISO;
+      // weekday in 1..7, JS conversion handled in helper
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(base) ? (it.weekday ? firstWeekdayOnOrAfter(base, it.weekday) : base) : todayISO;
+      const repeat = it.endDate ? { frequency:'weekly', endMode:'onDate', endDate: it.endDate } : undefined;
+      return {
+        title: it.title || 'Lịch',
+        date,
+        startTime,
+        endDate: '',
+        endTime: endTime || '',
+        location: it.location || '',
+        notes: it.notes || '',
+        link: '',
+        repeat,
+      };
+    });
+    return res.json({ items: forms });
+  }catch(e){ return res.status(500).json({ message: 'Lỗi AI form', error: e?.message || String(e) }); }
 };

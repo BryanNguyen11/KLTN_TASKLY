@@ -10,11 +10,12 @@ export type OcrExtracted = {
 
 type ProgressTable = { kind: 'progress-table'; items: Array<{ title: string; weekday: number; from: number; to: number; startDate?: string; endDate?: string; location?: string; }> };
 type TasksList = { kind: 'tasks-list'; items: Array<{ title: string; date?: string; endDate?: string; startTime?: string; endTime?: string; priority?: string; importance?: string; notes?: string; }>; };
+type EventsFormList = { kind: 'events-form'; items: Array<{ title: string; date: string; startTime: string; endDate?: string; endTime?: string; location?: string; notes?: string; link?: string; repeat?: { frequency: 'daily'|'weekly'|'monthly'|'yearly'; endMode?: 'never'|'onDate'|'after'; endDate?: string; count?: number } }>; };
 
 export type OcrScanPayload = {
   raw: string;
   extracted?: OcrExtracted;
-  structured?: ProgressTable | TasksList;
+  structured?: ProgressTable | TasksList | EventsFormList;
   defaultTypeId?: string;
   projectId?: string;
 };

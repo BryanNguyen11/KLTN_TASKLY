@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, Alert, Image, Platform, Linking, ScrollView, KeyboardAvoidingView, Animated, Easing } from 'react-native';
+import Markdown from 'react-native-markdown-display';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,7 +18,7 @@ try { ImageManipulator = require('expo-image-manipulator'); } catch { ImageManip
 
 type PickedImage = { uri: string; name: string };
 type PickedFile = { uri: string; name: string; mimeType: string };
-type Msg = { id: string; role: 'user'|'assistant'; text: string; meta?: { evItems?: any[]; tkItems?: any[] } };
+type Msg = { id: string; role: 'user'|'assistant'; text: string; meta?: { evItems?: any[]; evFormItems?: any[]; tkItems?: any[] } };
 
 export default function AutoScheduleScreen(){
   const router = useRouter();
@@ -29,25 +30,23 @@ export default function AutoScheduleScreen(){
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<'events'|'tasks'|'both'>('both');
+  const [devChat, setDevChat] = useState<boolean>(false);
   const [sttLang, setSttLang] = useState<STTLanguage>('vi-VN');
   const [messages, setMessages] = useState<Msg[]>([
     { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch (events) và tác vụ (tasks). Bạn có thể đính kèm ảnh/PDF nếu cần.' }
   ]);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
+  const scrollToBottom = (animated = true) => {
+    try { requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated })); } catch {}
+  };
+  const onInputFocus = () => {
+    // Scroll a few times to catch keyboard animation
+    scrollToBottom(true);
+    setTimeout(()=> scrollToBottom(false), 150);
+    setTimeout(()=> scrollToBottom(false), 350);
+  };
   const { status: sttStatus, isRecording, partial: sttPartial, finalText: sttFinal, start: sttStart, stop: sttStop, abort: sttAbort } = useSpeechToText({ language: sttLang, interim: true, onFinal: (t)=> setPrompt(prev => (prev ? (prev + (prev.endsWith(' ')?'':' ') + t) : t)) });
-  const QUICK_PROMPTS: { id: string; text: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { id:'q1', text:'Tạo lịch học Toán mỗi Thứ 2, Thứ 5 từ 07:20–09:00 trong 8 tuần bắt đầu từ 10/11/2025.', icon:'calendar-outline' },
-    { id:'q2', text:'Lên lịch ôn thi KTLT bắt đầu lúc 19:00 mỗi tối từ 05/11 đến 15/11/2025.', icon:'moon-outline' },
-    { id:'q3', text:'Tạo lịch họp dự án bắt đầu lúc 09:00 Thứ 3 hàng tuần đến hết 31/12/2025.', icon:'people-outline' },
-    { id:'q4', text:'Tạo lịch báo cáo đồ án đến hạn lúc 21:00 ngày 10/11/2025.', icon:'time-outline' },
-    { id:'q5', text:'Xếp lịch tập gym bắt đầu lúc 06:30 Thứ 2,4,6 trong 4 tuần.', icon:'fitness-outline' },
-    { id:'q6', text:'Tạo danh sách tác vụ tuần này: làm bài tập Toán (đến hạn 21:00 10/11), đọc chương 3, chuẩn bị thuyết trình.', icon:'checkmark-done-outline' },
-    { id:'q7', text:'Tạo tác vụ "Nộp báo cáo" đến hạn 23:59 ngày 08/11/2025, ưu tiên cao.', icon:'alert-circle-outline' },
-    { id:'q8', text:'Chia nhỏ tác vụ "Ôn thi KTLT" thành các việc hằng ngày đến hạn 15/11/2025.', icon:'list-outline' },
-    { id:'q9', text:'Lập kế hoạch sprint 1 tuần cho dự án: backlog grooming, coding, review, demo.', icon:'flash-outline' },
-    { id:'q10', text:'Lên danh sách việc sáng mai bắt đầu lúc 08:00: kiểm tra email, cập nhật README, tạo issue.', icon:'sunny-outline' },
-  ];
   const onCheckOllama = async () => {
     try{
       const [h, p] = await Promise.all([
@@ -214,27 +213,47 @@ export default function AutoScheduleScreen(){
           if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
+      // If Dev Chat mode: bypass creation pipelines and call general chat
+      if(trimmed && devChat){
+        try{
+          const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+          const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt: trimmed, now: todayISO }, { ...authHeader, timeout: 45000 });
+          const answer = String(res.data?.answer || '').trim();
+          appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: answer || 'Mình chưa có câu trả lời cho câu hỏi này.' });
+        }catch(e:any){
+          appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: e?.response?.data?.message || 'Không thể gọi Dev Chat' });
+        }
+        setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
+        return;
+      }
+
       // Prompt-only or prompt+attachments: run AI per selected mode
-      let aiEvItems: any[] = [];
+  let aiEvItems: any[] = [];
+  let aiEvFormItems: any[] = [];
       let aiTkItems: any[] = [];
       if(trimmed){
         const doEvents = mode==='events' || mode==='both';
         const doTasks = mode==='tasks' || mode==='both';
-        const reqs: Promise<any>[] = [];
-  if(doEvents){ reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any))); }
+    const reqs: Promise<any>[] = [];
+  if(doEvents){
+  const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+  reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
+  reqs.push(axios.post(`${API_BASE}/api/events/ai-generate-form`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
+  }
   if(doTasks){ reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any))); }
         const results = await Promise.all(reqs);
         // Map results back according to which were requested
-        let idx = 0;
-        if(doEvents){ const evRes = results[idx++]; aiEvItems = (evRes as any)?.data?.items || []; }
-        if(doTasks){ const tkRes = results[idx++]; aiTkItems = (tkRes as any)?.data?.tasks || []; }
+    let idx = 0;
+    if(doEvents){ const evRes = results[idx++]; aiEvItems = (evRes as any)?.data?.items || []; const evFormRes = results[idx++]; aiEvFormItems = (evFormRes as any)?.data?.items || []; }
+    if(doTasks){ const tkRes = results[idx++]; aiTkItems = (tkRes as any)?.data?.tasks || []; }
       }
       // Merge event candidates: attachments first then AI prompt items
       let mergedEvents = [...evItems, ...aiEvItems];
       // Optional transform when both prompt and events present
       if(trimmed && mergedEvents.length){
         try{
-          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: trimmed, items: mergedEvents }, authHeader);
+          const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: trimmed, items: mergedEvents, now: todayISO }, authHeader);
           if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
         }catch{ /* fallback to mergedEvents */ }
       }
@@ -248,7 +267,8 @@ export default function AutoScheduleScreen(){
         const errMsg = 'Mình chưa tạo được mục nào từ yêu cầu này. Hãy mô tả rõ hơn hoặc thử đính kèm ảnh/PDF.';
         appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: errMsg });
       } else {
-  appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, tkItems: aiTkItems } });
+  const evCount = (aiEvFormItems?.length || 0) || mergedEvents.length;
+  appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, evFormItems: aiEvFormItems, tkItems: aiTkItems } });
       }
       // Auto-scroll to bottom
       setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
@@ -278,18 +298,13 @@ export default function AutoScheduleScreen(){
     setSttLang(prev => prev === 'vi-VN' ? 'en-US' : 'vi-VN');
   };
 
-  const onQuickTap = (t: string) => {
-    // Immediate send using the quick prompt text
-    performSend(t);
-  };
-  const onQuickLong = (t: string) => {
-    // Prefill composer for user to edit
-    setPrompt(t);
-    try{ inputRef.current?.focus?.(); }catch{}
-  };
 
   const onPreviewEvents = (items: any[]) => {
     setOcrScanPayload({ raw: '', extracted: {}, structured: items?.length ? { kind:'progress-table', items } as any : undefined, defaultTypeId: typeId? String(typeId): undefined, projectId: projectId? String(projectId): undefined } as any);
+    router.push('/scan-preview');
+  };
+  const onPreviewEventsForm = (items: any[]) => {
+    setOcrScanPayload({ raw: '', extracted: {}, structured: items?.length ? { kind:'events-form', items } as any : undefined, defaultTypeId: typeId? String(typeId): undefined, projectId: projectId? String(projectId): undefined } as any);
     router.push('/scan-preview');
   };
   const onPreviewTasks = (items: any[]) => {
@@ -307,13 +322,13 @@ export default function AutoScheduleScreen(){
         </Pressable>
       </View>
 
-      <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={56} style={{ flex:1 }}>
+  <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={12} style={{ flex:1 }}>
         <View style={{ flex:1 }}>
-          <ScrollView ref={scrollRef} contentContainerStyle={{ padding:16, paddingBottom:16 }} keyboardShouldPersistTaps='handled'>
+          <ScrollView ref={scrollRef} contentContainerStyle={{ padding:12, paddingBottom:8 }} keyboardShouldPersistTaps='handled'>
             {/* Mode toggles */}
-            <View style={[styles.card, { paddingVertical:12, paddingHorizontal:16 }]}> 
+            <View style={[styles.card, { paddingVertical:10, paddingHorizontal:12 }]}> 
               <Text style={styles.subTitle}>Chế độ tạo</Text>
-              <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap' }}>
+              <View style={{ flexDirection:'row', gap:6, flexWrap:'wrap' }}>
                 <Pressable onPress={()=> setMode('events')} style={[styles.toggleBtn, mode==='events' && styles.toggleOn]} accessibilityLabel='Chỉ tạo lịch'>
                   <Ionicons name='calendar-outline' size={14} color={mode==='events'?'#fff':'#16425b'} />
                   <Text style={[styles.toggleText, mode==='events' && styles.toggleTextOn]}>Lịch</Text>
@@ -326,11 +341,15 @@ export default function AutoScheduleScreen(){
                   <Ionicons name='git-merge-outline' size={14} color={mode==='both'?'#fff':'#16425b'} />
                   <Text style={[styles.toggleText, mode==='both' && styles.toggleTextOn]}>Cả hai</Text>
                 </Pressable>
+                <Pressable onPress={()=> setDevChat(v=>!v)} style={[styles.toggleBtn, devChat && styles.toggleOn]} accessibilityLabel='Hỏi đáp lập trình'>
+                  <Ionicons name='code-slash-outline' size={14} color={devChat?'#fff':'#16425b'} />
+                  <Text style={[styles.toggleText, devChat && styles.toggleTextOn]}>Dev Chat</Text>
+                </Pressable>
               </View>
             </View>
             {/* Attachments (optional) */}
             {(images.length>0) && (
-              <View style={styles.card}>
+              <View style={[styles.card, { padding:12 }] }>
                 <Text style={styles.subTitle}>Ảnh ({images.length})</Text>
                 <View style={styles.grid}>
                   {images.map((im, idx) => (
@@ -343,7 +362,7 @@ export default function AutoScheduleScreen(){
               </View>
             )}
             {(files.length>0) && (
-              <View style={styles.card}>
+              <View style={[styles.card, { padding:12 }] }>
                 <Text style={styles.subTitle}>Tệp ({files.length})</Text>
                 {files.map((f, idx) => (
                   <View key={idx} style={styles.fileRow}>
@@ -356,10 +375,20 @@ export default function AutoScheduleScreen(){
             {/* Chat messages */}
             {messages.map(m => (
               <View key={m.id} style={[styles.bubble, m.role==='user'? styles.userBubble: styles.aiBubble]}>
-                <Text style={[styles.bubbleText]}>{m.text}</Text>
-                {m.role==='assistant' && (m.meta?.evItems?.length || m.meta?.tkItems?.length) ? (
+                {m.role==='assistant' ? (
+                  <Markdown style={markdownStyles}>{m.text}</Markdown>
+                ) : (
+                  <Text style={[styles.bubbleText]}>{m.text}</Text>
+                )}
+                {m.role==='assistant' && (m.meta?.evItems?.length || m.meta?.evFormItems?.length || m.meta?.tkItems?.length) ? (
                   <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
-                    {!!m.meta?.evItems?.length && (
+                    {!!m.meta?.evFormItems?.length && (
+                      <Pressable style={[styles.actionBtn, styles.primary]} onPress={()=> onPreviewEventsForm(m.meta!.evFormItems!)}>
+                        <Ionicons name='calendar-outline' size={16} color='#fff' />
+                        <Text style={styles.actionText}>Xem trước lịch</Text>
+                      </Pressable>
+                    )}
+                    {!m.meta?.evFormItems?.length && !!m.meta?.evItems?.length && (
                       <Pressable style={[styles.actionBtn, styles.primary]} onPress={()=> onPreviewEvents(m.meta!.evItems!)}>
                         <Ionicons name='calendar-outline' size={16} color='#fff' />
                         <Text style={styles.actionText}>Xem trước lịch</Text>
@@ -378,48 +407,36 @@ export default function AutoScheduleScreen(){
             {busy && (
               <View style={[styles.bubble, styles.aiBubble]}> 
                 <StarLoader />
-                <Text style={[styles.bubbleText, { marginTop:6, textAlign:'center', color:'#2f6690' }]}>Đang suy nghĩ…</Text>
+                <Text style={[styles.bubbleText, { marginTop:4, textAlign:'center', color:'#2f6690' }]}>Đang suy nghĩ…</Text>
               </View>
             )}
           </ScrollView>
 
           {/* Bottom composer */}
           <View style={styles.composer}>
-            <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={20} color='#16425b' /></Pressable>
-            <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={20} color='#16425b' /></Pressable>
+            <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={18} color='#16425b' /></Pressable>
+            <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={18} color='#16425b' /></Pressable>
             <Pressable onPress={onToggleMic} style={[styles.iconBtn, isRecording && { backgroundColor:'rgba(220,38,38,0.1)' }]} accessibilityLabel='Ghi âm'>
-              <Ionicons name={isRecording? 'mic' : 'mic-outline'} size={20} color={isRecording? '#b91c1c' : '#16425b'} />
+              <Ionicons name={isRecording? 'mic' : 'mic-outline'} size={18} color={isRecording? '#b91c1c' : '#16425b'} />
             </Pressable>
             <Pressable onPress={onSwitchLang} style={styles.langBtn} accessibilityLabel='Chuyển ngôn ngữ STT'>
               <Text style={styles.langText}>{sttLang === 'vi-VN' ? 'VI' : 'EN'}</Text>
             </Pressable>
             <TextInput
               ref={inputRef}
-              style={styles.composerInput}
+              style={[styles.composerInput, Platform.OS==='ios' && { paddingBottom:10 }]}
               placeholder='Nhập yêu cầu…'
               multiline
               value={isRecording && sttPartial ? (prompt ? `${prompt} ${sttPartial}` : sttPartial) : prompt}
               onChangeText={setPrompt}
+              onFocus={onInputFocus}
             />
             <Pressable onPress={onSend} style={[styles.sendBtn, (!prompt.trim() && images.length===0 && files.length===0) && { opacity:0.5 }]} disabled={!prompt.trim() && images.length===0 && files.length===0}>
-              <Ionicons name='sparkles' size={18} color='#fff' />
+              <Ionicons name='sparkles' size={16} color='#fff' />
             </Pressable>
           </View>
 
-          {/* Quick prompt suggestions */}
-          {!busy && (
-            <View style={styles.quickWrap}>
-              <Text style={styles.quickTitle}>Gợi ý nhanh</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal:12, paddingBottom:8 }}>
-                {QUICK_PROMPTS.map(q => (
-                  <Pressable key={q.id} onPress={()=> onQuickTap(q.text)} onLongPress={()=> onQuickLong(q.text)} style={styles.quickChip} accessibilityLabel={`Gợi ý: ${q.text}`}>
-                    <Ionicons name={q.icon} size={14} color='#16425b' />
-                    <Text style={styles.quickText} numberOfLines={1}>{q.text}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </View>
-          )}
+          {/* Quick prompts removed per request */}
         </View>
       </KeyboardAvoidingView>
 
@@ -457,24 +474,21 @@ const styles = StyleSheet.create({
   disabled:{ backgroundColor:'#94a3b8' },
   actionText:{ color:'#fff', fontWeight:'800' },
   // Chat bubbles + actions
-  bubble:{ padding:12, borderRadius:16, marginBottom:10, maxWidth:'92%' },
+  bubble:{ padding:10, borderRadius:14, marginBottom:8, maxWidth:'92%' },
   userBubble:{ alignSelf:'flex-end', backgroundColor:'#e0f2fe' },
   aiBubble:{ alignSelf:'flex-start', backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0' },
-  bubbleText:{ fontSize:14, lineHeight:20, color:'#0f172a' },
-  actionBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:10, paddingVertical:8, borderRadius:12 },
+  bubbleText:{ fontSize:14, lineHeight:19, color:'#0f172a' },
+  actionBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:8, paddingVertical:6, borderRadius:10 },
   actionTextAlt:{ color:'#16425b', fontWeight:'700', fontSize:12 },
-  composer:{ flexDirection:'row', alignItems:'flex-end', padding:10, backgroundColor:'#ffffffee', borderTopWidth:1, borderColor:'#e2e8f0', gap:8 },
-  iconBtn:{ width:38, height:38, borderRadius:12, alignItems:'center', justifyContent:'center', backgroundColor:'#e2e8f0' },
-  composerInput:{ flex:1, maxHeight:120, minHeight:40, backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:14, paddingHorizontal:12, paddingVertical:10, color:'#0f172a' },
-  sendBtn:{ width:42, height:42, borderRadius:14, alignItems:'center', justifyContent:'center', backgroundColor:'#4f46e5' },
+  composer:{ flexDirection:'row', alignItems:'flex-end', paddingHorizontal:8, paddingVertical:6, backgroundColor:'#ffffffee', borderTopWidth:1, borderColor:'#e2e8f0', gap:6 },
+  iconBtn:{ width:34, height:34, borderRadius:10, alignItems:'center', justifyContent:'center', backgroundColor:'#e2e8f0' },
+  composerInput:{ flex:1, maxHeight:120, minHeight:38, backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', borderRadius:12, paddingHorizontal:10, paddingVertical:8, color:'#0f172a' },
+  sendBtn:{ width:38, height:38, borderRadius:12, alignItems:'center', justifyContent:'center', backgroundColor:'#4f46e5' },
    overlay:{},
    overlayCard:{},
    starRow:{ flexDirection:'row', alignItems:'center', justifyContent:'center', gap:8 },
    star:{ width:10, height:10, backgroundColor:'#3a7ca5', borderRadius:2, marginHorizontal:4 },
-  quickWrap:{ paddingVertical:8, backgroundColor:'#f1f5f9' },
-  quickTitle:{ color:'#2f6690', fontWeight:'700', paddingHorizontal:16, marginBottom:6 },
-  quickChip:{ flexDirection:'row', alignItems:'center', gap:6, maxWidth:260, paddingHorizontal:10, paddingVertical:8, marginRight:8, borderRadius:14, backgroundColor:'#e2e8f0', borderWidth:1, borderColor:'#e5e7eb' },
-  quickText:{ color:'#16425b', fontSize:12, fontWeight:'700', flexShrink:1 },
+  // quick prompts removed
   langBtn:{ paddingHorizontal:10, paddingVertical:6, borderRadius:10, backgroundColor:'#e2e8f0', alignItems:'center', justifyContent:'center' },
   langText:{ color:'#16425b', fontWeight:'700', fontSize:11 },
   toggleBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:12, paddingVertical:8, borderRadius:12, backgroundColor:'#e2e8f0', borderWidth:1, borderColor:'#e5e7eb' },
@@ -482,3 +496,16 @@ const styles = StyleSheet.create({
   toggleText:{ color:'#16425b', fontWeight:'700', fontSize:12 },
   toggleTextOn:{ color:'#fff', fontWeight:'700', fontSize:12 },
 });
+
+const markdownStyles = {
+  body: { color:'#0f172a', fontSize:14, lineHeight:20 },
+  paragraph: { marginTop: 0, marginBottom: 6 },
+  strong: { fontWeight: '700' },
+  bullet_list: { marginBottom: 6 },
+  ordered_list: { marginBottom: 6 },
+  list_item: { marginBottom: 2 },
+  code_inline: { backgroundColor:'#f1f5f9', borderRadius:6, paddingHorizontal:4, paddingVertical:2, color:'#0f172a' },
+  code_block: { backgroundColor:'#0b1220', borderRadius:10, padding:10 },
+  fence: { backgroundColor:'#0b1220', borderRadius:10, padding:10, color:'#e6edf3' },
+  link: { color:'#2563eb' },
+} as const;

@@ -35,6 +35,7 @@ io.on('connection', (socket) => {
 app.set('io', io);
 const authRoutes = require('./routes/authRoutes');
 const taskRoutes = require('./routes/taskRoutes');
+const aiRoutes = require('./routes/aiRoutes');
 const tagRoutes = require('./routes/tagRoutes');
 const userRoutes = require('./routes/userRoutes');
 const Tag = require('./models/Tag');
@@ -66,6 +67,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/event-types', eventTypeRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/projects', projectRoutes);
+app.use('/api/ai', aiRoutes);
 
 // AI health endpoint to verify GEMINI env loaded
 app.get('/api/ai/health', (req, res) => {
