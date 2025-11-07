@@ -11,7 +11,8 @@
     "ios": {
         "supportsTablet": true,
         "infoPlist": {
-          "NSMicrophoneUsageDescription": "Ứng dụng cần quyền micro để chuyển giọng nói thành văn bản cho AI."
+          "NSMicrophoneUsageDescription": "Ứng dụng cần quyền micro để chuyển giọng nói thành văn bản cho AI.",
+          "NSCalendarsUsageDescription": "Ứng dụng cần truy cập Lịch để import sự kiện của bạn."
         }
     },
     "android": {

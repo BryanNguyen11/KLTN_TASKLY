@@ -240,7 +240,7 @@ export default function AutoScheduleScreen(){
   reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
   reqs.push(axios.post(`${API_BASE}/api/events/ai-generate-form`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
   }
-  if(doTasks){ reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed }, authHeader).catch(e=>({ error:e } as any))); }
+  if(doTasks){ const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })(); reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any))); }
         const results = await Promise.all(reqs);
         // Map results back according to which were requested
     let idx = 0;

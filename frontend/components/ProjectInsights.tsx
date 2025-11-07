@@ -1,12 +1,20 @@
 import React from 'react';
-import { View, Text, Dimensions, Platform, Pressable } from 'react-native';
+import { View, Text, Dimensions, Platform, Pressable, ScrollView } from 'react-native';
 import { PieChart } from 'react-native-chart-kit';
-import Svg, { Rect, Line as SvgLine, Text as SvgText } from 'react-native-svg';
+import Svg, { Rect, Line as SvgLine, Text as SvgText, Path as SvgPath } from 'react-native-svg';
 
 // Lightweight props to avoid importing large dashboard types
 export type ProjectInsightsProps = {
   project: { _id: string; name: string; startDate?: string; dueDate?: string };
-  tasks: Array<{ id: string; status: 'todo'|'in-progress'|'completed'; completedAt?: string; projectId?: string }>; 
+  tasks: Array<{
+    id: string;
+    title?: string;
+    date?: string; // start date (ISO yyyy-mm-dd)
+    endDate?: string; // optional end date (ISO)
+    status: 'todo'|'in-progress'|'completed';
+    completedAt?: string;
+    projectId?: string;
+  }>; 
   events: Array<{ id: string; date?: string; startTime?: string; endTime?: string; projectId?: string }>; 
 };
 
@@ -50,18 +58,32 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
   }, [containerW, screenW]);
   const [chartType, setChartType] = React.useState<ChartType>('gantt');
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const scrollRef = React.useRef<ScrollView | null>(null);
+  // Tooltip state for Gantt bars
+  const [tt, setTt] = React.useState<null | { x: number; y: number; title: string; dateText: string; status: string }>(null);
+
+  // Status filter toggles
+  const [statusFilter, setStatusFilter] = React.useState<{todo: boolean; completed: boolean}>({
+    todo: true,
+    completed: true,
+  });
+  // Group 'in-progress' into 'todo'
+  const statusMatches = (s: 'todo'|'in-progress'|'completed') =>
+    (s === 'completed' && statusFilter.completed) || ((s === 'todo' || s === 'in-progress') && statusFilter.todo);
 
   // Filter to this project only (defensive)
   const projTasks = tasks.filter(t => (t as any).projectId === project._id || (t as any).type === 'group');
+  const filteredTasks = projTasks.filter(t => statusMatches(t.status));
   const total = projTasks.length;
-  const todo = projTasks.filter(t => t.status === 'todo').length;
-  const inProg = projTasks.filter(t => t.status === 'in-progress').length;
-  const done = projTasks.filter(t => t.status === 'completed').length;
 
+  // Pie uses filters too so it mirrors selection
+  const pieCounts = {
+    todo: projTasks.filter(t => (t.status === 'todo' || t.status === 'in-progress') && statusFilter.todo).length,
+    done: projTasks.filter(t => t.status === 'completed' && statusFilter.completed).length,
+  };
   const pieData = [
-    { name: 'Chưa làm', population: todo, color: palette.todo, legendFontColor: palette.text, legendFontSize: 11 },
-    { name: 'Đang làm', population: inProg, color: palette.inProgress, legendFontColor: palette.text, legendFontSize: 11 },
-    { name: 'Hoàn thành', population: done, color: palette.completed, legendFontColor: palette.text, legendFontSize: 11 },
+    { name: 'Chưa làm', population: pieCounts.todo, color: palette.todo, legendFontColor: palette.text, legendFontSize: 11 },
+    { name: 'Hoàn thành', population: pieCounts.done, color: palette.completed, legendFontColor: palette.text, legendFontSize: 11 },
   ].filter(s => s.population > 0);
 
   // Burndown data: remaining tasks over time (approximation)
@@ -102,16 +124,39 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
   // Note: temporarily removed Burndown and CFD per request.
 
   // Simple Gantt renderer using react-native-svg
+  // zoom via pixel-per-day
+  const [pxPerDay, setPxPerDay] = React.useState(18);
+  const minPxPerDay = 8;
+  const maxPxPerDay = 48;
+
+  // Auto-scroll near today when possible
+  React.useEffect(() => {
+    const sDate = new Date(start);
+    const eDate = new Date(endBound);
+    const totalDays = Math.max(1, dayDiff(sDate, eDate));
+    const padX = 12;
+    const today = new Date();
+    if (today < sDate || today > eDate) return;
+    const idx = Math.max(0, Math.min(totalDays, dayDiff(sDate, today)));
+    const todayX = padX + idx * pxPerDay;
+    if (scrollRef.current) {
+      const target = Math.max(0, todayX - width * 0.4);
+      // slight timeout allows ScrollView to mount
+      const t = setTimeout(() => scrollRef.current?.scrollTo({ x: target, y: 0, animated: true }), 50);
+      return () => clearTimeout(t);
+    }
+  }, [pxPerDay, width, start.toString(), (endBound as any).toString()]);
+
   const renderGantt = () => {
     if (projTasks.length === 0) {
       return <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa có dữ liệu tác vụ</Text>;
     }
-  const padX = 12;
-  const padY = 34; // extra space for bigger labels
-  const barH = 22; // larger bars for readability
-  const gap = 12;
-  const maxRows = Math.min(projTasks.length, 20);
-    const rows = projTasks
+    const padX = 12;
+    const padY = 34; // extra space for bigger labels
+    const barH = 22; // larger bars for readability
+    const gap = 12;
+    const maxRows = Math.min(filteredTasks.length, 40);
+    const rows = filteredTasks
       .slice()
       .sort((a,b) => {
         const ad = (a as any).date || '';
@@ -119,25 +164,23 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
         return ad.localeCompare(bd);
       })
       .slice(0, maxRows);
-    const chartW = width - 2*padX;
-    const calcX = (iso: string) => {
-      const s = new Date(start);
-      const e = new Date(endBound);
-      const cur = new Date(iso + 'T00:00:00');
-      const total = Math.max(1, (e.getTime() - s.getTime()));
-      const dx = Math.max(0, Math.min(1, (cur.getTime() - s.getTime()) / total));
-      return padX + dx * chartW;
-    };
-    const today = new Date();
+    // timeline sizing by days
     const sDate = new Date(start);
     const eDate = new Date(endBound);
+    const totalDays = Math.max(1, dayDiff(sDate, eDate));
+    const chartW = padX * 2 + totalDays * pxPerDay;
+    const calcX = (iso: string) => {
+      const cur = new Date(iso + 'T00:00:00');
+      const idx = Math.max(0, Math.min(totalDays, dayDiff(sDate, cur)));
+      return padX + idx * pxPerDay;
+    };
+    const today = new Date();
     const showToday = today >= sDate && today <= eDate;
     const todayX = calcX(toISODate(today));
     const contentH = padY*2 + rows.length * (barH + gap) + 6;
 
     // Build tick marks (max ~7)
-    const totalDays = Math.max(1, dayDiff(sDate, eDate));
-    const tickStep = Math.max(1, Math.ceil(totalDays / 6));
+    const tickStep = Math.max(1, Math.ceil(totalDays / 10));
     const tickDates: Date[] = [];
     const cur = new Date(sDate);
     while (cur <= eDate) {
@@ -148,15 +191,21 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
       tickDates.push(new Date(eDate));
     }
     return (
-      <Svg width={width} height={contentH}>
+      <ScrollView
+        ref={scrollRef}
+        horizontal
+        showsHorizontalScrollIndicator
+        contentContainerStyle={{}}
+      >
+      <Svg width={Math.max(chartW, width)} height={contentH}>
         {/* top axis baseline */}
-  <SvgLine x1={padX} y1={padY - 18} x2={padX + chartW} y2={padY - 18} stroke={palette.grid} strokeWidth={1} />
+        <SvgLine x1={padX} y1={padY - 18} x2={chartW - padX} y2={padY - 18} stroke={palette.grid} strokeWidth={1} />
         {/* ticks */}
         {tickDates.map((d,i) => {
           const iso = toISODate(d);
           const x = calcX(iso);
           const label = fmtDM(d);
-          const isRight = x > (padX + chartW - 30);
+          const isRight = x > (chartW - 30);
           return (
             <React.Fragment key={`tick-${i}`}>
               <SvgLine x1={x} y1={padY - 22} x2={x} y2={contentH} stroke={palette.grid} strokeWidth={1} strokeDasharray="3 4" />
@@ -182,20 +231,51 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
           const x1 = calcX(d);
           const x2 = calcX(ed);
           const y = padY + i * (barH + gap);
-          const color = t.status==='completed' ? palette.completed : t.status==='in-progress' ? palette.inProgress : palette.todo;
+          // Collapse 'in-progress' into 'todo' for color/display
+          const color = t.status==='completed' ? palette.completed : palette.todo;
           const minX = Math.min(x1, x2);
           const maxX = Math.max(x1, x2);
           const w = Math.max(6, maxX - minX);
           return (
             <React.Fragment key={(t as any).id}>
-              <Rect x={minX} y={y} width={w} height={barH} rx={4} ry={4} fill={color} opacity={0.85} />
+              <Rect
+                x={minX}
+                y={y}
+                width={w}
+                height={barH}
+                rx={4}
+                ry={4}
+                fill={color}
+                opacity={0.88}
+                onPress={() => {
+                  const title = (t as any).title || 'Tác vụ';
+                  const dateText = d === ed ? fmtDM(new Date(d + 'T00:00:00')) : `${fmtDM(new Date(d + 'T00:00:00'))}–${fmtDM(new Date(ed + 'T00:00:00'))}`;
+                  setTt({ x: minX + w / 2, y, title, dateText, status: t.status });
+                }}
+              />
               <SvgText x={minX + 8} y={y + barH - 5} fill="#ffffff" fontSize={11}>
                 {(t as any).title?.slice(0, 20) || 'Tác vụ'}
               </SvgText>
             </React.Fragment>
           );
         })}
+        {/* tooltip */}
+        {tt && (
+          <React.Fragment>
+            {/* bubble */}
+            <Rect x={Math.max(tt.x - 80, 4)} y={Math.max(tt.y - 36, 2)} width={160} height={34} rx={6} ry={6} fill="#111827" opacity={0.92} />
+            {/* pointer triangle */}
+            <SvgPath d={`M ${tt.x - 6} ${tt.y - 2} L ${tt.x + 6} ${tt.y - 2} L ${tt.x} ${tt.y + 6} Z`} fill="#111827" opacity={0.92} />
+            <SvgText x={Math.max(tt.x - 72, 8)} y={Math.max(tt.y - 23, 14)} fill="#ffffff" fontSize={11} fontWeight="bold">
+              {tt.title?.slice(0, 24)}
+            </SvgText>
+            <SvgText x={Math.max(tt.x - 72, 8)} y={Math.max(tt.y - 9, 28)} fill="#d1d5db" fontSize={10}>
+              {tt.dateText} · {tt.status === 'completed' ? 'Hoàn thành' : 'Chưa làm'}
+            </SvgText>
+          </React.Fragment>
+        )}
       </Svg>
+      </ScrollView>
     );
   };
 
@@ -226,14 +306,59 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
 
   const rangeText = `Khoảng thời gian: ${fmtDMY(new Date(start))} – ${fmtDMY(new Date(endBound))}`;
 
+  const FilterChips = (
+    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+      {([
+        { key: 'todo', label: 'Chưa làm', color: palette.todo },
+        { key: 'completed', label: 'Hoàn thành', color: palette.completed },
+      ] as Array<{ key: 'todo'|'completed'; label: string; color: string }>).map(it => {
+        const active = (statusFilter as any)[it.key];
+        return (
+          <Pressable
+            key={it.key}
+            onPress={() => setStatusFilter(s => ({ ...s, [it.key]: !((s as any)[it.key]) }))}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              borderRadius: 999,
+              borderWidth: 1,
+              borderColor: active ? it.color : '#e5e7eb',
+              backgroundColor: active ? `${it.color}22` : '#fff',
+            }}
+          >
+            <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: it.color }} />
+            <Text style={{ color: palette.text, fontSize: 12 }}>{it.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+
   return (
     <View style={{ marginTop: 12 }} onLayout={(e)=> setContainerW(e.nativeEvent.layout.width)}>
       {ChartHeader}
       {/* Chart container */}
       {chartType === 'gantt' && (
         <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#e5e7eb', overflow: 'hidden' }}>
-          <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 4 }}>Gantt chart</Text>
-          <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 6 }}>{rangeText}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <Text style={{ color: palette.subtle, fontSize: 12 }}>Gantt chart</Text>
+            <View style={{ flexDirection: 'row', gap: 6 }}>
+              <Pressable onPress={() => setPxPerDay(p => Math.max(minPxPerDay, Math.round((p - 2))))} style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb' }}>
+                <Text style={{ color: palette.text, fontSize: 12 }}>−</Text>
+              </Pressable>
+              <View style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
+                <Text style={{ color: palette.subtle, fontSize: 11 }}>{pxPerDay}px/ngày</Text>
+              </View>
+              <Pressable onPress={() => setPxPerDay(p => Math.min(maxPxPerDay, Math.round((p + 2))))} style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb' }}>
+                <Text style={{ color: palette.text, fontSize: 12 }}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+          <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 8 }}>{rangeText}</Text>
+          <View style={{ marginBottom: 8 }}>{FilterChips}</View>
           {renderGantt()}
         </View>
       )}
@@ -241,6 +366,7 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
       {chartType === 'pie' && (
         <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#e5e7eb', overflow: 'hidden' }}>
           <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Phân bố trạng thái</Text>
+          <View style={{ marginBottom: 8 }}>{FilterChips}</View>
           {pieData.length > 0 ? (
             <PieChart
               data={pieData as any}

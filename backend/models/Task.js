@@ -18,6 +18,7 @@ const taskSchema = new mongoose.Schema({
   urgency: { type: String, enum: ['low','medium','high'], default: 'medium' },
   type: { type: String, enum: ['personal','group'], default: 'personal' },
   estimatedHours: { type: Number, default: 1 },
+  // Note: We normalize 'in-progress' to 'todo' in hooks/controllers
   status: { type: String, enum: ['todo','in-progress','completed'], default: 'todo' },
   completedAt: { type: Date },
   tags: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Tag' }],
@@ -48,5 +49,16 @@ taskSchema.virtual('completionPercent').get(function(){
 
 taskSchema.set('toJSON', { virtuals:true });
 taskSchema.set('toObject', { virtuals:true });
+
+// Normalize status: treat 'in-progress' as 'todo'
+function normalizeStatus(s){ return s === 'in-progress' ? 'todo' : s; }
+taskSchema.pre('validate', function(next){
+  if(this.status){ this.status = normalizeStatus(this.status); }
+  next();
+});
+taskSchema.pre('save', function(next){
+  if(this.status){ this.status = normalizeStatus(this.status); }
+  next();
+});
 
 module.exports = mongoose.model('Task', taskSchema);

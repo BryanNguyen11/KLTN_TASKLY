@@ -19,10 +19,14 @@ function detectSemanticsFromPrompt(prompt){
     return { mode: due? 'due' : (start? 'start' : 'none') };
   }catch{ return { mode:'none' }; }
 }
-function resolveRelativeDateTime(prompt){
+function resolveRelativeDateTime(prompt, baseNowISO){
   try{
     const s = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
-    const now = new Date();
+    let now = new Date();
+    if(typeof baseNowISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(baseNowISO)){
+      const [y,m,d] = baseNowISO.split('-').map(n=>parseInt(n,10));
+      if(y && m && d){ now = new Date(y,(m||1)-1,d||1, now.getHours(), now.getMinutes(), 0, 0); }
+    }
     const pad2 = (n)=> String(n).padStart(2,'0');
     const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
     const weekdayNames = { 'thu 2':1, 'thu 3':2, 'thu 4':3, 'thu 5':4, 'thu 6':5, 'thu 7':6, 'chu nhat':0, 'cn':0 };
@@ -124,6 +128,8 @@ const occursToday = (t) => {
   return false;
 };
 
+const normalizeStatus = (s) => (s === 'in-progress' ? 'todo' : s);
+
 exports.createTask = async (req,res) => {
   try {
     const userId = req.user.userId;
@@ -140,6 +146,8 @@ exports.createTask = async (req,res) => {
   }
   const sanitizedSubTasks = Array.isArray(subTasks) ? subTasks.filter(st => st && st.title && st.title.trim()).map(st => ({ title: st.title.trim(), completed: !!st.completed })) : [];
   const payload = { userId, title, description, date, endDate, startTime, endTime, time, priority, importance, urgency, type, estimatedHours, tags, subTasks: sanitizedSubTasks, repeat: repeat || undefined };
+  // Normalize status if provided
+  if(Object.prototype.hasOwnProperty.call(req.body,'status')){ payload.status = normalizeStatus(req.body.status); }
   if(projectId){ payload.projectId = projectId; }
   if(assignedTo){ payload.assignedTo = assignedTo; }
   // Compute reminders -> array of absolute Date objects
@@ -205,7 +213,9 @@ exports.getTasks = async (req,res) => {
     // Note: weekday filtering properly requires recurrence expansion; keep on frontend for now.
     const filter = and.length? { $and: [ base, ...and ] } : base;
     const tasks = await Task.find(filter).sort({ createdAt: -1 }).lean();
-    res.json(tasks);
+  // Normalize status on read
+  const mapped = tasks.map(t => ({ ...t, status: normalizeStatus(t.status) }));
+  res.json(mapped);
   } catch(err){
     res.status(500).json({ message: 'Lỗi lấy danh sách', error: err.message });
   }
@@ -241,6 +251,7 @@ exports.updateTask = async (req,res) => {
       if(endMode==='after' && count && count < 1) return res.status(400).json({ message:'repeat.count phải >= 1' });
     }
     if(Object.prototype.hasOwnProperty.call(updates,'status')){
+      updates.status = normalizeStatus(updates.status);
       if(updates.status === 'completed') {
         updates.completedAt = new Date();
       } else if(updates.status !== 'completed') {
@@ -354,7 +365,8 @@ exports.updateTask = async (req,res) => {
         }catch(_e){}
       }
     } catch(_e){}
-    res.json(task);
+  // Normalize status on response
+  res.json(task && task.toObject ? { ...task.toObject(), status: normalizeStatus(task.status) } : task);
   } catch(err){
     res.status(500).json({ message:'Lỗi cập nhật', error: err.message });
   }
@@ -372,6 +384,19 @@ exports.deleteTask = async (req,res) => {
     res.json({ message:'Đã xóa', id: task._id });
   } catch(err){
     res.status(500).json({ message:'Lỗi xóa', error: err.message });
+  }
+};
+
+// One-time migration: convert all 'in-progress' to 'todo' in DB
+exports.migrateInProgressToTodo = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    // Only affect tasks user owns or is assigned to
+    const filter = { status: 'in-progress', $or: [ { userId }, { assignedTo: userId } ] };
+    const result = await Task.updateMany(filter, { $set: { status: 'todo' } });
+    res.json({ matched: result.matchedCount || result.n || 0, modified: result.modifiedCount || result.nModified || 0 });
+  } catch (err) {
+    res.status(500).json({ message:'Lỗi migrate', error: err.message });
   }
 };
 
@@ -483,7 +508,7 @@ exports.aiGenerateTasks = async (req, res) => {
       tasks = sanitize(tasks);
       // Strict fill: preserve AI output but fill relative date/time if present in prompt
       if(strict){
-        const rel = resolveRelativeDateTime(prompt);
+  const rel = resolveRelativeDateTime(prompt, req.body?.now);
         const sem = detectSemanticsFromPrompt(prompt);
         if(rel){
           tasks = tasks.map(it => ({
@@ -516,7 +541,7 @@ exports.aiGenerateTasks = async (req, res) => {
       '- Tránh bịa đặt quá mức; nếu thông tin không có, để trống.',
       strict ? '- CHẾ ĐỘ CHÍNH XÁC: Không suy diễn. Giữ nguyên các giá trị thời gian/ngày nếu không được chỉ định rõ. Không tự ý đặt giờ.' : ''
     ].join('\n');
-    const user = `Yêu cầu người dùng:\n${prompt}`;
+  const user = `${req.body?.now? `Hôm nay (theo thiết bị): ${req.body.now}. `:''}Yêu cầu người dùng:\n${prompt}`;
     const extract = (raw)=>{
       try{
         if(!raw) return null; let s=String(raw).trim();
@@ -548,7 +573,7 @@ exports.aiGenerateTasks = async (req, res) => {
         if(tasks && tasks.length){
           let out = tasks;
           if(strict){
-            const rel = resolveRelativeDateTime(prompt);
+            const rel = resolveRelativeDateTime(prompt, req.body?.now);
             const sem = detectSemanticsFromPrompt(prompt);
             if(rel){
               out = out.map(it => ({
