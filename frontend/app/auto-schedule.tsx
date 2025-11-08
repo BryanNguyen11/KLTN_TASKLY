@@ -11,6 +11,7 @@ import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
 import { setOcrScanPayload } from '@/contexts/OcrScanStore';
 import useSpeechToText, { STTLanguage } from '@/hooks/useSpeechToText';
+import { mockTasks, todayISO } from '@/utils/dashboard';
 
 // Optional ImageManipulator to normalize picked images
 let ImageManipulator: any;
@@ -29,8 +30,6 @@ export default function AutoScheduleScreen(){
   const [images, setImages] = useState<PickedImage[]>([]);
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<'events'|'tasks'|'both'>('both');
-  const [devChat, setDevChat] = useState<boolean>(false);
   const [sttLang, setSttLang] = useState<STTLanguage>('vi-VN');
   const [messages, setMessages] = useState<Msg[]>([
     { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch (events) và tác vụ (tasks). Bạn có thể đính kèm ảnh/PDF nếu cần.' }
@@ -171,7 +170,7 @@ export default function AutoScheduleScreen(){
     );
   };
 
-  // Core send routine that works with an explicit text (used by composer and quick prompts)
+  // General chat send: always answer questions and analyze like a chatbot
   const performSend = async (text: string) => {
     const trimmed = text.trim();
     if(!trimmed && images.length===0 && files.length===0){
@@ -184,20 +183,16 @@ export default function AutoScheduleScreen(){
     if(trimmed){ appendMsg({ id: uid, role:'user', text: trimmed }); }
     setBusy(true);
     try{
-      // Collect events from attachments (if any)
+      // Collect text from attachments (if any) to enrich chat context
       let combinedRaw = '';
-      let evItems: any[] = [];
       if(images.length){
         for(const im of images){
           const form = new FormData();
           // @ts-ignore
           form.append('image', { uri: im.uri, name: im.name || 'image.jpg', type: 'image/jpeg' });
-          if(text) form.append('prompt', text);
           const res = await axios.post(`${API_BASE}/api/events/scan-image`, form, authHeader);
           const raw = String(res.data?.raw || '');
           if(raw) combinedRaw += (combinedRaw?'\n\n':'')+raw;
-          const st = res.data?.structured;
-          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
       if(files.length){
@@ -205,72 +200,65 @@ export default function AutoScheduleScreen(){
           const form = new FormData();
           // @ts-ignore
           form.append('file', { uri: f.uri, name: f.name, type: f.mimeType });
-          if(text) form.append('prompt', text);
           const res = await axios.post(`${API_BASE}/api/events/scan-file`, form, authHeader);
           const raw = String(res.data?.raw || '');
           if(raw) combinedRaw += (combinedRaw?'\n\n':'')+raw;
-          const st = res.data?.structured;
-          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
         }
       }
-      // If Dev Chat mode: bypass creation pipelines and call general chat
-      if(trimmed && devChat){
-        try{
-          const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
-          const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt: trimmed, now: todayISO }, { ...authHeader, timeout: 45000 });
-          const answer = String(res.data?.answer || '').trim();
-          appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: answer || 'Mình chưa có câu trả lời cho câu hỏi này.' });
-        }catch(e:any){
-          appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: e?.response?.data?.message || 'Không thể gọi Dev Chat' });
+      // Detect evaluation phrase (case-insensitive, diacritics-insensitive) and build summary automatically
+      const isEval = (()=>{
+        const norm = (s:string)=> s.normalize('NFD').replace(/\p{Diacritic}+/gu,'').toLowerCase();
+        const n = norm(trimmed);
+        return /hay danh gia thoi gian bieu cua toi/.test(n);
+      })();
+      let evalBlock = '';
+      if(isEval){
+        try {
+          const today = todayISO();
+          const [evRes, tkRes] = await Promise.all([
+            axios.get(`${API_BASE}/api/events`, authHeader).catch(()=>({ data: [] } as any)),
+            axios.get(`${API_BASE}/api/tasks`, authHeader).catch(()=>({ data: [] } as any)),
+          ]);
+          const events = Array.isArray(evRes.data) ? evRes.data : [];
+          const tasks = Array.isArray(tkRes.data) ? tkRes.data : mockTasks;
+          const evCount = events.length;
+          const tkCount = tasks.length;
+          const completed = tasks.filter((t:any)=> t.status==='completed' || t.completed).length;
+          const todo = tasks.filter((t:any)=> (t.status||'')==='todo').length;
+          const inprog = tasks.filter((t:any)=> (t.status||'')==='in-progress').length;
+          const weekAhead = (()=>{ const d=new Date(); const arr:number[]=[]; for(let i=0;i<7;i++){ const dd=new Date(d); dd.setDate(dd.getDate()+i); arr.push(dd.getTime()); } return arr; })();
+          const evByDay = new Array(7).fill(0);
+          for(const ev of events){
+            const sd = new Date(ev.date || ev.startDate || today);
+            const idx = weekAhead.findIndex(ts=>{ const dd=new Date(ts); return sd.getFullYear()===dd.getFullYear() && sd.getMonth()===dd.getMonth() && sd.getDate()===dd.getDate(); });
+            if(idx>=0) evByDay[idx]++;
+          }
+          const header = 'Tổng hợp tự động cho đánh giá:';
+          const lines = [
+            header,
+            `- Số lịch: ${evCount}`,
+            `- Số tác vụ: ${tkCount} (Todo: ${todo}, Đang làm: ${inprog}, Hoàn thành: ${completed})`,
+            `- Phân bố lịch 7 ngày tới: ${evByDay.join(', ')}`,
+            '- Mục tiêu: đánh giá cân bằng, quá tải, tồn đọng và đề xuất tối ưu (3-5 gợi ý).'
+          ];
+          evalBlock = lines.join('\n');
+        } catch {
+          evalBlock = 'Không thể tự tổng hợp dữ liệu lịch/tác vụ lúc này.';
         }
-        setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
-        return;
       }
-
-      // Prompt-only or prompt+attachments: run AI per selected mode
-  let aiEvItems: any[] = [];
-  let aiEvFormItems: any[] = [];
-      let aiTkItems: any[] = [];
-      if(trimmed){
-        const doEvents = mode==='events' || mode==='both';
-        const doTasks = mode==='tasks' || mode==='both';
-    const reqs: Promise<any>[] = [];
-  if(doEvents){
-  const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
-  reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
-  reqs.push(axios.post(`${API_BASE}/api/events/ai-generate-form`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
-  }
-  if(doTasks){ const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })(); reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any))); }
-        const results = await Promise.all(reqs);
-        // Map results back according to which were requested
-    let idx = 0;
-    if(doEvents){ const evRes = results[idx++]; aiEvItems = (evRes as any)?.data?.items || []; const evFormRes = results[idx++]; aiEvFormItems = (evFormRes as any)?.data?.items || []; }
-    if(doTasks){ const tkRes = results[idx++]; aiTkItems = (tkRes as any)?.data?.tasks || []; }
+      // Always call general chat endpoint with optional OCR context and evaluation block
+      try{
+        const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+        const parts: string[] = [trimmed];
+        if(evalBlock) parts.push(evalBlock);
+        if(combinedRaw) parts.push('(Trích xuất từ ảnh/tệp)\n'+combinedRaw);
+        const finalPrompt = parts.join('\n\n');
+        const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt: finalPrompt, now: todayISO }, { ...authHeader, timeout: 45000 });
+        const answer = String(res.data?.answer || '').trim();
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: answer || 'Mình chưa có câu trả lời cho câu hỏi này.' });
+      }catch(e:any){
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: e?.response?.data?.message || 'Không thể gọi Chat' });
       }
-      // Merge event candidates: attachments first then AI prompt items
-      let mergedEvents = [...evItems, ...aiEvItems];
-      // Optional transform when both prompt and events present
-      if(trimmed && mergedEvents.length){
-        try{
-          const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
-          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: trimmed, items: mergedEvents, now: todayISO }, authHeader);
-          if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
-        }catch{ /* fallback to mergedEvents */ }
-      }
-  // Respect current mode when presenting results
-  if(mode==='tasks'){ mergedEvents = []; }
-  if(mode==='events'){ aiTkItems = []; }
-  const parts: string[] = [];
-  if(mergedEvents.length) parts.push(`• Lịch gợi ý: ${mergedEvents.length}`);
-  if(aiTkItems.length) parts.push(`• Tác vụ gợi ý: ${aiTkItems.length}`);
-      if(!parts.length){
-        const errMsg = 'Mình chưa tạo được mục nào từ yêu cầu này. Hãy mô tả rõ hơn hoặc thử đính kèm ảnh/PDF.';
-        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: errMsg });
-      } else {
-  const evCount = (aiEvFormItems?.length || 0) || mergedEvents.length;
-  appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, evFormItems: aiEvFormItems, tkItems: aiTkItems } });
-      }
-      // Auto-scroll to bottom
       setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
     }catch(e:any){
       const message = e?.response?.data?.message || e?.message || 'Lỗi không xác định';
@@ -278,6 +266,56 @@ export default function AutoScheduleScreen(){
     }finally{
       setBusy(false);
     }
+  };
+
+  // Build a local summary for evaluation prompt
+  const buildScheduleSummary = async (): Promise<string> => {
+    try{
+      const today = todayISO();
+      const auth = authHeader;
+      const [evRes, tkRes] = await Promise.all([
+        axios.get(`${API_BASE}/api/events`, auth).catch(()=>({ data: [] } as any)),
+        axios.get(`${API_BASE}/api/tasks`, auth).catch(()=>({ data: [] } as any)),
+      ]);
+      const events = Array.isArray(evRes.data) ? evRes.data : [];
+      const tasks = Array.isArray(tkRes.data) ? tkRes.data : mockTasks;
+      const evCount = events.length;
+      const tkCount = tasks.length;
+      const completed = tasks.filter((t:any)=> t.status==='completed' || t.completed).length;
+      const todo = tasks.filter((t:any)=> (t.status||'')==='todo').length;
+      const inprog = tasks.filter((t:any)=> (t.status||'')==='in-progress').length;
+      const weekAhead = (()=>{ const d=new Date(); const arr:number[]=[]; for(let i=0;i<7;i++){ const dd=new Date(d); dd.setDate(d.getDate()+i); arr.push(dd.getTime()); } return arr; })();
+      const evByDay = new Array(7).fill(0);
+      for(const ev of events){
+        const sd = new Date(ev.date || ev.startDate || today);
+        const idx = weekAhead.findIndex(ts=>{ const dd=new Date(ts); return sd.getFullYear()===dd.getFullYear() && sd.getMonth()===dd.getMonth() && sd.getDate()===dd.getDate(); });
+        if(idx>=0) evByDay[idx]++;
+      }
+      const lines = [
+        `Tổng quan:`,
+        `- Số lịch hiện có: ${evCount}`,
+        `- Số tác vụ hiện có: ${tkCount} (Todo: ${todo}, Đang làm: ${inprog}, Hoàn thành: ${completed})`,
+        `- Phân bố lịch 7 ngày tới: ${evByDay.join(', ')}`,
+      ];
+      return lines.join('\n');
+    }catch{
+      return 'Không thể tổng hợp nhanh từ dữ liệu. Hãy đánh giá dựa trên các nguyên tắc tối ưu hoá thời gian chung.';
+    }
+  };
+
+  const onEvaluateSchedule = async () => {
+    const summary = await buildScheduleSummary();
+    const instruction = [
+      'Đánh giá thời gian biểu của tôi:',
+      summary,
+      '',
+      'Yêu cầu:',
+      '- Xác định xem phân bổ có cân bằng (học/làm việc/nghỉ) không.',
+      '- Phát hiện quá tải (quá nhiều lịch trong 1 ngày hoặc dồn sát) và đề xuất giãn/đổi lịch.',
+      '- Kiểm tra tác vụ tồn đọng: ưu tiên, hạn chót, gợi ý kế hoạch xử lý trong 7 ngày.',
+      '- Đưa ra 3-5 đề xuất tối ưu cụ thể và khả thi.',
+    ].join('\n');
+    await performSend(instruction);
   };
 
   // Original composer send uses performSend with current input and clears it
@@ -298,6 +336,79 @@ export default function AutoScheduleScreen(){
     setSttLang(prev => prev === 'vi-VN' ? 'en-US' : 'vi-VN');
   };
 
+
+  // Explicit generation on demand with current prompt and attachments
+  const generateFromCurrent = async (mode: 'events'|'tasks'|'both') => {
+    const trimmed = (prompt || '').trim();
+    if(!trimmed && images.length===0 && files.length===0){
+      Alert.alert('Thiếu dữ liệu','Nhập yêu cầu hoặc đính kèm ảnh/tệp để tạo.');
+      return;
+    }
+    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    setBusy(true);
+    try{
+      // Gather event candidates from attachments
+      let evItems: any[] = [];
+      if(images.length){
+        for(const im of images){
+          const form = new FormData();
+          // @ts-ignore
+          form.append('image', { uri: im.uri, name: im.name || 'image.jpg', type: 'image/jpeg' });
+          const res = await axios.post(`${API_BASE}/api/events/scan-image`, form, authHeader);
+          const st = res.data?.structured;
+          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
+        }
+      }
+      if(files.length){
+        for(const f of files){
+          const form = new FormData();
+          // @ts-ignore
+          form.append('file', { uri: f.uri, name: f.name, type: f.mimeType });
+          const res = await axios.post(`${API_BASE}/api/events/scan-file`, form, authHeader);
+          const st = res.data?.structured;
+          if(st?.kind==='progress-table' && Array.isArray(st.items)) evItems = evItems.concat(st.items);
+        }
+      }
+      let aiEvItems: any[] = [];
+      let aiEvFormItems: any[] = [];
+      let aiTkItems: any[] = [];
+      const doEvents = mode==='events' || mode==='both';
+      const doTasks = mode==='tasks' || mode==='both';
+      const reqs: Promise<any>[] = [];
+      if(trimmed && doEvents){
+        const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+        reqs.push(axios.post(`${API_BASE}/api/events/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
+        reqs.push(axios.post(`${API_BASE}/api/events/ai-generate-form`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
+      }
+      if(trimmed && doTasks){
+        const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+        reqs.push(axios.post(`${API_BASE}/api/tasks/ai-generate`, { prompt: trimmed, now: todayISO }, authHeader).catch(e=>({ error:e } as any)));
+      }
+      const results = await Promise.all(reqs);
+      let idx = 0;
+      if(doEvents){ const evRes = results[idx++]; aiEvItems = (evRes as any)?.data?.items || []; const evFormRes = results[idx++]; aiEvFormItems = (evFormRes as any)?.data?.items || []; }
+      if(doTasks){ const tkRes = results[idx++]; aiTkItems = (tkRes as any)?.data?.tasks || []; }
+      let mergedEvents = [...evItems, ...aiEvItems];
+      if(trimmed && mergedEvents.length){
+        try{
+          const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+          const tr = await axios.post(`${API_BASE}/api/events/ai-transform`, { prompt: trimmed, items: mergedEvents, now: todayISO }, authHeader);
+          if(Array.isArray(tr.data?.items) && tr.data.items.length) mergedEvents = tr.data.items;
+        }catch{}
+      }
+      const parts: string[] = [];
+      if(doEvents && (aiEvFormItems.length || mergedEvents.length)) parts.push(`• Lịch gợi ý: ${(aiEvFormItems.length || mergedEvents.length)}`);
+      if(doTasks && aiTkItems.length) parts.push(`• Tác vụ gợi ý: ${aiTkItems.length}`);
+      if(!parts.length){
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: 'Mình chưa tạo được mục nào từ yêu cầu này. Hãy mô tả rõ hơn hoặc thử đính kèm ảnh/PDF.' });
+      } else {
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: ['Đây là gợi ý của mình:', parts.join('\n'), '', 'Chọn để xem trước và xác nhận tạo.'].filter(Boolean).join('\n'), meta:{ evItems: mergedEvents, evFormItems: aiEvFormItems, tkItems: aiTkItems } });
+      }
+      setTimeout(()=> scrollRef.current?.scrollToEnd({ animated: true }), 60);
+    }catch(e:any){
+      appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: e?.response?.data?.message || 'Không thể tạo gợi ý' });
+    }finally{ setBusy(false); }
+  };
 
   const onPreviewEvents = (items: any[]) => {
     setOcrScanPayload({ raw: '', extracted: {}, structured: items?.length ? { kind:'progress-table', items } as any : undefined, defaultTypeId: typeId? String(typeId): undefined, projectId: projectId? String(projectId): undefined } as any);
@@ -325,25 +436,31 @@ export default function AutoScheduleScreen(){
   <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={12} style={{ flex:1 }}>
         <View style={{ flex:1 }}>
           <ScrollView ref={scrollRef} contentContainerStyle={{ padding:12, paddingBottom:8 }} keyboardShouldPersistTaps='handled'>
-            {/* Mode toggles */}
+            {/* Actions: explicit generation and quick prompt */}
             <View style={[styles.card, { paddingVertical:10, paddingHorizontal:12 }]}> 
-              <Text style={styles.subTitle}>Chế độ tạo</Text>
-              <View style={{ flexDirection:'row', gap:6, flexWrap:'wrap' }}>
-                <Pressable onPress={()=> setMode('events')} style={[styles.toggleBtn, mode==='events' && styles.toggleOn]} accessibilityLabel='Chỉ tạo lịch'>
-                  <Ionicons name='calendar-outline' size={14} color={mode==='events'?'#fff':'#16425b'} />
-                  <Text style={[styles.toggleText, mode==='events' && styles.toggleTextOn]}>Lịch</Text>
+              <Text style={styles.subTitle}>Hành động</Text>
+              <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap' }}>
+                <Pressable onPress={()=> generateFromCurrent('events')} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo lịch từ yêu cầu'>
+                  <Ionicons name='calendar-outline' size={16} color='#fff' />
+                  <Text style={styles.actionText}>Tạo lịch</Text>
                 </Pressable>
-                <Pressable onPress={()=> setMode('tasks')} style={[styles.toggleBtn, mode==='tasks' && styles.toggleOn]} accessibilityLabel='Chỉ tạo tác vụ'>
-                  <Ionicons name='checkmark-done-outline' size={14} color={mode==='tasks'?'#fff':'#16425b'} />
-                  <Text style={[styles.toggleText, mode==='tasks' && styles.toggleTextOn]}>Tác vụ</Text>
+                <Pressable onPress={()=> generateFromCurrent('tasks')} style={[styles.actionBtn, styles.secondary]} accessibilityLabel='Tạo tác vụ từ yêu cầu'>
+                  <Ionicons name='checkmark-done-outline' size={16} color='#16425b' />
+                  <Text style={styles.actionTextAlt}>Tạo tác vụ</Text>
                 </Pressable>
-                <Pressable onPress={()=> setMode('both')} style={[styles.toggleBtn, mode==='both' && styles.toggleOn]} accessibilityLabel='Tạo cả hai'>
-                  <Ionicons name='git-merge-outline' size={14} color={mode==='both'?'#fff':'#16425b'} />
-                  <Text style={[styles.toggleText, mode==='both' && styles.toggleTextOn]}>Cả hai</Text>
+                <Pressable onPress={()=> generateFromCurrent('both')} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo cả lịch và tác vụ'>
+                  <Ionicons name='git-merge-outline' size={16} color='#fff' />
+                  <Text style={styles.actionText}>Tạo cả hai</Text>
                 </Pressable>
-                <Pressable onPress={()=> setDevChat(v=>!v)} style={[styles.toggleBtn, devChat && styles.toggleOn]} accessibilityLabel='Hỏi đáp lập trình'>
-                  <Ionicons name='code-slash-outline' size={14} color={devChat?'#fff':'#16425b'} />
-                  <Text style={[styles.toggleText, devChat && styles.toggleTextOn]}>Dev Chat</Text>
+              </View>
+              <View style={{ marginTop:10, flexDirection:'row', flexWrap:'wrap', gap:8 }}>
+                <Pressable onPress={()=> setPrompt('hãy đánh giá thời gian biểu của tôi')} style={styles.quickChip} accessibilityLabel='Prompt mẫu đánh giá thời gian biểu'>
+                  <Ionicons name='analytics-outline' size={14} color='#1d4ed8' />
+                  <Text style={styles.quickChipText}>hãy đánh giá thời gian biểu của tôi</Text>
+                </Pressable>
+                <Pressable onPress={onEvaluateSchedule} style={styles.quickChip} accessibilityLabel='Gửi đánh giá ngay'>
+                  <Ionicons name='send-outline' size={14} color='#1d4ed8' />
+                  <Text style={styles.quickChipText}>Gửi đánh giá ngay</Text>
                 </Pressable>
               </View>
             </View>
@@ -414,6 +531,9 @@ export default function AutoScheduleScreen(){
 
           {/* Bottom composer */}
           <View style={styles.composer}>
+            <Pressable onPress={onEvaluateSchedule} style={[styles.iconBtn, { backgroundColor:'#dbeafe' }]} accessibilityLabel='Đánh giá thời gian biểu của tôi'>
+              <Ionicons name='analytics-outline' size={18} color='#1d4ed8' />
+            </Pressable>
             <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={18} color='#16425b' /></Pressable>
             <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={18} color='#16425b' /></Pressable>
             <Pressable onPress={onToggleMic} style={[styles.iconBtn, isRecording && { backgroundColor:'rgba(220,38,38,0.1)' }]} accessibilityLabel='Ghi âm'>
@@ -479,6 +599,8 @@ const styles = StyleSheet.create({
   aiBubble:{ alignSelf:'flex-start', backgroundColor:'#fff', borderWidth:1, borderColor:'#e2e8f0' },
   bubbleText:{ fontSize:14, lineHeight:19, color:'#0f172a' },
   actionBtn:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:8, paddingVertical:6, borderRadius:10 },
+  quickChip:{ flexDirection:'row', alignItems:'center', gap:6, paddingHorizontal:10, paddingVertical:8, borderRadius:20, backgroundColor:'#eff6ff', borderWidth:1, borderColor:'#dbeafe' },
+  quickChipText:{ color:'#1d4ed8', fontWeight:'700', fontSize:12 },
   actionTextAlt:{ color:'#16425b', fontWeight:'700', fontSize:12 },
   composer:{ flexDirection:'row', alignItems:'flex-end', paddingHorizontal:8, paddingVertical:6, backgroundColor:'#ffffffee', borderTopWidth:1, borderColor:'#e2e8f0', gap:6 },
   iconBtn:{ width:34, height:34, borderRadius:10, alignItems:'center', justifyContent:'center', backgroundColor:'#e2e8f0' },
