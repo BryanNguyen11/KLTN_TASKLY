@@ -134,6 +134,14 @@ function resolveRelativeDateTime(prompt, baseNowISO){
     }
     const pad2 = (n)=> String(n).padStart(2,'0');
     const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+    // time-of-day fallback keywords
+    const timeOfDayFallback = (()=>{
+      if(/\bsang\b/.test(s)) return '09:00';
+      if(/\btrua\b/.test(s)) return '12:00';
+      if(/\bchieu\b/.test(s)) return '15:00';
+      if(/\btoi\b/.test(s)) return '19:00';
+      return null;
+    })();
     // weekday mapping
     const map = { 2:1, 3:2, 4:3, 5:4, 6:5, 7:6, cn:0 };
     const weekdayNames = { 'thu 2':1, 'thu 3':2, 'thu 4':3, 'thu 5':4, 'thu 6':5, 'thu 7':6, 'chu nhat':0, 'cn':0 };
@@ -164,7 +172,18 @@ function resolveRelativeDateTime(prompt, baseNowISO){
       if(thisWeek && delta===0){ dayOffset = 0; }
       if(!thisWeek && !nextWeek && delta===0 && s.includes('hom nay')){ dayOffset = 0; }
       const target = new Date(base.getFullYear(), base.getMonth(), base.getDate()+dayOffset);
-      return { date: toISO(target), time: hhmm || null };
+      return { date: toISO(target), time: hhmm || timeOfDayFallback || null };
+    }
+    // Relative phrases without explicit weekday (e.g., "ngay mai", "hom nay", "tomorrow")
+    const dayShift = (()=>{
+      if(/(ngay\s*mai|\bmai\b|tomorrow)/.test(s)) return 1;
+      if(/(hom\s*nay|today)/.test(s)) return 0;
+      if(/(ngay\s*kia)/.test(s)) return 2;
+      return null;
+    })();
+    if(dayShift !== null){
+      const target = new Date(now.getFullYear(), now.getMonth(), now.getDate()+dayShift);
+      return { date: toISO(target), time: hhmm || timeOfDayFallback || null };
     }
     // Specific date mentioned already? let callers handle
     return null;
@@ -1546,6 +1565,7 @@ exports.aiGenerateForm = async (req, res) => {
     };
     const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${pad2(n.getMonth()+1)}-${pad2(n.getDate())}`; })();
     const forms = items.map(it => {
+      // If AI provided explicit HH:mm in notes or title (rare), future: parse; for now rely on semantics overlay next
       const { startTime, endTime } = toHHMM(it.from, it.to);
       const base = it.startDate || todayISO;
       // weekday in 1..7, JS conversion handled in helper
@@ -1554,6 +1574,7 @@ exports.aiGenerateForm = async (req, res) => {
       return {
         title: it.title || 'Lịch',
         date,
+        // Preserve explicit time if prompt carried relative time (resolveRelativeDateTime handled before building items)
         startTime,
         endDate: '',
         endTime: endTime || '',

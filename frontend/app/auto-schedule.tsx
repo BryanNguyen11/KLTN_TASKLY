@@ -32,7 +32,7 @@ export default function AutoScheduleScreen(){
   const [busy, setBusy] = useState(false);
   const [sttLang, setSttLang] = useState<STTLanguage>('vi-VN');
   const [messages, setMessages] = useState<Msg[]>([
-    { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch (events) và tác vụ (tasks). Bạn có thể đính kèm ảnh/PDF nếu cần.' }
+    { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch và tác vụ. Bạn có thể đính kèm ảnh/PDF nếu cần.' }
   ]);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
@@ -145,6 +145,72 @@ export default function AutoScheduleScreen(){
 
   const appendMsg = (m: Msg) => setMessages(prev => [...prev, m]);
 
+  // Helpers: diacritics-insensitive normalization
+  const norm = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}+/gu,'').toLowerCase();
+
+  // Detect intent: create a calendar event from prompt (VN + EN variants)
+  const isCreateEventIntent = (text: string) => {
+    const n = norm(text);
+    // Common Vietnamese phrasings and English fallbacks
+    const vn = /(tao|them|lap)\s*(lich|su kien)|\btao lich\b|\bthem lich\b|\btao su kien\b|\bthem su kien\b/;
+    const en = /(create|add)\s+(an?\s+)?(event|calendar)/;
+    return vn.test(n) || en.test(n);
+  };
+
+  // Create event from natural language using backend AI form generator
+  const createEventFromPrompt = async (text: string) => {
+    // 1) Ask AI to convert prompt to a Form-like item (date, startTime, endTime, etc.)
+    const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
+    const gen = await axios.post(`${API_BASE}/api/events/ai-generate-form`, { prompt: text, now: todayISO }, authHeader);
+    const items = Array.isArray(gen.data?.items) ? gen.data.items : [];
+    if(!items.length) throw new Error('AI không suy ra được lịch từ yêu cầu.');
+    const it = items[0];
+    // If the model set periods, but the prompt contains explicit HH:mm (e.g., 9h/09:00), extract and override startTime
+    try{
+      const n = norm(text);
+      const m = n.match(/\b(\d{1,2}):(\d{2})\b/) || n.match(/\b(\d{1,2})h(\d{2})?\b/);
+      if(m){
+        const hh = String(m[1]).padStart(2,'0');
+        const mm = String((m[2]||'00')).padStart(2,'0');
+        it.startTime = `${hh}:${mm}`;
+        // If no endTime, keep empty; user can adjust later
+      } else {
+        // Fallback by time-of-day words
+        if(/\bsang\b/.test(n) && !it.startTime) it.startTime = '09:00';
+        if(/\btrua\b/.test(n) && !it.startTime) it.startTime = '12:00';
+        if(/\bchieu\b/.test(n) && !it.startTime) it.startTime = '15:00';
+        if(/\btoi\b/.test(n) && !it.startTime) it.startTime = '19:00';
+      }
+    }catch{}
+    // 2) Resolve typeId (prefer route param; else pick default type)
+    let chosenTypeId = typeId ? String(typeId) : '';
+    if(!chosenTypeId){
+      try{
+        const res = await axios.get(`${API_BASE}/api/event-types`, authHeader);
+        const list: any[] = Array.isArray(res.data) ? res.data : [];
+        const preferred = list.find(t => t.isDefault) || list[0];
+        if(preferred) chosenTypeId = String(preferred._id);
+      }catch{}
+    }
+    if(!chosenTypeId) throw new Error('Chưa cấu hình loại lịch mặc định.');
+    // 3) Create event
+    const payload: any = {
+      title: (it.title || 'Lịch mới').slice(0,120),
+      typeId: chosenTypeId,
+      date: it.date || todayISO,
+      endDate: it.endDate || '',
+  startTime: it.startTime || '',
+      endTime: it.endTime || '',
+      location: it.location || '',
+      notes: it.notes || '',
+      link: it.link || '',
+    };
+    if(projectId) payload.projectId = String(projectId);
+    if(it.repeat) payload.repeat = it.repeat;
+    const created = await axios.post(`${API_BASE}/api/events`, payload, authHeader);
+    return created.data;
+  };
+
   // Tiny Gemini-like star loader (4-point diamonds pulsing)
   const StarLoader = () => {
     const stars = [0,1,2];
@@ -207,7 +273,6 @@ export default function AutoScheduleScreen(){
       }
       // Detect evaluation phrase (case-insensitive, diacritics-insensitive) and build summary automatically
       const isEval = (()=>{
-        const norm = (s:string)=> s.normalize('NFD').replace(/\p{Diacritic}+/gu,'').toLowerCase();
         const n = norm(trimmed);
         return /hay danh gia thoi gian bieu cua toi/.test(n);
       })();
@@ -246,11 +311,25 @@ export default function AutoScheduleScreen(){
           evalBlock = 'Không thể tự tổng hợp dữ liệu lịch/tác vụ lúc này.';
         }
       }
+      // If prompt asks to create an event, do it first (and still chat afterwards)
+      let createdEvent: any = null;
+      if(isCreateEventIntent(trimmed)){
+        try{
+          const ev = await createEventFromPrompt(trimmed);
+          createdEvent = ev;
+          const when = [ev.date, ev.startTime && ` lúc ${ev.startTime}`].filter(Boolean).join('');
+          appendMsg({ id:`a_${Date.now()}_created`, role:'assistant', text: `Đã tạo lịch: “${ev.title}”${when ? ` (${when})` : ''}.`, meta: { evItems: undefined, evFormItems: undefined, tkItems: undefined, ...(ev? { createdEventId: String(ev._id||ev.id||'') , createdEventDate: ev.date || '' } : {}) } as any });
+        }catch(e:any){
+          appendMsg({ id:`a_${Date.now()}_create_fail`, role:'assistant', text: e?.response?.data?.message || e?.message || 'Không thể tạo lịch từ yêu cầu này.' });
+        }
+      }
+
       // Always call general chat endpoint with optional OCR context and evaluation block
       try{
         const todayISO = (()=>{ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; })();
         const parts: string[] = [trimmed];
         if(evalBlock) parts.push(evalBlock);
+        if(createdEvent){ parts.push(`(Hệ thống: Đã tạo lịch “${createdEvent.title}” vào ${createdEvent.date}${createdEvent.startTime? ` lúc ${createdEvent.startTime}`:''}).`); }
         if(combinedRaw) parts.push('(Trích xuất từ ảnh/tệp)\n'+combinedRaw);
         const finalPrompt = parts.join('\n\n');
         const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt: finalPrompt, now: todayISO }, { ...authHeader, timeout: 45000 });
@@ -454,13 +533,9 @@ export default function AutoScheduleScreen(){
                 </Pressable>
               </View>
               <View style={{ marginTop:10, flexDirection:'row', flexWrap:'wrap', gap:8 }}>
-                <Pressable onPress={()=> setPrompt('hãy đánh giá thời gian biểu của tôi')} style={styles.quickChip} accessibilityLabel='Prompt mẫu đánh giá thời gian biểu'>
+                <Pressable onPress={onEvaluateSchedule} style={styles.quickChip} accessibilityLabel='Đánh giá thời gian biểu của tôi'>
                   <Ionicons name='analytics-outline' size={14} color='#1d4ed8' />
-                  <Text style={styles.quickChipText}>hãy đánh giá thời gian biểu của tôi</Text>
-                </Pressable>
-                <Pressable onPress={onEvaluateSchedule} style={styles.quickChip} accessibilityLabel='Gửi đánh giá ngay'>
-                  <Ionicons name='send-outline' size={14} color='#1d4ed8' />
-                  <Text style={styles.quickChipText}>Gửi đánh giá ngay</Text>
+                  <Text style={styles.quickChipText}>Đánh giá thời gian biểu của tôi</Text>
                 </Pressable>
               </View>
             </View>
@@ -517,6 +592,27 @@ export default function AutoScheduleScreen(){
                         <Text style={styles.actionTextAlt}>Xem trước tác vụ</Text>
                       </Pressable>
                     )}
+                  </View>
+                ) : null}
+                {m.role==='assistant' && (m as any)?.meta?.createdEventId ? (
+                  <View style={{ flexDirection:'row', gap:8, marginTop:8 }}>
+                    <Pressable style={[styles.actionBtn, styles.primary]} onPress={()=> {
+                      const id = (m as any).meta.createdEventId as string; const d = (m as any).meta.createdEventDate as string|undefined;
+                      router.push({ pathname:'/create-calendar', params:{ editId: id, occDate: d || todayISO() } });
+                    }}>
+                      <Ionicons name='create-outline' size={16} color='#fff' />
+                      <Text style={styles.actionText}>Sửa lịch</Text>
+                    </Pressable>
+                    <Pressable style={[styles.actionBtn, styles.secondary]} onPress={async ()=>{
+                      try{
+                        const id = (m as any).meta.createdEventId as string;
+                        await axios.delete(`${API_BASE}/api/events/${id}`, authHeader);
+                        Alert.alert('Đã xoá','Lịch vừa tạo đã được xoá.');
+                      }catch(e:any){ Alert.alert('Không thể xoá', e?.response?.data?.message || e?.message || ''); }
+                    }}>
+                      <Ionicons name='trash-outline' size={16} color='#16425b' />
+                      <Text style={styles.actionTextAlt}>Xoá</Text>
+                    </Pressable>
                   </View>
                 ) : null}
               </View>

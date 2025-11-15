@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, DeviceEventEmitter, Modal, Alert, ScrollView, TextInput, Platform, Dimensions } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Notifications from 'expo-notifications';
@@ -50,6 +50,8 @@ export default function DashboardScreen() {
   // We'll introduce selectedDateISO, and dynamic generators for week and month views.
   const { user, token, shouldSimulatePush, pushToken } = useAuth();
   const router = useRouter();
+  // Use a safe initial today ISO for early state initializers
+  const initialTodayISO = toLocalISODate(new Date());
   const [tasks, setTasks] = useState<Task[]>([]);
   type RepeatRule = { frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'; endMode?: 'never' | 'onDate' | 'after'; endDate?: string; count?: number };
   type EventItem = { id:string; title:string; date:string; endDate?:string; startTime?:string; endTime?:string; location?:string; repeat?: RepeatRule; projectId?: string; notes?: string };
@@ -122,6 +124,52 @@ export default function DashboardScreen() {
   };
   const [socket, setSocket] = useState<any | null>(null); // using any to bypass type mismatch; can refine with proper Socket type
   const [projectSelectedTab, setProjectSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
+  // Project-scoped calendar anchor (do not affect global)
+  const [projSelectedDateISO, setProjSelectedDateISO] = useState<string>(initialTodayISO);
+  // Inline compute project week to avoid hoisting issues
+  const projWeekISO = useMemo(()=>{
+    const anchor = new Date(projSelectedDateISO + 'T00:00:00');
+    const day = anchor.getDay(); // 0 Sun
+    const mondayOffset = (day === 0 ? -6 : 1 - day);
+    const start = new Date(anchor);
+    start.setDate(anchor.getDate() + mondayOffset);
+    const arr: string[] = [];
+    for(let i=0;i<7;i++){
+      const d = new Date(start);
+      d.setDate(start.getDate()+i);
+      arr.push(toLocalISODate(d));
+    }
+    return arr;
+  }, [projSelectedDateISO]);
+  const [projMonthDate, setProjMonthDate] = useState<Date>(new Date());
+  const projMonthTitle = useMemo(()=>{
+    const m = projMonthDate.getMonth()+1; const y = projMonthDate.getFullYear();
+    return `${m.toString().padStart(2,'0')}/${y}`;
+  }, [projMonthDate]);
+  const projPrevWeek = () => setProjSelectedDateISO(prev => addDaysISO(prev, -7));
+  const projNextWeek = () => setProjSelectedDateISO(prev => addDaysISO(prev, 7));
+  const projPrevMonth = () => setProjMonthDate(d => new Date(d.getFullYear(), d.getMonth()-1, 1));
+  const projNextMonth = () => setProjMonthDate(d => new Date(d.getFullYear(), d.getMonth()+1, 1));
+  const projMonthDays = useMemo(()=>{
+    const first = new Date(projMonthDate.getFullYear(), projMonthDate.getMonth(), 1);
+    const last = new Date(projMonthDate.getFullYear(), projMonthDate.getMonth()+1, 0);
+    const startOffset = (first.getDay()+6)%7; // Mon=0
+    const total = startOffset + last.getDate();
+    const rows = Math.ceil(total/7);
+    const days: string[] = [];
+    for(let r=0;r<rows;r++){
+      for(let c=0;c<7;c++){
+        const idx = r*7 + c - startOffset + 1;
+        if(idx>=1 && idx<=last.getDate()){
+          const iso = `${projMonthDate.getFullYear()}-${String(projMonthDate.getMonth()+1).padStart(2,'0')}-${String(idx).padStart(2,'0')}`;
+          days.push(iso);
+        } else {
+          days.push('');
+        }
+      }
+    }
+    return days;
+  }, [projMonthDate]);
   const [celebrateId, setCelebrateId] = useState<string|null>(null);
   // Notifications (global)
   const { addNotification, addMany, upsertById, unreadCount, removeById } = useNotifications() as any;
@@ -148,19 +196,16 @@ export default function DashboardScreen() {
     if (Platform.OS === 'web') return; // skip web
     // Only simulate when explicitly allowed by auth context (no valid remote push token)
     if (!shouldSimulatePush) return;
-    const ok = await ensurePermission();
-    if (!ok) return;
-    // simple throttle to avoid spamming same item repeatedly within 6s
     const now = Date.now();
     const key = throttleKey || `${title}|${body||''}`;
     const last = lastNotiRef.current[key] || 0;
-    if (now - last < 6000) return;
-    lastNotiRef.current[key] = now;
+    if (now - last < 6000) return; // throttle
     try {
       await Notifications.scheduleNotificationAsync({
         content: { title, body: body || '', sound: 'default', data },
         trigger: null
       });
+      lastNotiRef.current[key] = now;
     } catch {}
   };
 
@@ -175,21 +220,23 @@ export default function DashboardScreen() {
       }
       await Notifications.scheduleNotificationAsync({
         content: { title, body: body || '', sound: 'default', data },
-        trigger: null,
+        trigger: null
       });
     } catch {}
   };
 
+  // Auto-dismiss toast
   useEffect(()=>{
-    if(toast){
-      const t = setTimeout(()=> setToast(null), 1800);
-      return () => clearTimeout(t);
-    }
-  },[toast]);
+    if(!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
 
+  // Deleted tasks cache and timers for undo
   const pendingDeletes = React.useRef<{[k:string]:ReturnType<typeof setTimeout>}>({});
-  const cacheDeleted = React.useRef<{[k:string]:Task}>({});
-  const performDelete = (id:string) => {
+  const cacheDeleted = React.useRef<Record<string, Task>>({});
+
+  function performDelete(id: string) {
     if(!token) return;
     const target = tasks.find(t=>t.id===id);
     if(!target) return;
@@ -203,7 +250,7 @@ export default function DashboardScreen() {
       finally { delete cacheDeleted.current[id]; delete pendingDeletes.current[id]; }
     }, 2500);
     pendingDeletes.current[id] = timeout;
-  };
+  }
 
   const handleDelete = (id:string) => {
     setShowActions(false);
@@ -214,7 +261,6 @@ export default function DashboardScreen() {
   };
 
   const undoLastDelete = () => {
-    // restore most recent
     const ids = Object.keys(cacheDeleted.current);
     if(!ids.length) return;
     const lastId = ids[ids.length-1];
@@ -223,6 +269,63 @@ export default function DashboardScreen() {
     delete cacheDeleted.current[lastId];
     setTasks(prev => [task, ...prev]);
     setToast('Đã hoàn tác');
+  };
+
+  // Enhanced task chip for project mini-dashboard (shows richer metadata than global small chip)
+  // Fields: importance color dot, title, time range or 'Cả ngày', importance badge, progress %, due badge if soon or multi-day.
+  const EnhancedProjectTaskChip = ({ t, occDate, onPress }: { t: Task; occDate: string; onPress?: () => void }) => {
+    const dueSoonDays = (() => {
+      if(!t.endDate) return null;
+      const today = toLocalISODate(new Date());
+      if(t.status==='completed') return null;
+      const diff = diffDays(today, t.endDate);
+      if(diff < 0) return null; // past
+      if(diff <= 7) return diff; // within a week
+      return null;
+    })();
+    const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.startTime ? t.startTime : (t.time || ''));
+    const isAllDay = !timeText;
+    const hasSubs = (t.subTasks||[]).length>0;
+    const progressPct = hasSubs ? (t.completionPercent||0) : null;
+    return (
+      <Pressable onPress={onPress} style={[styles.taskChipEnhanced, t.completed && { opacity:0.55 }]}>        
+        <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+        <View style={{ flex:1 }}>
+          <Text style={[styles.taskChipEnhancedTitle, t.completed && styles.taskTitleDone]} numberOfLines={2}>{t.title}</Text>
+          <View style={{ flexDirection:'row', alignItems:'center', flexWrap:'wrap', gap:6, marginTop:4 }}>
+            {timeText ? (
+              <View style={styles.metaSmallRow}>
+                <Ionicons name='time-outline' size={11} color='#2f6690' />
+                <Text style={styles.taskChipEnhancedMeta}>{timeText}</Text>
+              </View>
+            ) : (
+              <View style={styles.metaSmallRow}><Ionicons name='sunny-outline' size={11} color='#2f6690' /><Text style={styles.taskChipEnhancedMeta}>Cả ngày</Text></View>
+            )}
+            {t.importance && (
+              <Text style={[styles.importanceBadge, t.importance==='high' && styles.importanceHigh, t.importance==='medium' && styles.importanceMed]}>{t.importance==='high'?'Quan trọng': t.importance==='medium'?'Trung bình':'Thấp'}</Text>
+            )}
+            {progressPct !== null && (
+              <View style={styles.metaSmallRow}>
+                <Ionicons name='list-outline' size={11} color='#2f6690' />
+                <Text style={styles.taskChipEnhancedMeta}>{progressPct}%</Text>
+              </View>
+            )}
+            {dueSoonDays !== null && (
+              <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{dueSoonDays===0? 'Hôm nay' : `Còn ${dueSoonDays}d`}</Text></View>
+            )}
+            {t.endDate && t.date && t.endDate !== t.date && (
+              <View style={styles.metaSmallRow}>
+                <Ionicons name='calendar-outline' size={11} color='#607d8b' />
+                <Text style={styles.taskChipEnhancedMeta}>{fmtDM(t.date!)}–{fmtDM(t.endDate!)}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+        <Pressable onPress={()=> toggleTask(t.id)} hitSlop={6} style={[styles.checkCircleSmall, t.completed && styles.checkCircleSmallDone]}>
+          {t.completed && <Ionicons name='checkmark' size={12} color='#fff' />}
+        </Pressable>
+      </Pressable>
+    );
   };
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
@@ -2045,135 +2148,188 @@ export default function DashboardScreen() {
                     </Pressable>
                   </View>
                   {/* Project view content */}
-                  {projectSelectedTab === 'Hôm nay' && (
-                    (()=>{
-                      const iso = todayISO;
-                      const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
-                      const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
-                      return (
-                        <View style={{ marginTop:12 }}>
-                          <Text style={{ fontSize:13, fontWeight:'700', color:'#16425b', marginBottom:6 }}>Hôm nay</Text>
+                  {projectSelectedTab === 'Hôm nay' && (()=>{
+                    const iso = todayISO;
+                    const dayEvents = events.filter(ev => (ev.projectId===projId) && occursOnDate(ev as any, iso) && matchesQueryEvent(ev));
+                    const dayTasks = tasks.filter(t => ((t as any).projectId===projId || (t as any).type==='group') && !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t));
+                    return (
+                      <View style={{ marginTop:12 }}>
+                        <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                          <Text style={{ fontSize:13, fontWeight:'700', color:'#16425b' }}>Hôm nay</Text>
+                          <Text style={{ fontSize:11, color:'#607d8b' }}>{dayEvents.length} lịch • {dayTasks.length} tác vụ</Text>
+                        </View>
+                        {dayEvents.length>0 && (
                           <View style={styles.eventList}>
                             {dayEvents.map((ev, idx)=> (
-                              <View key={ev.id+idx} style={styles.eventChip}>
+                              <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ editId: ev.id, occDate: iso } }); }}>
                                 <View style={styles.eventColorBar} />
                                 <View style={{ flex:1 }}>
                                   <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
-                                  {ev.projectId && (
-                                    <View style={styles.eventMetaRow}>
-                                      <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
-                                      <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
-                                    </View>
-                                  )}
                                   {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
                                 </View>
-                              </View>
-                            ))}
-                          </View>
-                          <View style={styles.dayTaskChips}>
-                            {dayTasks.map((t, idx)=> (
-                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { const occ = iso; setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: occ } }); }}>
-                                <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                                <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                               </Pressable>
                             ))}
                           </View>
-                          {dayEvents.length===0 && dayTasks.length===0 && <Text style={styles.emptyHint}>Không có mục trong hôm nay</Text>}
+                        )}
+                        {dayTasks.length>0 && (
+                          <View style={{ gap:8, marginTop:10 }}>
+                            {dayTasks.map(t => (
+                              <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }} />
+                            ))}
+                          </View>
+                        )}
+                        {dayEvents.length===0 && dayTasks.length===0 && <Text style={styles.emptyHint}>Không có mục trong hôm nay</Text>}
+                      </View>
+                    );
+                  })()}
+                  {projectSelectedTab === 'Tuần' && (()=>{
+                    const fmt = (iso:string) => { const [y,m,d]=iso.split('-'); return `${d}/${m}`; };
+                    const title = `${fmt(projWeekISO[0])} – ${fmt(projWeekISO[6])}`;
+                    return (
+                      <View style={{ marginTop:8 }}>
+                        <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                          <Pressable onPress={projPrevWeek} style={styles.monthNav}><Ionicons name='chevron-back' size={18} color='#16425b' /></Pressable>
+                          <Text style={styles.monthTitle}>{title}</Text>
+                          <Pressable onPress={projNextWeek} style={styles.monthNav}><Ionicons name='chevron-forward' size={18} color='#16425b' /></Pressable>
                         </View>
-                      );
-                    })()
-                  )}
-                  {projectSelectedTab !== 'Hôm nay' && (
-                    (()=>{
-                      const week = projectSelectedTab==='Tuần' ? weekISO : [];
-                      const daysToShow = projectSelectedTab==='Tuần' ? week : [selectedDateISO];
-                      return (
-                        <View style={{ marginTop:8 }}>
-                          {daysToShow.map((iso, i)=>{
-                            const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
-                            const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
-                            const w = weekdayVNFromISO(iso);
-                            const [y,m,d] = iso.split('-');
-                            return (
-                              <View key={iso} style={[styles.weekDayCard,{ marginBottom:8 }]}>
-                                <View style={styles.weekDayHeader}>
-                                  <Text style={styles.weekDayTitle}>{w}, {d}/{m}</Text>
-                                  <View style={styles.countsRow}>
-                                    <View style={[styles.countPill, styles.eventsCountPill]}>
-                                      <Ionicons name='calendar-outline' size={12} color='#2f6690' />
-                                      <Text style={[styles.countText, styles.eventsCountText]}>{dayEvents.length}</Text>
-                                    </View>
-                                    <View style={[styles.countPill, styles.tasksCountPill]}>
-                                      <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
-                                      <Text style={[styles.countText, styles.tasksCountText]}>{dayTasks.length}</Text>
-                                    </View>
+                        {projWeekISO.map((iso)=>{
+                          const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                          const dayTasks = projTasksAll.filter(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(iso)===filterWeekday) && isISOInRange(iso));
+                          const w = weekdayVNFromISO(iso);
+                          const [y,m,d] = iso.split('-');
+                          return (
+                            <View key={iso} style={[styles.weekDayCard,{ marginBottom:8 }]}> 
+                              <View style={styles.weekDayHeader}>
+                                <Text style={styles.weekDayTitle}>{w}, {d}/{m}</Text>
+                                <View style={styles.countsRow}>
+                                  <View style={[styles.countPill, styles.eventsCountPill]}>
+                                    <Ionicons name='calendar-outline' size={12} color='#2f6690' />
+                                    <Text style={[styles.countText, styles.eventsCountText]}>{dayEvents.length}</Text>
+                                  </View>
+                                  <View style={[styles.countPill, styles.tasksCountPill]}>
+                                    <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
+                                    <Text style={[styles.countText, styles.tasksCountText]}>{dayTasks.length}</Text>
                                   </View>
                                 </View>
-                                {dayEvents.length>0 ? (
+                              </View>
+                              {dayEvents.length>0 ? (
+                                <View style={styles.eventList}>
+                                  {dayEvents.map((ev, idx)=> (
+                                    <View key={ev.id+idx} style={styles.eventChip}>
+                                      <View style={styles.eventColorBar} />
+                                      <View style={{ flex:1 }}>
+                                        <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
+                                        {ev.projectId && (
+                                          <View style={styles.eventMetaRow}>
+                                            <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
+                                            <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
+                                          </View>
+                                        )}
+                                        {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
+                                      </View>
+                                    </View>
+                                  ))}
+                                </View>
+                              ) : (
+                                <Text style={styles.emptyHint}>Không có lịch</Text>
+                              )}
+                              {dayTasks.length>0 ? (
+                                <View style={styles.dayTaskChips}>
+                                  {dayTasks.map((t, idx)=> (
+                                    <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
+                                      <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                      <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                    </Pressable>
+                                  ))}
+                                </View>
+                              ) : (
+                                <Text style={styles.emptyHint}>Không có tác vụ</Text>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  })()}
+
+                  {projectSelectedTab === 'Tháng' && (()=>{
+                    const weekLabels = ['T2','T3','T4','T5','T6','T7','CN'];
+                    const days = projMonthDays;
+                    const rows: string[][] = [];
+                    for(let i=0;i<days.length;i+=7){ rows.push(days.slice(i,i+7)); }
+                    return (
+                      <View style={{ marginTop:8 }}>
+                        <View style={styles.monthHeader}>
+                          <Pressable onPress={projPrevMonth} style={styles.monthNav}><Ionicons name='chevron-back' size={18} color='#16425b' /></Pressable>
+                          <Text style={styles.monthTitle}>{projMonthTitle}</Text>
+                          <Pressable onPress={projNextMonth} style={styles.monthNav}><Ionicons name='chevron-forward' size={18} color='#16425b' /></Pressable>
+                        </View>
+                        <View style={styles.weekLabels}>
+                          {weekLabels.map(w => (<Text key={w} style={styles.weekLabel}>{w}</Text>))}
+                        </View>
+                        {rows.map((row, rIdx) => (
+                          <View key={`r${rIdx}`} style={styles.monthRow}>
+                            {row.map((iso, cIdx) => {
+                              if(!iso) return <View key={`e${rIdx}_${cIdx}`} style={styles.monthCellEmpty} />;
+                              const isActive = iso === projSelectedDateISO;
+                              const [y,m,d] = iso.split('-');
+                              const dayEvents = projEventsAll.filter(ev => occursOnDate(ev as any, iso) && matchesQueryEvent(ev));
+                              const hasItems = dayEvents.length > 0 || projTasksAll.some(t => !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t));
+                              return (
+                                <Pressable key={iso} onPress={()=> setProjSelectedDateISO(iso)} style={[styles.monthCell, isActive && styles.monthCellActive]}>
+                                  <Text style={[styles.monthCellText, isActive && styles.monthCellTextActive]}>{d}</Text>
+                                  <View style={styles.dotSmallWrapper}>
+                                    {hasItems && <View style={[styles.dotSmall, isActive && styles.dotSmallActive]} />}
+                                  </View>
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        ))}
+                        {/* Day details for selected date inside month view */}
+                        <View style={{ marginTop:12 }}>
+                          {(() => {
+                            const iso = projSelectedDateISO;
+                            const dayEvents = events.filter(ev => (ev.projectId===projId) && occursOnDate(ev as any, iso) && matchesQueryEvent(ev));
+                            const dayTasks = tasks.filter(t => ((t as any).projectId===projId || (t as any).type==='group') && !t.completed && occursTaskOnDate(t, iso) && matchesQueryTask(t));
+                            const w = weekdayVNFromISO(iso); const [y,m,d] = iso.split('-');
+                            return (
+                              <View style={[styles.weekDayCard,{ marginBottom:8 }]}>                              
+                                <View style={styles.weekDayHeader}>
+                                  <Text style={styles.weekDayTitle}>{w}, {d}/{m}</Text>
+                                  <Text style={{ fontSize:11, color:'#607d8b' }}>{dayEvents.length} lịch • {dayTasks.length} tác vụ</Text>
+                                </View>
+                                {dayEvents.length>0 && (
                                   <View style={styles.eventList}>
                                     {dayEvents.map((ev, idx)=> (
-                                      <View key={ev.id+idx} style={styles.eventChip}>
+                                      <Pressable key={ev.id+idx} style={styles.eventChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ editId: ev.id, occDate: iso } }); }}>
                                         <View style={styles.eventColorBar} />
                                         <View style={{ flex:1 }}>
                                           <Text style={styles.eventChipTitle} numberOfLines={1}>{ev.title}</Text>
-                                          {ev.projectId && (
-                                            <View style={styles.eventMetaRow}>
-                                              <Ionicons name='briefcase-outline' size={14} color='#2f6690' />
-                                              <Text style={styles.groupBadge}>{projectNameById[ev.projectId] || 'Dự án'}</Text>
-                                            </View>
-                                          )}
                                           {!!ev.startTime && <Text style={styles.eventChipTime}>{ev.startTime}{ev.endTime? `–${ev.endTime}`:''}</Text>}
                                         </View>
-                                      </View>
-                                    ))}
-                                  </View>
-                                ) : (
-                                  <Text style={styles.emptyHint}>Không có lịch</Text>
-                                )}
-                                {dayTasks.length>0 ? (
-                                  <View style={styles.dayTaskChips}>
-                                    {dayTasks.map((t, idx)=> (
-                                      <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
-                                        <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                                        <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                       </Pressable>
                                     ))}
                                   </View>
-                                ) : (
-                                  <Text style={styles.emptyHint}>Không có tác vụ</Text>
                                 )}
+                                {dayTasks.length>0 && (
+                                  <View style={{ gap:8, marginTop:10 }}>
+                                    {dayTasks.map(t => (
+                                      <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }} />
+                                    ))}
+                                  </View>
+                                )}
+                                {dayEvents.length===0 && dayTasks.length===0 && <Text style={styles.emptyHint}>Không có mục</Text>}
                               </View>
                             );
-                          })}
+                          })()}
                         </View>
-                      );
-                    })()
-                  )}
-                  {/* Project analytics & charts */}
-                  <ProjectInsights project={activeProject as any} tasks={tasks as any} events={events as any} />
-                </View>
-              );
-            })()}
-            {!!activeProject.description && !editingProject && <Text style={styles.projectDescr}>{activeProject.description}</Text>}
-            {(() => {
-              const userId = (user as any)?._id || (user as any)?.id;
-              const isAdmin = activeProject.owner === userId || (activeProject.members||[]).some((m:any)=> m.user===userId && m.role==='admin');
-              if(!isAdmin) return null;
-              return (
-                <View style={{ marginBottom:12 }}>
-                  {!editingProject ? (
-                    <Pressable onPress={()=>{ 
-                      const toDDMMYYYY = (iso?: string) => { if(!iso) return ''; const [y,m,d] = String(iso).split('-'); if(!y||!m||!d) return ''; return `${d}/${m}/${y}`; };
-                      setEditingProject(true); 
-                      setProjName(activeProject.name||''); 
-                      setProjDescr(activeProject.description||''); 
-                      setProjStart(toDDMMYYYY((activeProject as any).startDate)); 
-                      setProjDue(toDDMMYYYY((activeProject as any).dueDate)); 
-                    }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b', alignSelf:'flex-start', marginBottom:10 }]}>
-                      <Ionicons name='create-outline' size={16} color='#fff' />
-                      <Text style={styles.inviteAcceptText}>Chỉnh sửa thông tin</Text>
-                    </Pressable>
-                  ) : (
+                      </View>
+                    );
+                  })()}
+
+                  {/* Edit box (project settings inline when editing) */}
+                  {editingProject && (
                     <View style={styles.editBox}>
                       <Text style={styles.editLabel}>Tên dự án</Text>
                       <TextInput style={styles.editInput} value={projName} onChangeText={setProjName} placeholder='Nhập tên dự án' />
@@ -2594,4 +2750,13 @@ const styles = StyleSheet.create({
   eventMetaRow:{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:2 },
   allDayPill:{ backgroundColor:'#e0f2fe', borderColor:'#38bdf8', borderWidth:1, paddingHorizontal:8, paddingVertical:2, borderRadius:8 },
   allDayPillText:{ color:'#0369a1', fontSize:12, fontWeight:'600' },
+  // Enhanced project task chip styles
+  taskChipEnhanced:{ flexDirection:'row', alignItems:'flex-start', gap:10, backgroundColor:'rgba(217,220,214,0.55)', paddingHorizontal:12, paddingVertical:10, borderRadius:14 },
+  taskChipEnhancedTitle:{ color:'#16425b', fontSize:13, fontWeight:'600', lineHeight:18 },
+  taskChipEnhancedMeta:{ color:'#607d8b', fontSize:11 },
+  metaSmallRow:{ flexDirection:'row', alignItems:'center', gap:4 },
+  dueSoonPill:{ backgroundColor:'#dc2626', paddingHorizontal:8, paddingVertical:2, borderRadius:10 },
+  dueSoonPillText:{ color:'#fff', fontSize:10, fontWeight:'700' },
+  checkCircleSmall:{ width:20, height:20, borderRadius:10, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center' },
+  checkCircleSmallDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
 });
