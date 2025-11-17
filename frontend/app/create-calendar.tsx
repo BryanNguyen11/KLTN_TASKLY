@@ -30,6 +30,8 @@ interface FormState {
   notes: string;
   link: string;
   props: Record<string, string>;
+  // All-day event: when true, omit startTime/endTime and disable time pickers
+  isAllDay?: boolean;
   isRepeating?: boolean;
   repeat?: {
     frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
@@ -54,6 +56,14 @@ export default function CreateEventScreen(){
   };
 
   const today = toLocalISODate(new Date());
+  const weekdayVN = (iso: string) => {
+    try {
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(String(iso||''))) return '';
+      const d = new Date(String(iso)+'T00:00:00');
+      const w = d.getDay();
+      return w === 0 ? 'Chủ nhật' : `Thứ ${w + 1}`;
+    } catch { return ''; }
+  };
   const [saving, setSaving] = useState(false);
   const [types, setTypes] = useState<EventTypeDoc[]>([]);
   const [loadingTypes, setLoadingTypes] = useState(false);
@@ -72,6 +82,7 @@ export default function CreateEventScreen(){
     notes: '',
     link: '',
     props: {},
+    isAllDay: false, // Default value for all-day event
     isRepeating: false,
     repeat: undefined,
     reminders: [],
@@ -151,6 +162,7 @@ export default function CreateEventScreen(){
           notes: e.notes || '',
           link: e.link || '',
           props: e.props || {},
+          isAllDay: (!e.startTime && !e.endTime) ? true : false,
           isRepeating: !!e.repeat,
           repeat: e.repeat || undefined,
         }));
@@ -200,7 +212,7 @@ export default function CreateEventScreen(){
         if(showPicker.field === 'repeatEndDate'){
           setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
         } else if(showPicker.field === 'endDate'){
-          setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
+          setForm(prev => ({ ...prev, endDate: iso, ...(prev.isAllDay ? {} : { endTime: prev.endTime || '23:59' }) }));
         } else setForm(prev => ({ ...prev, date: iso }));
       } else {
         const hh = selected.getHours().toString().padStart(2,'0');
@@ -217,7 +229,7 @@ export default function CreateEventScreen(){
         if(showPicker.field === 'repeatEndDate'){
           setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{ frequency:'weekly' }), endMode: 'onDate', endDate: iso } }));
         } else if(showPicker.field === 'endDate'){
-          setForm(prev => ({ ...prev, endDate: iso, endTime: prev.endTime || '23:59' }));
+          setForm(prev => ({ ...prev, endDate: iso, ...(prev.isAllDay ? {} : { endTime: prev.endTime || '23:59' }) }));
         } else setForm(prev => ({ ...prev, date: iso }));
       } else {
         const hh = tempDate.getHours().toString().padStart(2,'0');
@@ -236,10 +248,10 @@ export default function CreateEventScreen(){
       if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
       else {
         if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
-        if(form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+        if(!form.isAllDay && form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
       }
     } else {
-      if(form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+      if(!form.isAllDay && form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
     }
     setErrors(newErr);
   }, [form.date, form.endDate, form.startTime, form.endTime]);
@@ -252,9 +264,9 @@ export default function CreateEventScreen(){
     if(form.endDate){
       if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
       if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
-      if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+      if(!form.isAllDay && form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
     } else {
-      if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+      if(!form.isAllDay && form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
     }
     setSaving(true);
     const payload: any = {
@@ -262,8 +274,8 @@ export default function CreateEventScreen(){
       typeId: form.typeId,
       date: form.date,
       endDate: form.endDate || undefined,
-      startTime: form.startTime,
-      endTime: form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined),
+      startTime: form.isAllDay ? undefined : form.startTime,
+      endTime: form.isAllDay ? undefined : (form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined)),
       location: form.location || undefined,
       notes: form.notes || undefined,
       link: form.link || undefined,
@@ -595,8 +607,8 @@ Lý do: ${reason}` : message);
             </View>
             <View style={[styles.field, styles.half]}>
               <Text style={styles.label}>Giờ bắt đầu</Text>
-              <Pressable onPress={()=>openTime('startTime')} style={[styles.pickerBtn, errors.start && styles.pickerBtnError]}>
-                <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{form.startTime}</Text>
+              <Pressable onPress={()=>!form.isAllDay && openTime('startTime')} disabled={!!form.isAllDay} style={[styles.pickerBtn, (errors.start && !form.isAllDay) && styles.pickerBtnError, !!form.isAllDay && { opacity:0.5 }]}>
+                <Text style={[styles.pickerText, (errors.start && !form.isAllDay) && styles.pickerTextError]}>{form.isAllDay? '--:--' : form.startTime}</Text>
               </Pressable>
             </View>
         </View>
@@ -610,10 +622,15 @@ Lý do: ${reason}` : message);
             </View>
             <View style={[styles.field, styles.half]}>
               <Text style={styles.label}>Giờ kết thúc</Text>
-              <Pressable onPress={()=> openTime('endTime')} disabled={!form.endDate} style={[styles.pickerBtn, (!form.endDate || errors.end) && styles.pickerBtnError, !form.endDate && { opacity:0.5 }]}>
-                <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endTime || (form.endDate? '23:59' : '--:--')}</Text>
+              <Pressable onPress={()=> !form.isAllDay && openTime('endTime')} disabled={!form.endDate || !!form.isAllDay} style={[styles.pickerBtn, ((!form.endDate || errors.end) && !form.isAllDay) && styles.pickerBtnError, (!form.endDate || !!form.isAllDay) && { opacity:0.5 }]}>
+                <Text style={[styles.pickerText, (errors.end && !form.isAllDay) && styles.pickerTextError]}>{form.isAllDay? '--:--' : (form.endTime || (form.endDate? '23:59' : '--:--'))}</Text>
               </Pressable>
             </View>
+          </View>
+
+          <View style={[styles.field, { flexDirection:'row', alignItems:'center', justifyContent:'space-between', marginTop: -4 }]}> 
+            <Text style={styles.label}>Sự kiện cả ngày</Text>
+            <Switch value={!!form.isAllDay} onValueChange={(v)=> setForm(prev => ({ ...prev, isAllDay: v }))} />
           </View>
 
           <View style={styles.field}>
@@ -644,7 +661,13 @@ Lý do: ${reason}` : message);
                 <View style={styles.typeList}>
                   {(['daily','weekly','monthly','yearly'] as const).map(freq => {
                     const active = form.repeat?.frequency === freq;
-                    const label = freq==='daily'? 'Hàng ngày' : freq==='weekly'? 'Hàng tuần' : freq==='monthly'? 'Hàng tháng' : 'Hàng năm';
+                    const label = freq==='daily'
+                      ? 'Hàng ngày'
+                      : freq==='weekly'
+                        ? `Hàng tuần (${weekdayVN(form.date)})`
+                        : freq==='monthly'
+                          ? 'Hàng tháng'
+                          : 'Hàng năm';
                     return (
                       <Pressable key={freq} onPress={()=> setForm(prev => ({ ...prev, repeat: { ...(prev.repeat||{}), frequency: freq } }))} style={[styles.typeChip, active && styles.typeChipActive]}>
                         <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{label}</Text>
@@ -731,16 +754,28 @@ Lý do: ${reason}` : message);
           {(() => {
             const startDate = form.date; const endDate = form.endDate; const sameDay = endDate && (startDate === endDate);
             let display = '';
-            if(!endDate){ display = `${toDisplayDate(startDate)} ${form.startTime || ''}${form.endTime? '–'+form.endTime:''}`; }
-            else if(sameDay){ display = `${toDisplayDate(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`; }
-            else display = `${toDisplayDate(startDate)} ${form.startTime || ''} → ${toDisplayDate(endDate)} ${form.endTime || ''}`;
+            if(form.isAllDay){
+              if(!endDate){ display = `${toDisplayDate(startDate)} • Cả ngày`; }
+              else if(sameDay){ display = `${toDisplayDate(startDate)} • Cả ngày`; }
+              else display = `${toDisplayDate(startDate)} → ${toDisplayDate(endDate)} • Cả ngày`;
+            } else {
+              if(!endDate){ display = `${toDisplayDate(startDate)} ${form.startTime || ''}${form.endTime? '–'+form.endTime:''}`; }
+              else if(sameDay){ display = `${toDisplayDate(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`; }
+              else display = `${toDisplayDate(startDate)} ${form.startTime || ''} → ${toDisplayDate(endDate)} ${form.endTime || ''}`;
+            }
             return <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Thời gian:</Text><Text style={styles.summaryValue}>{display}</Text></View>;
           })()}
           {!!form.isRepeating && form.repeat && (
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Lặp lại:</Text>
               <Text style={styles.summaryValue}>
-                {form.repeat.frequency==='daily'? 'Hàng ngày' : form.repeat.frequency==='weekly'? 'Hàng tuần' : form.repeat.frequency==='monthly'? 'Hàng tháng' : 'Hàng năm'}
+                {form.repeat.frequency==='daily'
+                  ? 'Hàng ngày'
+                  : form.repeat.frequency==='weekly'
+                    ? `Hàng tuần (${weekdayVN(form.date)})`
+                    : form.repeat.frequency==='monthly'
+                      ? 'Hàng tháng'
+                      : 'Hàng năm'}
                 {form.repeat.endMode==='never'? '' : form.repeat.endMode==='after'? ` • Sau ${form.repeat.count||0} lần` : form.repeat.endDate? ` • đến ${toDisplayDate(form.repeat.endDate)}` : ''}
               </Text>
             </View>
@@ -852,8 +887,9 @@ Lý do: ${reason}` : message);
                               title: mapped.title || prev.title,
                               date: mapped.date || prev.date,
                               endDate: mapped.endDate || '',
-                              startTime: mapped.startTime || prev.startTime,
-                              endTime: mapped.endTime || '',
+                              startTime: (item.allDay ? prev.startTime : (mapped.startTime || prev.startTime)),
+                              endTime: (item.allDay ? '' : (mapped.endTime || '')),
+                              isAllDay: !!item.allDay,
                               location: mapped.location || prev.location,
                               notes: mapped.notes || prev.notes,
                             }));

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, Pressable, Alert, ActivityIndicator, Platform, Modal } from 'react-native';
+import { View, Text, StyleSheet, TextInput, Pressable, Alert, ActivityIndicator, Platform, Modal, Switch } from 'react-native';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -18,6 +18,7 @@ export interface EventFormValues {
   location?: string;
   notes?: string;
   link?: string;
+  isAllDay?: boolean;
   isRepeating?: boolean;
   repeat?: {
     frequency: 'daily'|'weekly'|'monthly'|'yearly';
@@ -58,6 +59,7 @@ export default function EventForm({
     location: initialValues.location || '',
     notes: initialValues.notes || '',
     link: initialValues.link || '',
+    isAllDay: initialValues.isAllDay || false,
     isRepeating: !!initialValues.repeat,
     repeat: initialValues.repeat ? { ...initialValues.repeat } as any : undefined,
   });
@@ -82,21 +84,21 @@ export default function EventForm({
 
   const toLocalISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const openDate = (field:'date'|'endDate'|'repeatEndDate')=>{ setTempDate(new Date(((form as any)[field]||'') + 'T00:00:00')); setShowPicker({ mode:'date', field: field as any }); };
-  const openTime = (field:'startTime'|'endTime')=>{ const [hh,mm] = String((form as any)[field]||'09:00').split(':').map((n:string)=>parseInt(n,10)); const d=new Date(); d.setHours(hh||9, mm||0, 0, 0); setTempDate(d); setShowPicker({ mode:'time', field: field as any }); };
-  const onNative = (e:DateTimePickerEvent, d?:Date)=>{ if(Platform.OS!=='android') return; if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; } if(d&&showPicker.field){ if(showPicker.mode==='date'){ const iso = toLocalISODate(d); if(showPicker.field==='endDate'){ update('endDate', iso); if(!form.endTime) update('endTime','23:59'); } else if(showPicker.field==='date'){ update('date', iso); } else { update('repeat', { ...(form.repeat||{ frequency:'weekly' }), endMode:'onDate', endDate: iso }); update('isRepeating', true); } } else { const hh=String(d.getHours()).padStart(2,'0'); const mm=String(d.getMinutes()).padStart(2,'0'); update(showPicker.field as any, `${hh}:${mm}`);} } setShowPicker({mode:'date', field:null}); };
-  const confirmIOS = ()=>{ if(tempDate && showPicker.field){ if(showPicker.mode==='date'){ const iso = toLocalISODate(tempDate); if(showPicker.field==='endDate'){ update('endDate', iso); if(!form.endTime) update('endTime','23:59'); } else if(showPicker.field==='date'){ update('date', iso); } else { update('repeat', { ...(form.repeat||{ frequency:'weekly' }), endMode:'onDate', endDate: iso }); update('isRepeating', true); } } else { const hh=String(tempDate.getHours()).padStart(2,'0'); const mm=String(tempDate.getMinutes()).padStart(2,'0'); update(showPicker.field as any, `${hh}:${mm}`); } } setShowPicker({mode:'date', field:null}); setTempDate(null); };
+  const openTime = (field:'startTime'|'endTime')=>{ if(form.isAllDay) return; const [hh,mm] = String((form as any)[field]||'09:00').split(':').map((n:string)=>parseInt(n,10)); const d=new Date(); d.setHours(hh||9, mm||0, 0, 0); setTempDate(d); setShowPicker({ mode:'time', field: field as any }); };
+  const onNative = (e:DateTimePickerEvent, d?:Date)=>{ if(Platform.OS!=='android') return; if(e.type==='dismissed'){ setShowPicker({mode:'date', field:null}); return; } if(d&&showPicker.field){ if(showPicker.mode==='date'){ const iso = toLocalISODate(d); if(showPicker.field==='endDate'){ update('endDate', iso); if(!form.isAllDay && !form.endTime) update('endTime','23:59'); } else if(showPicker.field==='date'){ update('date', iso); } else { update('repeat', { ...(form.repeat||{ frequency:'weekly' }), endMode:'onDate', endDate: iso }); update('isRepeating', true); } } else { if(form.isAllDay){ /* ignore */ } else { const hh=String(d.getHours()).padStart(2,'0'); const mm=String(d.getMinutes()).padStart(2,'0'); update(showPicker.field as any, `${hh}:${mm}`);} } } setShowPicker({mode:'date', field:null}); };
+  const confirmIOS = ()=>{ if(tempDate && showPicker.field){ if(showPicker.mode==='date'){ const iso = toLocalISODate(tempDate); if(showPicker.field==='endDate'){ update('endDate', iso); if(!form.isAllDay && !form.endTime) update('endTime','23:59'); } else if(showPicker.field==='date'){ update('date', iso); } else { update('repeat', { ...(form.repeat||{ frequency:'weekly' }), endMode:'onDate', endDate: iso }); update('isRepeating', true); } } else { if(form.isAllDay){ /* ignore */ } else { const hh=String(tempDate.getHours()).padStart(2,'0'); const mm=String(tempDate.getMinutes()).padStart(2,'0'); update(showPicker.field as any, `${hh}:${mm}`); } } } setShowPicker({mode:'date', field:null}); setTempDate(null); };
 
   const save = async ()=>{
     if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
     if(!form.title.trim()){ Alert.alert('Thiếu thông tin','Nhập tiêu đề'); return; }
     if(!form.typeId){ Alert.alert('Thiếu thông tin','Chọn loại lịch'); return; }
     if(!/^\d{4}-\d{2}-\d{2}$/.test(form.date)){ Alert.alert('Lỗi','Ngày bắt đầu không hợp lệ'); return; }
-    if(form.endDate){ if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate!)){ Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; } if(form.endDate! < form.date){ Alert.alert('Lỗi','Kết thúc phải >= bắt đầu'); return; } if(form.date===form.endDate && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; } }
-    else { if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; } }
+  if(form.endDate){ if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate!)){ Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; } if(form.endDate! < form.date){ Alert.alert('Lỗi','Kết thúc phải >= bắt đầu'); return; } if(!form.isAllDay && form.date===form.endDate && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; } }
+  else { if(!form.isAllDay && form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; } }
     setSaving(true);
     const body:any = {
       title: form.title.trim(), typeId: form.typeId, date: form.date,
-      endDate: form.endDate || undefined, startTime: form.startTime, endTime: form.endDate? (form.endTime || '23:59') : (form.endTime || undefined),
+  endDate: form.endDate || undefined, startTime: form.isAllDay? undefined : form.startTime, endTime: form.isAllDay? undefined : (form.endDate? (form.endTime || '23:59') : (form.endTime || undefined)),
       location: form.location || undefined, notes: form.notes || undefined, link: form.link || undefined,
       props: {},
       ...(form.isRepeating && form.repeat? { repeat: form.repeat }: {}),
@@ -146,7 +148,7 @@ export default function EventForm({
         </View>
         <View style={[styles.field, styles.half]}>
           <Text style={styles.label}>Giờ bắt đầu</Text>
-          <Pressable onPress={()=> openTime('startTime')} style={styles.pickerBtn}><Text style={styles.pickerText}>{form.startTime}</Text></Pressable>
+          <Pressable onPress={()=> openTime('startTime')} style={[styles.pickerBtn, !!form.isAllDay && { opacity:0.5 }]} disabled={!!form.isAllDay}><Text style={styles.pickerText}>{form.isAllDay? '--:--' : form.startTime}</Text></Pressable>
         </View>
       </View>
       <View style={styles.row}>
@@ -156,8 +158,13 @@ export default function EventForm({
         </View>
         <View style={[styles.field, styles.half]}>
           <Text style={styles.label}>Giờ kết thúc</Text>
-          <Pressable onPress={()=> openTime('endTime')} style={[styles.pickerBtn, !form.endDate && { opacity:0.5 }]} disabled={!form.endDate}><Text style={styles.pickerText}>{form.endTime || (form.endDate? '23:59':'--:--')}</Text></Pressable>
+          <Pressable onPress={()=> openTime('endTime')} style={[styles.pickerBtn, (!form.endDate || !!form.isAllDay) && { opacity:0.5 }]} disabled={!form.endDate || !!form.isAllDay}><Text style={styles.pickerText}>{form.isAllDay? '--:--' : (form.endTime || (form.endDate? '23:59':'--:--'))}</Text></Pressable>
         </View>
+      </View>
+
+      <View style={[styles.field,{ flexDirection:'row', alignItems:'center', justifyContent:'space-between' }]}>
+        <Text style={styles.label}>Sự kiện cả ngày</Text>
+        <Switch value={!!form.isAllDay} onValueChange={(v)=> update('isAllDay', v)} />
       </View>
 
       <View style={styles.field}><Text style={styles.label}>Địa điểm</Text><TextInput style={styles.input} value={form.location} onChangeText={t=>update('location', t)} /></View>

@@ -19,7 +19,8 @@ try { ImageManipulator = require('expo-image-manipulator'); } catch { ImageManip
 
 type PickedImage = { uri: string; name: string };
 type PickedFile = { uri: string; name: string; mimeType: string };
-type Msg = { id: string; role: 'user'|'assistant'; text: string; meta?: { evItems?: any[]; evFormItems?: any[]; tkItems?: any[] } };
+type AiEditItem = { id: string; date: string; title: string; time?: string };
+type Msg = { id: string; role: 'user'|'assistant'; text: string; meta?: { evItems?: any[]; evFormItems?: any[]; tkItems?: any[]; eventsEdit?: AiEditItem[]; tasksEdit?: AiEditItem[]; createdEventId?: string; createdEventDate?: string } };
 
 export default function AutoScheduleScreen(){
   const router = useRouter();
@@ -334,7 +335,17 @@ export default function AutoScheduleScreen(){
         const finalPrompt = parts.join('\n\n');
         const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt: finalPrompt, now: todayISO }, { ...authHeader, timeout: 45000 });
         const answer = String(res.data?.answer || '').trim();
-        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: answer || 'Mình chưa có câu trả lời cho câu hỏi này.' });
+        const evs = Array.isArray(res.data?.events) ? res.data.events : [];
+        const tks = Array.isArray(res.data?.tasks) ? res.data.tasks : [];
+        const toItem = (x:any): AiEditItem => ({
+          id: String(x.id || x._id || ''),
+          date: String(x.date || ''),
+          title: String(x.title || ''),
+          time: x.startTime ? `${x.startTime}${x.endTime?`-${x.endTime}`:''}` : undefined,
+        });
+  const eventsEdit: AiEditItem[] = evs.map(toItem).filter((it: AiEditItem)=> !!(it.id && it.date)).slice(0, 8);
+  const tasksEdit: AiEditItem[] = tks.map(toItem).filter((it: AiEditItem)=> !!(it.id && it.date)).slice(0, 8);
+        appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: answer || 'Mình chưa có câu trả lời cho câu hỏi này.', meta: (eventsEdit.length || tasksEdit.length) ? { eventsEdit, tasksEdit } : undefined });
       }catch(e:any){
         appendMsg({ id:`a_${Date.now()}`, role:'assistant', text: e?.response?.data?.message || 'Không thể gọi Chat' });
       }
@@ -591,6 +602,37 @@ export default function AutoScheduleScreen(){
                         <Ionicons name='checkmark-done-outline' size={16} color='#16425b' />
                         <Text style={styles.actionTextAlt}>Xem trước tác vụ</Text>
                       </Pressable>
+                    )}
+                    {/* Schedule-review CTA removed per revert */}
+                  </View>
+                ) : null}
+                {m.role==='assistant' && (m.meta?.eventsEdit?.length || m.meta?.tasksEdit?.length) ? (
+                  <View style={{ marginTop:8, gap:6 }}>
+                    {!!m.meta?.eventsEdit?.length && (
+                      <View style={{ gap:6 }}>
+                        <Text style={{ color:'#0f172a', fontWeight:'700', fontSize:12 }}>Lịch sắp tới</Text>
+                        <View style={{ flexDirection:'row', flexWrap:'wrap', gap:8 }}>
+                          {m.meta.eventsEdit!.map((e, i) => (
+                            <Pressable key={`e_${i}_${e.id}`} style={styles.quickChip} onPress={()=> router.push({ pathname:'/create-calendar', params:{ editId: e.id, occDate: e.date } })}>
+                              <Ionicons name='calendar-outline' size={14} color='#1d4ed8' />
+                              <Text style={styles.quickChipText} numberOfLines={1}>{e.title || 'Lịch'}{e.time? ` (${e.time})`:''}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+                    {!!m.meta?.tasksEdit?.length && (
+                      <View style={{ gap:6 }}>
+                        <Text style={{ color:'#0f172a', fontWeight:'700', fontSize:12 }}>Tác vụ sắp tới</Text>
+                        <View style={{ flexDirection:'row', flexWrap:'wrap', gap:8 }}>
+                          {m.meta.tasksEdit!.map((t, i) => (
+                            <Pressable key={`t_${i}_${t.id}`} style={styles.quickChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: t.date } })}>
+                              <Ionicons name='create-outline' size={14} color='#1d4ed8' />
+                              <Text style={styles.quickChipText} numberOfLines={1}>{t.title || 'Tác vụ'}{t.time? ` (${t.time})`:''}</Text>
+                            </Pressable>
+                          ))}
+                        </View>
+                      </View>
                     )}
                   </View>
                 ) : null}

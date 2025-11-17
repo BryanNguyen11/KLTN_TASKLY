@@ -5,6 +5,7 @@ import * as Notifications from 'expo-notifications';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard'; // mockProjects kept temporary fallback
 import { aiOrderedTasks } from '@/utils/aiTaskSort';
 import axios from 'axios';
@@ -287,12 +288,29 @@ export default function DashboardScreen() {
     const isAllDay = !timeText;
     const hasSubs = (t.subTasks||[]).length>0;
     const progressPct = hasSubs ? (t.completionPercent||0) : null;
+    // Overdue label: show hours if <24h, days if >=24h since endDate/endTime passed
+    const overdueLabel = (() => {
+      if(!t.endDate) return null;
+      if(t.completed) return null;
+      let endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+      if(!endTime && t.startTime && !t.endDate) endTime = t.startTime; // fallback (single time?)
+      const deadline = endTime ? new Date(`${t.endDate}T${endTime}:00`) : new Date(`${t.endDate}T23:59:59`);
+      const now = new Date();
+      if(now <= deadline) return null;
+      const diffMs = now.getTime() - deadline.getTime();
+      const diffHours = diffMs / 3600000;
+      if(diffHours < 24) return `Quá hạn: ${Math.floor(diffHours)}h`;
+      return `Quá hạn: ${Math.floor(diffHours/24)} ngày`;
+    })();
     return (
       <Pressable onPress={onPress} style={[styles.taskChipEnhanced, t.completed && { opacity:0.55 }]}>        
         <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
         <View style={{ flex:1 }}>
           <Text style={[styles.taskChipEnhancedTitle, t.completed && styles.taskTitleDone]} numberOfLines={2}>{t.title}</Text>
           <View style={{ flexDirection:'row', alignItems:'center', flexWrap:'wrap', gap:6, marginTop:4 }}>
+            {overdueLabel && (
+              <View style={styles.overduePill}><Text style={styles.overduePillText}>{overdueLabel}</Text></View>
+            )}
             {timeText ? (
               <View style={styles.metaSmallRow}>
                 <Ionicons name='time-outline' size={11} color='#2f6690' />
@@ -311,7 +329,7 @@ export default function DashboardScreen() {
               </View>
             )}
             {dueSoonDays !== null && (
-              <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{dueSoonDays===0? 'Hôm nay' : `Còn ${dueSoonDays}d`}</Text></View>
+              !overdueLabel && <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{dueSoonDays===0? 'Hôm nay' : `Còn ${dueSoonDays}d`}</Text></View>
             )}
             {t.endDate && t.date && t.endDate !== t.date && (
               <View style={styles.metaSmallRow}>
@@ -328,6 +346,7 @@ export default function DashboardScreen() {
     );
   };
   const [selectedTab, setSelectedTab] = useState<'Hôm nay' | 'Tuần' | 'Tháng'>('Hôm nay');
+  // Today view: no all-day toggle (per updated requirement)
   const [selectedDate, setSelectedDate] = useState<number>(() => new Date().getDate());
   // Keep a ticking now to refresh "today" and any relative date logic
   const [now, setNow] = useState<Date>(new Date());
@@ -1387,9 +1406,11 @@ export default function DashboardScreen() {
                   <Ionicons name='notifications-outline' size={18} color='#2f6690' />
                   {unreadCount>0 && <View style={styles.notifDot}><Text style={styles.notifDotText}>{Math.min(unreadCount,9)}</Text></View>}
                 </Pressable>
-                <Pressable onPress={()=> router.push('/auto-schedule')} style={[styles.aiTopBtn, aiMode && styles.aiTopBtnActive]}>
-                  <Ionicons name='sparkles' size={18} color={'#2f6690'} />
-                  <Text style={[styles.aiTopText]}>AI</Text>
+                <Pressable onPress={()=> router.push('/auto-schedule')} style={{ borderRadius:22, overflow:'hidden' }}>
+                  <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.aiTopBtn}>
+                    <Ionicons name='sparkles' size={18} color={'#ffffff'} />
+                    <Text style={[styles.aiTopText, styles.aiTopTextActive]}>AI</Text>
+                  </LinearGradient>
                 </Pressable>
               </View>
             </View>
@@ -1473,7 +1494,31 @@ export default function DashboardScreen() {
                   const todaysEvents = todaysAll.filter(ev => !isEndedForToday(ev))
                     .filter(ev => matchesQueryEvent(ev) && (!filterWeekday || dayNumFromISO(todayISO)===filterWeekday) && isISOInRange(todayISO))
                     .sort((a,b) => (a.startTime||'99:99').localeCompare(b.startTime||'99:99'));
-                  const todaysTasks = tasks.filter(t => !t.completed && occursTaskOnDate(t, todayISO) && matchesQueryTask(t) && (!filterWeekday || dayNumFromISO(todayISO)===filterWeekday) && isISOInRange(todayISO));
+                  // Build overdue and due-today task groups
+                  const getDeadline = (t: Task): Date | null => {
+                    const dueIso = t.endDate || t.date;
+                    if(!dueIso) return null;
+                    const endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+                    return endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+                  };
+                  const todaysTasksAll = tasks.filter(t => !t.completed && matchesQueryTask(t));
+                  const overdueTasks = todaysTasksAll.filter(t => {
+                    const dl = getDeadline(t); if(!dl) return false; return new Date() > dl;
+                  }).sort((a,b)=>{
+                    const da = getDeadline(a)!.getTime();
+                    const db = getDeadline(b)!.getTime();
+                    return da - db; // older first
+                  });
+                  const dueTodayTasks = todaysTasksAll.filter(t => {
+                    const dl = getDeadline(t); if(!dl) return false;
+                    const dlIso = toLocalISODate(dl);
+                    if(dlIso !== todayISO) return false;
+                    return new Date() <= dl; // not yet overdue today
+                  }).sort((a,b)=>{
+                    const da = getDeadline(a)!.getTime();
+                    const db = getDeadline(b)!.getTime();
+                    return da - db;
+                  });
                   const [y,m,d] = todayISO.split('-');
                   const display = `${d}/${m}/${y}`;
                   const w = weekdayVNFromISO(todayISO);
@@ -1495,10 +1540,11 @@ export default function DashboardScreen() {
                           </View>
                           <View style={[styles.countPill, styles.tasksCountPill]}>
                             <Ionicons name='checkmark-done-outline' size={12} color='#16425b' />
-                            <Text style={[styles.countText, styles.tasksCountText]}>{todaysTasks.length}</Text>
+                            <Text style={[styles.countText, styles.tasksCountText]}>{overdueTasks.length + dueTodayTasks.length}</Text>
                           </View>
                         </View>
                       </View>
+                      {/* All-day toggle removed by request */}
                       {todaysEvents.length>0 ? (
                         <View style={styles.eventList}>
                           {todaysEvents.map((ev, idx) => {
@@ -1536,21 +1582,58 @@ export default function DashboardScreen() {
                       ) : (
                         <Text style={styles.emptyHint}>Không có lịch còn lại trong hôm nay</Text>
                       )}
-                      {todaysTasks.length>0 ? (
-                        <View style={[styles.dayTaskChips,{ marginTop:8 }]}>
-                          {todaysTasks.map((t, idx) => {
-                            const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
-                            return (
-                              <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
-                                <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                                <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                                {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
-                              </Pressable>
-                            );
-                          })}
+                      {/* Overdue tasks */}
+                      {overdueTasks.length>0 && (
+                        <View style={{ marginTop:10 }}>
+                          <View style={{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:6 }}>
+                            <Ionicons name='alert-circle-outline' size={14} color='#dc2626' />
+                            <Text style={{ color:'#b91c1c', fontWeight:'700', fontSize:12 }}>Quá hạn</Text>
+                            <View style={[styles.countPill,{ backgroundColor:'rgba(220,38,38,0.1)' }]}><Text style={[styles.countText,{ color:'#b91c1c' }]}>{overdueTasks.length}</Text></View>
+                          </View>
+                          <View style={[styles.dayTaskChips,{ marginTop:0 }]}> 
+                            {overdueTasks.map((t, idx) => {
+                              const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
+                              return (
+                                <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
+                                  <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                  <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                  {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
+                                  {(t as any).projectId && (
+                                    <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
+                                  )}
+                                </Pressable>
+                              );
+                            })}
+                          </View>
                         </View>
-                      ) : (
-                        <Text style={styles.emptyHint}>Không có tác vụ chưa hoàn thành hôm nay</Text>
+                      )}
+                      {/* Due today tasks */}
+                      {dueTodayTasks.length>0 && (
+                        <View style={{ marginTop:10 }}>
+                          <View style={{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:6 }}>
+                            <Ionicons name='calendar-outline' size={14} color='#2f6690' />
+                            <Text style={{ color:'#16425b', fontWeight:'700', fontSize:12 }}>Deadline hôm nay</Text>
+                            <View style={[styles.countPill, styles.tasksCountPill]}><Text style={[styles.countText, styles.tasksCountText]}>{dueTodayTasks.length}</Text></View>
+                          </View>
+                          <View style={[styles.dayTaskChips,{ marginTop:0 }]}> 
+                            {dueTodayTasks.map((t, idx) => {
+                              const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
+                              return (
+                                <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
+                                  <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
+                                  <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
+                                  {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
+                                  {(t as any).projectId && (
+                                    <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
+                                  )}
+                                </Pressable>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      )}
+                      {overdueTasks.length===0 && dueTodayTasks.length===0 && (
+                        <Text style={styles.emptyHint}>Không có tác vụ quá hạn hoặc deadline hôm nay</Text>
                       )}
                     </Animated.View>
                   );
@@ -1653,6 +1736,9 @@ export default function DashboardScreen() {
                                 <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                 <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                 {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
+                                {(t as any).projectId && (
+                                  <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
+                                )}
                               </Pressable>
                             );
                           })}
@@ -1786,6 +1872,9 @@ export default function DashboardScreen() {
                                   <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                   <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                   {!!ttime && <Text style={styles.taskChipTime}>{ttime}</Text>}
+                                    {(t as any).projectId && (
+                                      <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
+                                    )}
                                 </Pressable>
                               )})}
                           </View>
@@ -1803,9 +1892,14 @@ export default function DashboardScreen() {
                 <Text style={styles.sectionTitle}>Tác vụ</Text>
                 {aiMode && (
                   <>
-                    <View style={styles.aiBadge}><Text style={styles.aiBadgeText}>AI</Text></View>
-                    <Pressable onPress={()=>{ if(!token) return; (async()=>{ try{ setAiLoading(true); const body = { tasks: tasks.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours })) }; const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } }); if(Array.isArray(res.data?.ordered)) setAiOrdering(res.data.ordered); } catch{ /*silent*/ } finally{ setAiLoading(false); } })(); }} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:12, backgroundColor:'rgba(47,102,144,0.1)' }}>
-                      <Text style={{ color:'#2f6690', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang AI...' : 'Làm mới AI'}</Text>
+                    <View style={[styles.aiBadge, { backgroundColor:'transparent', overflow:'hidden' }]}>
+                      <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[StyleSheet.absoluteFill, { borderRadius:8 }]} />
+                      <Text style={styles.aiBadgeText}>AI</Text>
+                    </View>
+                    <Pressable onPress={()=>{ if(!token) return; (async()=>{ try{ setAiLoading(true); const body = { tasks: tasks.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours })) }; const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } }); if(Array.isArray(res.data?.ordered)) setAiOrdering(res.data.ordered); } catch{ /*silent*/ } finally{ setAiLoading(false); } })(); }} style={{ borderRadius:12, overflow:'hidden' }}>
+                      <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ paddingHorizontal:10, paddingVertical:6 }}>
+                        <Text style={{ color:'#fff', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang AI...' : 'Làm mới AI'}</Text>
+                      </LinearGradient>
                     </Pressable>
                   </>
                 )}
@@ -1829,18 +1923,17 @@ export default function DashboardScreen() {
           >
             {(() => {
               // deadline color logic
-              let deadlineStyle: any = null;
-              if(item.endDate){
-                const localToday = toLocalISODate(new Date());
-                // Attempt to parse end time from item.time (pattern HH:MM-HH:MM)
-                let endTime: string | undefined;
-                if(item.time && item.time.includes('-')) endTime = item.time.split('-')[1];
-                const endDeadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
+              // Overdue textual indicator replaces prior colored border styles
+              let overdueLabel: string | null = null;
+              if(item.endDate && !item.completed){
+                let endTime: string | undefined = item.endTime || (item.time && item.time.includes('-') ? item.time.split('-')[1] : undefined);
+                const deadline = endTime ? new Date(`${item.endDate}T${endTime}:00`) : new Date(`${item.endDate}T23:59:59`);
                 const now = new Date();
-                const isEndToday = item.endDate === localToday;
-                const isOverdue = now > endDeadline;
-                if(isOverdue) deadlineStyle = styles.deadlineOverdueCard;
-                else if(isEndToday) deadlineStyle = styles.deadlineTodayCard;
+                if(now > deadline){
+                  const diffMs = now.getTime() - deadline.getTime();
+                  const diffHours = diffMs/3600000;
+                  overdueLabel = diffHours < 24 ? `Quá hạn: ${Math.floor(diffHours)}h` : `Quá hạn: ${Math.floor(diffHours/24)} ngày`;
+                }
               }
               return (
                 <Swipeable
@@ -1851,7 +1944,7 @@ export default function DashboardScreen() {
                     </Pressable>
                   )}
                 >
-                  <View style={[styles.taskCard, item.completed && styles.taskDone, deadlineStyle, { position:'relative' }]}>          
+                  <View style={[styles.taskCard, item.completed && styles.taskDone, { position:'relative' }]}>          
                     {celebrateId === item.id && <ConfettiBurst />}
                     <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:10 }}>
                       <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
@@ -1870,6 +1963,9 @@ export default function DashboardScreen() {
                         <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
                       </View>
                       <View style={styles.metaRow}>
+                        {overdueLabel && (
+                          <View style={styles.overduePill}><Text style={styles.overduePillText}>{overdueLabel}</Text></View>
+                        )}
                         {!!item.time && (<>
                           <Ionicons name="time" size={12} color="#2f6690" />
                           <Text style={styles.metaText}>{item.time}</Text>
@@ -1992,16 +2088,6 @@ export default function DashboardScreen() {
             );
           })()}
 
-          {/* Quick Actions */}
-          <View style={{ marginTop: 24 }}>
-            <Text style={styles.quickTitle}>Thao tác nhanh</Text>
-            <View style={styles.quickGrid}>
-              <QuickAction iconName='add' label='Tác vụ mới' bg='rgba(58,124,165,0.1)' color='#3a7ca5' onPress={()=> router.push('/create-task')} />
-              <QuickAction iconName='people' label='Dự án' bg='rgba(129,195,215,0.15)' color='#2f6690' onPress={()=> setShowProjectsModal(true)} />
-              <QuickAction iconName='flag' label='TASKLY AI' bg='rgba(47,102,144,0.12)' color='#2f6690' onPress={()=> router.push('/auto-schedule')} />
-              <QuickAction iconName='book' label='Ghi chú' bg='rgba(22,66,91,0.1)' color='#16425b' />
-            </View>
-          </View>
         </View>
       }
     />
@@ -2486,22 +2572,6 @@ export default function DashboardScreen() {
 
 // Action sheet modal appended after main return earlier? (Ensure inside component before export). Adding below component export logic isn't valid. We integrate above just before closing SafeAreaView.
 
-interface QuickActionProps { iconName: any; label: string; bg: string; color: string; onPress?: () => void; }
-const QuickAction = ({ iconName, label, bg, color, onPress }: QuickActionProps) => {
-  const scale = useSharedValue(1);
-  const aStyle = useAnimatedStyle(()=>({ transform:[{ scale: scale.value }] }));
-  return (
-    <AnimatedPressable
-      onPress={onPress}
-      onPressIn={() => { scale.value = withTiming(0.93, { duration:120 }); }}
-      onPressOut={() => { scale.value = withTiming(1, { duration:160 }); }}
-      style={[styles.quickBtn, { backgroundColor: bg }, aStyle]}
-    >
-      <Ionicons name={iconName} size={22} color={color} />
-      <Text style={[styles.quickLabel,{ color, marginTop:6 }]}>{label}</Text>
-    </AnimatedPressable>
-  );
-};
 
 // Hiệu ứng confetti đơn giản khi hoàn thành task
 const ConfettiBurst = () => {
@@ -2611,10 +2681,6 @@ const styles = StyleSheet.create({
   coLeaderBadge: { fontSize:10, backgroundColor:'#f59e0b', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12, lineHeight:12 },
   memberBadge: { fontSize:10, backgroundColor:'#2563eb', color:'#fff', paddingHorizontal:8, paddingVertical:3, borderRadius:12 },
   projectMeta: { fontSize:12, color:'#2f6690', lineHeight:16 },
-  quickTitle: { fontSize:16, fontWeight:'600', color:'#16425b', marginBottom:14 },
-  quickGrid: { flexDirection:'row', flexWrap:'wrap', justifyContent:'space-between' },
-  quickBtn: { width:'48%', borderRadius:18, paddingVertical:18, alignItems:'center', marginBottom:12 },
-  quickLabel: { fontSize:12, fontWeight:'500', color:'#3a7ca5' },
   fabWrapper:{ position:'absolute', bottom:0, right:0, left:0, top:0, zIndex:50 },
   fabMenu:{ position:'absolute', bottom:110, right:24, alignItems:'flex-end', gap:14 },
   fabAction:{ flexDirection:'row', alignItems:'center', paddingHorizontal:14, paddingVertical:10, borderRadius:18, gap:8, shadowColor:'#000', shadowOpacity:0.18, shadowRadius:6, elevation:4 },
@@ -2759,4 +2825,6 @@ const styles = StyleSheet.create({
   dueSoonPillText:{ color:'#fff', fontSize:10, fontWeight:'700' },
   checkCircleSmall:{ width:20, height:20, borderRadius:10, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center' },
   checkCircleSmallDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
+  overduePill:{ backgroundColor:'#dc2626', paddingHorizontal:8, paddingVertical:3, borderRadius:10 },
+  overduePillText:{ color:'#fff', fontSize:11, fontWeight:'700' },
 });

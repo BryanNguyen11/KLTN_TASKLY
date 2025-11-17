@@ -17,6 +17,8 @@ export interface TaskFormState {
   endDate: string; // YYYY-MM-DD (ngày kết thúc)
   startTime: string; // HH:mm
   endTime: string; // HH:mm
+  // All-day task: when true, omit times and disable time pickers
+  isAllDay?: boolean;
   priority: TaskPriority; // tính từ importance + urgency
   importance: TaskPriority; // nhập
   urgency: TaskPriority;    // nhập
@@ -75,6 +77,7 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
     endDate: '',
     startTime: '09:00',
     endTime: '',
+  isAllDay: false,
     priority: 'medium',
     importance: 'medium',
     urgency: 'medium',
@@ -231,14 +234,14 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
       if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) newErr.end = 'Ngày kết thúc sai định dạng';
       else {
         if(form.endDate < form.date) newErr.end = 'Kết thúc phải sau hoặc bằng ngày bắt đầu';
-        if(form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+        if(!form.isAllDay && form.date === form.endDate && form.endTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
       }
     } else {
-      if(form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
+      if(!form.isAllDay && form.endTime && form.startTime && form.endTime <= form.startTime) newErr.end = 'Giờ kết thúc phải sau giờ bắt đầu';
     }
     if(form.subTasks.some(st=>!st.title.trim())) newErr.sub = 'Có tác vụ con chưa nhập tên';
     setErrors(newErr);
-  }, [form.date, form.endDate, form.startTime, form.endTime, form.subTasks]);
+  }, [form.date, form.endDate, form.startTime, form.endTime, form.subTasks, form.isAllDay]);
 
   const priorityLabel = (p: TaskPriority) => p==='high'?'Cao':p==='medium'?'Trung bình':'Thấp';
 
@@ -250,9 +253,9 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
     if(form.endDate){
       if(!/^\d{4}-\d{2}-\d{2}$/.test(form.endDate)) { Alert.alert('Lỗi','Ngày kết thúc không hợp lệ'); return; }
       if(form.endDate < form.date) { Alert.alert('Lỗi','Ngày kết thúc phải >= ngày bắt đầu'); return; }
-      if(form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+      if(!form.isAllDay && form.date === form.endDate && form.startTime && form.endTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
     } else {
-      if(form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
+      if(!form.isAllDay && form.endTime && form.startTime && form.endTime <= form.startTime){ Alert.alert('Lỗi','Giờ kết thúc phải sau giờ bắt đầu'); return; }
     }
     if(form.subTasks.some(st=>!st.title.trim())) { Alert.alert('Lỗi','Vui lòng nhập tên cho tất cả tác vụ con'); return; }
 
@@ -262,8 +265,8 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
       description: form.description,
       date: form.date,
       endDate: form.endDate || undefined,
-      startTime: form.startTime,
-      endTime: form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined),
+  startTime: form.isAllDay ? undefined : form.startTime,
+  endTime: form.isAllDay ? undefined : (form.endDate ? (form.endTime || '23:59') : (form.endTime || undefined)),
       priority: form.priority,
       importance: form.importance,
       urgency: form.urgency,
@@ -350,6 +353,7 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
           endDate: baseEnd,
           startTime: t.startTime || prev.startTime,
           endTime: t.endTime || '',
+          isAllDay: (!t.startTime && !t.endTime) ? true : false,
           priority: t.priority || 'medium',
           importance: t.importance || 'medium',
           urgency: (t as any).urgency || 'medium',
@@ -408,8 +412,8 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
           </View>
           <View style={[styles.field, styles.half]}>
             <Text style={styles.label}>Giờ bắt đầu</Text>
-            <Pressable onPress={()=>openTime('startTime')} style={[styles.pickerBtn, errors.start && styles.pickerBtnError]}> 
-              <Text style={[styles.pickerText, errors.start && styles.pickerTextError]}>{form.startTime}</Text>
+            <Pressable onPress={()=>{ if(!form.isAllDay) openTime('startTime'); }} disabled={!!form.isAllDay} style={[styles.pickerBtn, (errors.start && !form.isAllDay) && styles.pickerBtnError, !!form.isAllDay && { opacity:0.5 }]}> 
+              <Text style={[styles.pickerText, (errors.start && !form.isAllDay) && styles.pickerTextError]}>{form.isAllDay? '--:--' : form.startTime}</Text>
             </Pressable>
           </View>
         </View>
@@ -422,8 +426,8 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
           </View>
           <View style={[styles.field, styles.half]}>
             <Text style={styles.label}>Giờ kết thúc</Text>
-            <Pressable onPress={()=>openTime('endTime')} style={[styles.pickerBtn, errors.end && styles.pickerBtnError]}> 
-              <Text style={[styles.pickerText, errors.end && styles.pickerTextError]}>{form.endTime || (form.endDate? '23:59' : '')}</Text>
+            <Pressable onPress={()=>{ if(!form.isAllDay) openTime('endTime'); }} disabled={!!form.isAllDay || !form.endDate} style={[styles.pickerBtn, (errors.end && !form.isAllDay) && styles.pickerBtnError, (!!form.isAllDay || !form.endDate) && { opacity:0.5 }]}> 
+              <Text style={[styles.pickerText, (errors.end && !form.isAllDay) && styles.pickerTextError]}>{form.isAllDay? '--:--' : (form.endTime || (form.endDate? '23:59' : ''))}</Text>
             </Pressable>
           </View>
         </View>
@@ -454,12 +458,12 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
           })}
         </View>
         {!projectId ? (
-          <View style={[styles.typeRow, { opacity: isLeader ? 1 : 0.65 }]}>            
+          <View style={[styles.typeRow, { paddingVertical: 6 }]}>            
             <View>
-              <Text style={styles.label}>{form.type === 'group' ? 'Tác vụ nhóm' : 'Tác vụ cá nhân'}</Text>
-              <Text style={styles.sub}>{form.type==='group'? 'Có thể giao thành viên khác':'Chỉ bạn thực hiện'}</Text>
+              <Text style={styles.label}>Tác vụ cả ngày</Text>
+              <Text style={styles.sub}>Bỏ chọn giờ, chỉ theo ngày</Text>
             </View>
-            <Switch value={form.type === 'group'} disabled={!isLeader} onValueChange={(v)=> update('type', v? 'group':'personal')} />
+            <Switch value={!!form.isAllDay} onValueChange={(v)=> update('isAllDay', v as any)} />
           </View>
         ) : (
           <View style={[styles.typeRow, { paddingVertical: 6 }]}>            
@@ -636,14 +640,20 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
       <View style={styles.card}>          
         <Text style={styles.sectionTitle}>Tóm tắt</Text>
         <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Ưu tiên (tính):</Text><Text style={styles.summaryValue}>{priorityLabel(form.priority)}</Text></View>
-        <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Loại:</Text><Text style={styles.summaryValue}>{form.type==='group'?'Nhóm':'Cá nhân'}</Text></View>
+  <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Cả ngày:</Text><Text style={styles.summaryValue}>{form.isAllDay? 'Có' : 'Không'}</Text></View>
         {(() => {
           const startDate = form.date; const endDate = form.endDate; const sameDay = endDate && (startDate === endDate);
           const fmt = (d:string) => { if(!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d; const [y,m,dd]=d.split('-'); return `${dd}/${m}/${y}`; };
           let display = '';
-          if(!endDate){ display = `${fmt(startDate)} ${form.startTime || ''}${form.endTime ? '–' + form.endTime : ''}`; }
-          else if(sameDay){ display = `${fmt(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`; }
-          else { display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`; }
+          if(form.isAllDay){
+            if(!endDate){ display = `${fmt(startDate)} • Cả ngày`; }
+            else if(sameDay){ display = `${fmt(startDate)} • Cả ngày`; }
+            else { display = `${fmt(startDate)} → ${fmt(endDate)} • Cả ngày`; }
+          } else {
+            if(!endDate){ display = `${fmt(startDate)} ${form.startTime || ''}${form.endTime ? '–' + form.endTime : ''}`; }
+            else if(sameDay){ display = `${fmt(startDate)} ${form.startTime || ''}${form.startTime && form.endTime ? '–' : ''}${form.endTime || ''}`; }
+            else { display = `${fmt(startDate)} ${form.startTime || ''} → ${fmt(endDate)} ${form.endTime || ''}`; }
+          }
           return (
             <View style={styles.summaryRow}><Text style={styles.summaryLabel}>Thời gian:</Text><Text style={styles.summaryValue}>{display}</Text></View>
           );
