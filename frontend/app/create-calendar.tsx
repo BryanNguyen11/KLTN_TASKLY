@@ -44,7 +44,7 @@ interface FormState {
 
 export default function CreateEventScreen(){
   const router = useRouter();
-  const { editId, occDate, projectId } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string }>();
+  const { editId, occDate, projectId, refProjectModal } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string; refProjectModal?: string }>();
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
 
@@ -294,7 +294,7 @@ export default function CreateEventScreen(){
         DeviceEventEmitter.emit('eventCreated', res.data);
         Alert.alert('Thành công','Đã tạo lịch');
       }
-      router.back();
+  router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể lưu lịch');
     } finally { setSaving(false); }
@@ -457,7 +457,7 @@ Lý do: ${reason}` : message);
       Alert.alert('Xóa lịch','Bạn có chắc muốn xóa lịch này?',[
         { text:'Hủy', style:'cancel' },
         { text:'Xóa', style:'destructive', onPress: async ()=>{
-          try { await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader()); DeviceEventEmitter.emit('eventDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa lịch'); router.back(); }
+          try { await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader()); DeviceEventEmitter.emit('eventDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa lịch'); router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); } }
           catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
         } }
       ]);
@@ -476,7 +476,7 @@ Lý do: ${reason}` : message);
               await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
               DeviceEventEmitter.emit('eventDeleted', editId);
               DeviceEventEmitter.emit('toast','Đã xóa lịch');
-              router.back();
+              router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
               return;
             }
             const freq = form.repeat?.frequency || 'weekly';
@@ -493,7 +493,7 @@ Lý do: ${reason}` : message);
               const res = await axios.put(`${API_BASE}/api/events/${editId}`, { date: nextStartISO }, authHeader());
               DeviceEventEmitter.emit('eventUpdated', res.data);
               DeviceEventEmitter.emit('toast','Đã bỏ lần xuất hiện đầu tiên');
-              router.back();
+              router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
               return;
             }
             const dayBefore = (()=>{ const d0 = new Date(base); d0.setDate(d0.getDate()-1); return toLocalISODate(d0); })();
@@ -515,7 +515,7 @@ Lý do: ${reason}` : message);
             const created = await axios.post(`${API_BASE}/api/events`, newPayload, authHeader());
             DeviceEventEmitter.emit('eventCreated', created.data);
             DeviceEventEmitter.emit('toast','Đã xóa lần này và giữ các lần khác');
-            router.back();
+            router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
           } catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
         } },
       { text:'Từ lần này trở đi', style:'destructive', onPress: async ()=>{
@@ -525,11 +525,11 @@ Lý do: ${reason}` : message);
               const res = await axios.put(`${API_BASE}/api/events/${editId}`, { repeat: { ...(form.repeat||{}), endMode: 'onDate', endDate: dayBefore } }, authHeader());
               DeviceEventEmitter.emit('eventUpdated', res.data);
               DeviceEventEmitter.emit('toast','Đã xóa các lần trong tương lai');
-              router.back();
+              router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
             } else {
               await axios.delete(`${API_BASE}/api/events/${editId}`, authHeader());
               DeviceEventEmitter.emit('toast','Đã xóa lịch');
-              router.back();
+              router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); }
             }
           } catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
         }
@@ -786,7 +786,7 @@ Lý do: ${reason}` : message);
   </KeyboardAwareScrollView>
 
       <View style={styles.bottomBar}>
-        <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>router.back()}><Text style={styles.cancelText}>Hủy</Text></Pressable>
+  <Pressable style={[styles.bottomBtn, styles.cancelBtn]} onPress={()=>{ router.back(); if(projectId && refProjectModal==='1'){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); } }}><Text style={styles.cancelText}>Hủy</Text></Pressable>
         <Pressable style={[styles.bottomBtn, !form.title.trim()||!form.typeId||saving ? styles.disabledBtn: styles.saveBtn]} disabled={!form.title.trim()||!form.typeId||saving} onPress={save}>
           <Text style={styles.saveText}>{saving? (editId? 'Đang lưu...' : 'Đang lưu...') : (editId? 'Lưu thay đổi':'Tạo lịch')}</Text>
         </Pressable>

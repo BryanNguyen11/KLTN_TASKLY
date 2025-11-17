@@ -15,6 +15,17 @@ export type ProjectInsightsProps = {
     projectId?: string;
   }>; 
   events: Array<{ id: string; date?: string; startTime?: string; endTime?: string; projectId?: string }>; 
+  onOverduePress?: () => void;
+  onUpcomingEventsPress?: () => void;
+  onRemainingPress?: () => void;
+  onCompletedPress?: () => void;
+  onlyGantt?: boolean;
+  // Optional fine-grained control over which sections to show and how
+  visibleSections?: Array<'overview'|'burndown'|'flow'|'gantt'>;
+  overviewSimple?: boolean; // when true: Overview shows only Completed vs Uncompleted
+  hideTabs?: boolean; // hide the tab header even if not using visibleSections
+  onDueSoon3Press?: () => void;
+  onDueSoon7Press?: () => void;
 };
 
 const palette = {
@@ -40,14 +51,14 @@ const fmtDMY = (d: Date) => `${String(d.getDate()).padStart(2,'0')}/${String(d.g
 
 type ChartTab = 'overview' | 'burndown' | 'flow' | 'gantt';
 
-export default function ProjectInsights({ project, tasks, events }: ProjectInsightsProps){
+export default function ProjectInsights({ project, tasks, events, onOverduePress, onUpcomingEventsPress, onRemainingPress, onCompletedPress, onlyGantt, visibleSections, overviewSimple, hideTabs, onDueSoon3Press, onDueSoon7Press }: ProjectInsightsProps){
   const screenW = Dimensions.get('window').width;
   const [containerW, setContainerW] = React.useState<number | null>(null);
   const width = React.useMemo(() => {
     const base = containerW ? containerW - 16 : screenW - 24; // account for card padding
     return Math.max(240, Math.min(base, 820));
   }, [containerW, screenW]);
-  const [tab, setTab] = React.useState<ChartTab>('overview');
+  const [tab, setTab] = React.useState<ChartTab>(onlyGantt ? 'gantt' : 'overview');
   const scrollRef = React.useRef<ScrollView | null>(null);
   // Tooltip state for Gantt bars
   const [tt, setTt] = React.useState<null | { x: number; y: number; title: string; dateText: string; status: string }>(null);
@@ -64,8 +75,8 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
     (s === 'completed' && statusFilter.completed) || ((s === 'todo' || s === 'in-progress') && statusFilter.todo);
 
   // Filter to this project only (defensive)
-  const projTasksAll = tasks.filter(t => (t as any).projectId === project._id || (t as any).type === 'group');
-  const projTasks = projTasksAll.filter(t => (t as any).type !== 'group');
+  // Use provided tasks directly (caller should scope by project). Avoid special 'group' handling to keep counts correct.
+  const projTasks = tasks.slice();
   const filteredTasks = projTasks.filter(t => statusMatches(t.status));
   const total = projTasks.length;
 
@@ -118,167 +129,91 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
   };
   const completedCount = projTasks.filter(t => t.status==='completed').length;
   const inProgCount = projTasks.filter(t => t.status==='in-progress' || t.status==='todo').length;
+  const uncompletedCount = total - completedCount;
   const overdueCount = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && (new Date(t.endDate+'T23:59:59') < today)).length;
   const dueSoonCount = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && endInDays(t.endDate) >= 0 && endInDays(t.endDate) <= 7).length;
+  const dueSoon3Count = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && endInDays(t.endDate) >= 0 && endInDays(t.endDate) <= 3).length;
   const pctDone = total ? Math.round((completedCount/total)*100) : 0;
 
-  // Simple Gantt renderer using react-native-svg
-  // zoom via pixel-per-day
-  const [pxPerDay, setPxPerDay] = React.useState(18);
-  const minPxPerDay = 8;
-  const maxPxPerDay = 48;
-
-  // Auto-scroll near today when possible
-  React.useEffect(() => {
+  // Weekly due bar chart (easier visual than per-task Gantt)
+  const renderDueByWeek = () => {
     const sDate = new Date(start);
     const eDate = new Date(endBound);
-    const totalDays = Math.max(1, dayDiff(sDate, eDate));
-    const padX = 12;
-    const today = new Date();
-    if (today < sDate || today > eDate) return;
-    const idx = Math.max(0, Math.min(totalDays, dayDiff(sDate, today)));
-    const todayX = padX + idx * pxPerDay;
-    if (scrollRef.current) {
-      const target = Math.max(0, todayX - width * 0.4);
-      // slight timeout allows ScrollView to mount
-      const t = setTimeout(() => scrollRef.current?.scrollTo({ x: target, y: 0, animated: true }), 50);
-      return () => clearTimeout(t);
-    }
-  }, [pxPerDay, width, start.toString(), (endBound as any).toString()]);
-
-  const renderGantt = () => {
-    if (projTasks.length === 0) {
-      return <Text style={{ color: palette.subtle, fontSize: 12 }}>Chưa có dữ liệu tác vụ</Text>;
-    }
-    const padX = 12;
-    const padY = 34; // extra space for bigger labels
-    const barH = 22; // larger bars for readability
-    const gap = 12;
-    const maxRows = Math.min(filteredTasks.length, 40);
-    const rows = filteredTasks
-      .slice()
-      .sort((a,b) => {
-        const ad = (a as any).date || '';
-        const bd = (b as any).date || '';
-        return ad.localeCompare(bd);
-      })
-      .slice(0, maxRows);
-    // timeline sizing by days
-    const sDate = new Date(start);
-    const eDate = new Date(endBound);
-    const totalDays = Math.max(1, dayDiff(sDate, eDate));
-    const chartW = padX * 2 + totalDays * pxPerDay;
-    const calcX = (iso: string) => {
-      const cur = new Date(iso + 'T00:00:00');
-      const idx = Math.max(0, Math.min(totalDays, dayDiff(sDate, cur)));
-      return padX + idx * pxPerDay;
+    // Build week buckets (Mon..Sun)
+    const getMonday = (d: Date) => {
+      const day = d.getDay();
+      const off = day === 0 ? -6 : 1 - day;
+      const m = new Date(d);
+      m.setDate(d.getDate() + off);
+      m.setHours(0,0,0,0);
+      return m;
     };
-    const today = new Date();
-    const showToday = today >= sDate && today <= eDate;
-    const todayX = calcX(toISODate(today));
-    const contentH = padY*2 + rows.length * (barH + gap) + 6;
-
-    // Build tick marks (max ~7)
-    const tickStep = Math.max(1, Math.ceil(totalDays / 10));
-    const tickDates: Date[] = [];
-    const cur = new Date(sDate);
-    while (cur <= eDate) {
-      tickDates.push(new Date(cur));
-      cur.setDate(cur.getDate() + tickStep);
+    const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
+    const wStart = getMonday(sDate);
+    const wEnd = getMonday(eDate);
+    const weeks: Array<{ start: Date; end: Date }> = [];
+    for(let cur = new Date(wStart); cur <= wEnd; cur = addDays(cur, 7)){
+      weeks.push({ start: new Date(cur), end: addDays(new Date(cur), 6) });
     }
-    if (tickDates[tickDates.length-1].getTime() !== eDate.getTime()) {
-      tickDates.push(new Date(eDate));
-    }
+    const series = weeks.map(wk => {
+      const startIso = toISODate(wk.start);
+      const endIso = toISODate(wk.end);
+      // Count tasks due this week (use endDate; exclude completed)
+      const cnt = projTasks.filter(t => t.status !== 'completed' && t.endDate && t.endDate >= startIso && t.endDate <= endIso).length;
+      return cnt;
+    });
+    const n = series.length;
+    if(n === 0){ return <Text style={{ color: palette.subtle, fontSize:12 }}>Chưa có dữ liệu tác vụ</Text>; }
+    const h = 220; const pad = { l: 36, r: 12, t: 18, b: 36 };
+    const chartW = Math.max(width, 280);
+    const plotW = chartW - pad.l - pad.r;
+    const plotH = h - pad.t - pad.b;
+    const maxY = Math.max(1, ...series);
+    const gap = 6;
+    const barW = Math.max(12, Math.floor((plotW - gap*(n-1)) / Math.max(1,n)));
+    const xOf = (i:number)=> pad.l + i*(barW+gap);
+    const yOf = (v:number)=> pad.t + plotH - (plotH * (v/maxY));
     return (
-      <ScrollView
-        ref={scrollRef}
-        horizontal
-        showsHorizontalScrollIndicator
-        contentContainerStyle={{}}
-      >
-      <Svg width={Math.max(chartW, width)} height={contentH}>
-        {/* top axis baseline */}
-        <SvgLine x1={padX} y1={padY - 18} x2={chartW - padX} y2={padY - 18} stroke={palette.grid} strokeWidth={1} />
-        {/* ticks */}
-        {tickDates.map((d,i) => {
-          const iso = toISODate(d);
-          const x = calcX(iso);
-          const label = fmtDM(d);
-          const isRight = x > (chartW - 30);
+      <Svg width={chartW} height={h}>
+        {/* y grid */}
+        {[0,.25,.5,.75,1].map((f,idx)=>{
+          const yv = Math.round(maxY*f);
+          const y = yOf(yv);
           return (
-            <React.Fragment key={`tick-${i}`}>
-              <SvgLine x1={x} y1={padY - 22} x2={x} y2={contentH} stroke={palette.grid} strokeWidth={1} strokeDasharray="3 4" />
-              <SvgText
-                x={isRight ? x - 2 : x + 2}
-                y={padY - 24}
-                fill={palette.subtle}
-                fontSize={11}
-                textAnchor={isRight ? 'end' : 'start'}
-              >
-                {label}
-              </SvgText>
+            <React.Fragment key={idx}>
+              <SvgLine x1={pad.l} y1={y} x2={chartW - pad.r} y2={y} stroke={palette.grid} strokeWidth={1} strokeDasharray="3 4" />
+              <SvgText x={pad.l - 6} y={y + 4} fontSize={10} fill={palette.subtle} textAnchor="end">{yv}</SvgText>
             </React.Fragment>
           );
         })}
-        {/* today line */}
-        {showToday && (
-          <SvgLine x1={todayX} y1={0} x2={todayX} y2={contentH} stroke="#ef4444" strokeWidth={1} strokeDasharray="4 3" />
-        )}
-        {rows.map((t, i) => {
-          const d = (t as any).date as string;
-          const ed = ((t as any).endDate as string) || d;
-          const x1 = calcX(d);
-          const x2 = calcX(ed);
-          const y = padY + i * (barH + gap);
-          // Collapse 'in-progress' into 'todo' for color/display
-          const color = t.status==='completed' ? palette.completed : palette.todo;
-          const minX = Math.min(x1, x2);
-          const maxX = Math.max(x1, x2);
-          const w = Math.max(6, maxX - minX);
+        {/* x labels */}
+        {weeks.map((wk,i)=> (
+          <SvgText key={i} x={xOf(i) + barW/2} y={h - 14} fontSize={10} fill={palette.subtle} textAnchor="middle">{fmtDM(wk.start)}</SvgText>
+        ))}
+        {/* bars */}
+        {series.map((v,i)=> {
+          const x = xOf(i); const y = yOf(v); const bh = Math.max(2, (pad.t + plotH) - y);
           return (
-            <React.Fragment key={(t as any).id}>
-              <Rect
-                x={minX}
-                y={y}
-                width={w}
-                height={barH}
-                rx={4}
-                ry={4}
-                fill={color}
-                opacity={0.88}
-                onPress={() => {
-                  const title = (t as any).title || 'Tác vụ';
-                  const dateText = d === ed ? fmtDM(new Date(d + 'T00:00:00')) : `${fmtDM(new Date(d + 'T00:00:00'))}–${fmtDM(new Date(ed + 'T00:00:00'))}`;
-                  setTt({ x: minX + w / 2, y, title, dateText, status: t.status });
-                }}
+            <React.Fragment key={i}>
+              <Rect x={x} y={y} width={barW} height={bh} rx={4} ry={4} fill={palette.todo} opacity={0.9}
+                onPress={() => setLt({ x: x + barW/2, y: y - 10, label: `${fmtDM(weeks[i].start)}–${fmtDM(weeks[i].end)}`, value: v })}
               />
-              <SvgText x={minX + 8} y={y + barH - 5} fill="#ffffff" fontSize={11}>
-                {(t as any).title?.slice(0, 20) || 'Tác vụ'}
-              </SvgText>
             </React.Fragment>
           );
         })}
-        {/* tooltip */}
-        {tt && (
+        {/* tooltip (reuse lt state) */}
+        {lt && (
           <React.Fragment>
-            {/* bubble */}
-            <Rect x={Math.max(tt.x - 80, 4)} y={Math.max(tt.y - 36, 2)} width={160} height={34} rx={6} ry={6} fill="#111827" opacity={0.92} />
-            {/* pointer triangle */}
-            <SvgPath d={`M ${tt.x - 6} ${tt.y - 2} L ${tt.x + 6} ${tt.y - 2} L ${tt.x} ${tt.y + 6} Z`} fill="#111827" opacity={0.92} />
-            <SvgText x={Math.max(tt.x - 72, 8)} y={Math.max(tt.y - 23, 14)} fill="#ffffff" fontSize={11} fontWeight="bold">
-              {tt.title?.slice(0, 24)}
-            </SvgText>
-            <SvgText x={Math.max(tt.x - 72, 8)} y={Math.max(tt.y - 9, 28)} fill="#d1d5db" fontSize={10}>
-              {tt.dateText} · {tt.status === 'completed' ? 'Hoàn thành' : 'Chưa làm'}
-            </SvgText>
+            <Rect x={Math.max(lt.x - 54, 4)} y={Math.max(lt.y - 24, 2)} width={108} height={22} rx={6} ry={6} fill="#111827" opacity={0.92} />
+            <SvgText x={Math.max(lt.x - 48, 8)} y={Math.max(lt.y - 10, 14)} fill="#fff" fontSize={10} fontWeight="bold">{lt.value} tác vụ</SvgText>
+            <SvgText x={Math.max(lt.x - 48, 8)} y={Math.max(lt.y + 4, 26)} fill="#d1d5db" fontSize={9}>{lt.label}</SvgText>
           </React.Fragment>
         )}
       </Svg>
-      </ScrollView>
     );
   };
 
-  const ChartHeader = (
+  const ChartHeader = (!onlyGantt && !visibleSections && !hideTabs) ? (
     <View style={{ marginBottom: 6 }}>
       <Text style={{ color: palette.text, fontWeight: '700', fontSize: 14, marginBottom: 8 }}>Giám sát dự án</Text>
       <View style={{ flexDirection:'row', backgroundColor:'#eef2f7', borderRadius: 999, padding: 4, alignSelf:'flex-start' }}>
@@ -294,7 +229,7 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
         ))}
       </View>
     </View>
-  );
+  ) : null;
 
   const rangeText = `Khoảng thời gian: ${fmtDMY(new Date(start))} – ${fmtDMY(new Date(endBound))}`;
 
@@ -454,77 +389,153 @@ export default function ProjectInsights({ project, tasks, events }: ProjectInsig
     );
   };
 
+  const cardBase: any = Platform.select({
+    ios: { backgroundColor:'#fff', borderRadius:12, padding:12, shadowColor:'#000', shadowOpacity:0.08, shadowOffset:{ width:0, height:2 }, shadowRadius:8 },
+    default: { backgroundColor:'#fff', borderRadius:12, padding:12, borderWidth:1, borderColor:'#e5e7eb' }
+  });
+  const chipCardBase: any = Platform.select({
+    ios: { padding:12, borderRadius:12, backgroundColor:'#fff', shadowColor:'#000', shadowOpacity:0.06, shadowOffset:{ width:0, height:1 }, shadowRadius:6 },
+    default: { padding:10, borderRadius:10, borderWidth:1, borderColor:'#e5e7eb' }
+  });
+
   const OverviewSection = (
-    <View style={{ backgroundColor:'#fff', borderRadius:12, padding:12, borderWidth:1, borderColor:'#e5e7eb' }}>
+    <View style={cardBase}>
       <View style={{ flexDirection:'row', flexWrap:'wrap', gap:12, marginBottom:12 }}>
-        {[{label:'Tổng tác vụ', value: total },{label:'Hoàn thành', value: completedCount },{label:'Đang làm/Chờ', value: inProgCount },{label:'Quá hạn', value: overdueCount },{label:'Sắp đến hạn (7d)', value: dueSoonCount }].map((kpi, idx)=>(
-          <View key={idx} style={{ flexGrow:1, minWidth:120, padding:10, borderWidth:1, borderColor:'#e5e7eb', borderRadius:10 }}>
-            <Text style={{ color: palette.subtle, fontSize:11 }}>{kpi.label}</Text>
-            <Text style={{ color: palette.text, fontSize:18, fontWeight:'800' }}>{kpi.value}</Text>
-          </View>
-        ))}
+        {overviewSimple ? (
+          <>
+            <Pressable onPress={onRemainingPress} style={{ flexGrow:1, minWidth:140, ...chipCardBase }}>
+              <Text style={{ color: palette.subtle, fontSize:12 }}>Chưa hoàn thành</Text>
+              <Text style={{ color: palette.text, fontSize:22, fontWeight:'800', marginTop:2 }}>{uncompletedCount}</Text>
+              <Text style={{ color:'#3b82f6', fontSize:11, marginTop:6 }}>Bấm để xem</Text>
+            </Pressable>
+            <Pressable onPress={onCompletedPress} style={{ flexGrow:1, minWidth:140, ...chipCardBase }}>
+              <Text style={{ color: palette.subtle, fontSize:12 }}>Hoàn thành</Text>
+              <Text style={{ color: palette.text, fontSize:22, fontWeight:'800', marginTop:2 }}>{completedCount}</Text>
+              <Text style={{ color:'#3b82f6', fontSize:11, marginTop:6 }}>Bấm để xem</Text>
+            </Pressable>
+            <Pressable onPress={onOverduePress} style={{ flexGrow:1, minWidth:140, ...chipCardBase }}>
+              <Text style={{ color: '#b91c1c', fontSize:12 }}>Quá hạn</Text>
+              <Text style={{ color: '#b91c1c', fontSize:22, fontWeight:'800', marginTop:2 }}>{overdueCount}</Text>
+              <Text style={{ color:'#ef4444', fontSize:11, marginTop:6 }}>Bấm để xem</Text>
+            </Pressable>
+            <Pressable onPress={onDueSoon3Press} style={{ flexGrow:1, minWidth:140, ...chipCardBase }}>
+              <Text style={{ color: palette.subtle, fontSize:12 }}>Sắp tới hạn (3 ngày)</Text>
+              <Text style={{ color: palette.text, fontSize:22, fontWeight:'800', marginTop:2 }}>{dueSoon3Count}</Text>
+              <Text style={{ color:'#3b82f6', fontSize:11, marginTop:6 }}>Bấm để xem</Text>
+            </Pressable>
+            <Pressable onPress={onDueSoon7Press} style={{ flexGrow:1, minWidth:140, ...chipCardBase }}>
+              <Text style={{ color: palette.subtle, fontSize:12 }}>Sắp tới hạn (7 ngày)</Text>
+              <Text style={{ color: palette.text, fontSize:22, fontWeight:'800', marginTop:2 }}>{dueSoonCount}</Text>
+              <Text style={{ color:'#3b82f6', fontSize:11, marginTop:6 }}>Bấm để xem</Text>
+            </Pressable>
+          </>
+        ) : (
+          ([
+            {label:'Tổng tác vụ', value: total, onPress: undefined },
+            {label:'Hoàn thành', value: completedCount, onPress: onCompletedPress },
+            {label:'Đang làm/Chờ', value: inProgCount, onPress: onRemainingPress },
+            {label:'Quá hạn', value: overdueCount, onPress: onOverduePress },
+            {label:'Sắp đến hạn (7d)', value: dueSoonCount, onPress: onUpcomingEventsPress },
+          ] as Array<{label:string; value:number; onPress?: ()=>void}>).map((kpi, idx)=>(
+            <Pressable key={idx} onPress={kpi.onPress} disabled={!kpi.onPress} style={{ flexGrow:1, minWidth:120, ...chipCardBase, opacity: kpi.onPress? 1: 0.85 }}>
+              <Text style={{ color: palette.subtle, fontSize:11 }}>{kpi.label}</Text>
+              <Text style={{ color: palette.text, fontSize:18, fontWeight:'800' }}>{kpi.value}</Text>
+              {kpi.onPress && <Text style={{ color:'#3b82f6', fontSize:10, marginTop:4 }}>Bấm để xem</Text>}
+            </Pressable>
+          ))
+        )}
       </View>
-      <View style={{ flexDirection:'row', alignItems:'center', justifyContent:'space-between' }}>
-        <View style={{ flex:1, alignItems:'center' }}>{renderDonut()}</View>
-        <View style={{ flex:1, paddingLeft:12 }}>
-          <Text style={{ color: palette.text, fontWeight:'700', marginBottom:6 }}>Phân bố trạng thái</Text>
-          <View style={{ gap:8 }}>
-            <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
-              <View style={{ width:10, height:10, borderRadius:5, backgroundColor: palette.completed }} />
-              <Text style={{ color: palette.text, fontSize:12 }}>Hoàn thành: {completedCount}</Text>
+      {(() => {
+        const isNarrow = width < 420;
+        return (
+          <View style={{ flexDirection: isNarrow ? 'column' : 'row', alignItems: isNarrow ? 'stretch' : 'center', justifyContent:'space-between' }}>
+            <View style={{ flex: isNarrow ? undefined : 1, alignItems:'center' }}>{renderDonut()}</View>
+            <View style={{ flex: isNarrow ? undefined : 1, paddingLeft: isNarrow ? 0 : 12, marginTop: isNarrow ? 12 : 0 }}>
+              <Text style={{ color: palette.text, fontWeight:'700', marginBottom:6 }}>Phân bố trạng thái</Text>
+              <View style={{ gap:8 }}>
+                <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                  <View style={{ width:10, height:10, borderRadius:5, backgroundColor: palette.completed }} />
+                  <Text style={{ color: palette.text, fontSize:12 }}>Hoàn thành: {completedCount}</Text>
+                </View>
+                <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                  <View style={{ width:10, height:10, borderRadius:5, backgroundColor: palette.todo }} />
+                  <Text style={{ color: palette.text, fontSize:12 }}>{overviewSimple ? 'Chưa hoàn thành' : 'Chưa làm/Đang làm'}: {overviewSimple ? uncompletedCount : inProgCount}</Text>
+                </View>
+                <Text style={{ color: palette.subtle, fontSize:11, marginTop:8 }}>{rangeText}</Text>
+              </View>
             </View>
-            <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
-              <View style={{ width:10, height:10, borderRadius:5, backgroundColor: palette.todo }} />
-              <Text style={{ color: palette.text, fontSize:12 }}>Chưa làm/Đang làm: {inProgCount}</Text>
-            </View>
-            <Text style={{ color: palette.subtle, fontSize:11, marginTop:8 }}>{rangeText}</Text>
           </View>
-        </View>
-      </View>
+        );
+      })()}
     </View>
   );
+
+  if (onlyGantt) {
+    return (
+      <View style={{ marginTop: 12 }} onLayout={(e)=> setContainerW(e.nativeEvent.layout.width)}>
+        <View style={{ ...(cardBase as object), padding: 8, overflow: 'hidden' }}>
+          <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Hạn theo tuần</Text>
+          <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 8 }}>{rangeText}</Text>
+          <View style={{ marginBottom: 8 }}>{FilterChips}</View>
+          {renderDueByWeek()}
+        </View>
+      </View>
+    );
+  }
+
+  if (visibleSections && visibleSections.length) {
+    return (
+      <View style={{ marginTop: 12 }} onLayout={(e)=> setContainerW(e.nativeEvent.layout.width)}>
+        {/* No tabs in this controlled mode */}
+        {visibleSections.includes('overview') && OverviewSection}
+        {visibleSections.includes('burndown') && (
+          <View style={{ ...(cardBase as object), marginTop:12 }}>
+            <Text style={{ color: palette.subtle, fontSize:12, marginBottom:6 }}>Burndown (Số tác vụ còn lại)</Text>
+            {renderBurndown()}
+          </View>
+        )}
+        {visibleSections.includes('flow') && (
+          <View style={{ ...(cardBase as object), marginTop:12 }}>
+            <Text style={{ color: palette.subtle, fontSize:12, marginBottom:6 }}>Tiến độ tích lũy</Text>
+            {renderFlow()}
+          </View>
+        )}
+        {visibleSections.includes('gantt') && (
+          <View style={{ ...(cardBase as object), padding: 8, overflow: 'hidden', marginTop:12 }}>
+            <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Hạn theo tuần</Text>
+            <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 8 }}>{rangeText}</Text>
+            <View style={{ marginBottom: 8 }}>{FilterChips}</View>
+            {renderDueByWeek()}
+          </View>
+        )}
+      </View>
+    );
+  }
 
   return (
     <View style={{ marginTop: 12 }} onLayout={(e)=> setContainerW(e.nativeEvent.layout.width)}>
       {ChartHeader}
-      {/* Overview */}
       {tab === 'overview' && (
         OverviewSection
       )}
-      {/* Burndown */}
       {tab === 'burndown' && (
-        <View style={{ backgroundColor:'#fff', borderRadius:12, padding:12, borderWidth:1, borderColor:'#e5e7eb' }}>
+        <View style={cardBase}>
           <Text style={{ color: palette.subtle, fontSize:12, marginBottom:6 }}>Burndown (Số tác vụ còn lại)</Text>
           {renderBurndown()}
         </View>
       )}
-      {/* Flow */}
       {tab === 'flow' && (
-        <View style={{ backgroundColor:'#fff', borderRadius:12, padding:12, borderWidth:1, borderColor:'#e5e7eb' }}>
+        <View style={cardBase}>
           <Text style={{ color: palette.subtle, fontSize:12, marginBottom:6 }}>Tiến độ tích lũy</Text>
           {renderFlow()}
         </View>
       )}
-      {/* Gantt */}
       {tab === 'gantt' && (
-        <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#e5e7eb', overflow: 'hidden' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ color: palette.subtle, fontSize: 12 }}>Gantt chart</Text>
-            <View style={{ flexDirection: 'row', gap: 6 }}>
-              <Pressable onPress={() => setPxPerDay(p => Math.max(minPxPerDay, Math.round((p - 2))))} style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb' }}>
-                <Text style={{ color: palette.text, fontSize: 12 }}>−</Text>
-              </Pressable>
-              <View style={{ paddingHorizontal: 6, paddingVertical: 4 }}>
-                <Text style={{ color: palette.subtle, fontSize: 11 }}>{pxPerDay}px/ngày</Text>
-              </View>
-              <Pressable onPress={() => setPxPerDay(p => Math.min(maxPxPerDay, Math.round((p + 2))))} style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb' }}>
-                <Text style={{ color: palette.text, fontSize: 12 }}>+</Text>
-              </Pressable>
-            </View>
-          </View>
+        <View style={{ ...(cardBase as object), padding: 8, overflow: 'hidden' }}>
+          <Text style={{ color: palette.subtle, fontSize: 12, marginBottom: 6 }}>Hạn theo tuần</Text>
           <Text style={{ color: palette.subtle, fontSize: 11, marginBottom: 8 }}>{rangeText}</Text>
           <View style={{ marginBottom: 8 }}>{FilterChips}</View>
-          {renderGantt()}
+          {renderDueByWeek()}
         </View>
       )}
     </View>

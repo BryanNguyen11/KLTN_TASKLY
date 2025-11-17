@@ -42,9 +42,10 @@ export interface TaskFormProps {
   initialValues?: Partial<TaskFormState>;
   onClose?: () => void;
   onSaved?: (task: any) => void;
+  refProjectModal?: boolean; // indicates we should reopen project detail modal on back/save/delete
 }
 
-export default function TaskForm({ mode, editId, occDate, projectId, initialValues, onClose, onSaved }: TaskFormProps){
+export default function TaskForm({ mode, editId, occDate, projectId, initialValues, onClose, onSaved, refProjectModal }: TaskFormProps){
   const router = useRouter();
   const { user, token } = useAuth();
   const isLeader = user?.role === 'leader' || user?.role === 'admin';
@@ -290,14 +291,14 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
         const res = await axios.put(`${API_BASE}/api/tasks/${editId}`, payload, authHeader());
         DeviceEventEmitter.emit('taskUpdated', res.data);
         DeviceEventEmitter.emit('toast','Đã lưu thay đổi');
-        if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
-        else { router.back(); }
+  if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
+  else { router.back(); if(projectId && refProjectModal){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); } }
       } else {
         const res = await axios.post(`${API_BASE}/api/tasks`, payload, authHeader());
         DeviceEventEmitter.emit('taskCreated', res.data);
         DeviceEventEmitter.emit('toast','Đã tạo tác vụ');
-        if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
-        else { router.back(); }
+  if(mode==='compact'){ onSaved?.(res.data); onClose?.(); }
+  else { router.back(); if(projectId && refProjectModal){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); } }
       }
     } catch(e:any){
       Alert.alert('Lỗi', e?.response?.data?.message || (editId? 'Không cập nhật được':'Không thể tạo tác vụ'));
@@ -310,7 +311,7 @@ export default function TaskForm({ mode, editId, occDate, projectId, initialValu
     Alert.alert('Xóa tác vụ', 'Bạn có chắc muốn xóa tác vụ này?', [
       { text:'Hủy', style:'cancel' },
       { text:'Xóa', style:'destructive', onPress: async ()=>{
-        try { await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader()); DeviceEventEmitter.emit('taskDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa tác vụ'); if(mode==='compact'){ onClose?.(); } else { router.back(); } }
+  try { await axios.delete(`${API_BASE}/api/tasks/${editId}`, authHeader()); DeviceEventEmitter.emit('taskDeleted', editId); DeviceEventEmitter.emit('toast','Đã xóa tác vụ'); if(mode==='compact'){ onClose?.(); } else { router.back(); if(projectId && refProjectModal){ DeviceEventEmitter.emit('openProjectDetail', { id: projectId }); } } }
         catch(e:any){ Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể xóa'); }
       } }
     ]);

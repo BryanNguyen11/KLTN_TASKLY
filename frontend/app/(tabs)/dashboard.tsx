@@ -1377,6 +1377,64 @@ export default function DashboardScreen() {
     ]);
   };
 
+  // INSIGHTS POPUP STATE
+  type InsightsPopupKind = 'overdue' | 'upcomingEvents' | 'remaining' | 'completed' | 'dueSoon3' | 'dueSoon7' | null;
+  const [insightsPopup, setInsightsPopup] = useState<InsightsPopupKind>(null);
+  const closeInsightsPopup = () => setInsightsPopup(null);
+  // Derive project-scoped tasks & events for insights
+  const activeProjectTasks = useMemo(()=> activeProject ? tasks.filter(t=> (t as any).projectId === activeProject._id) : [], [activeProject, tasks]);
+  const activeProjectEvents = useMemo(()=> activeProject ? events.filter(e=> e.projectId === activeProject._id) : [], [activeProject, events]);
+  const nowISO = toLocalISODate(new Date());
+  const projectOverdueTasks = useMemo(()=> activeProjectTasks.filter(t=> {
+    if(t.completed) return false;
+    const dueIso = t.endDate || t.date; if(!dueIso) return false;
+    let endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+    const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+    return Date.now() > deadline.getTime();
+  }), [activeProjectTasks]);
+  const projectUpcomingEvents = useMemo(()=> activeProjectEvents.filter(ev => {
+    // upcoming next 14 days
+    if(!ev.date) return false;
+    const occDates: string[] = [];
+    // Expand simple repeat occurrences window (naive: iterate next 30 days)
+    const horizon = 14;
+    for(let i=0;i<=horizon;i++){
+      const iso = addDaysISO(nowISO, i);
+      if(occursOnDate(ev as any, iso)) occDates.push(iso);
+    }
+    return occDates.length>0;
+  }), [activeProjectEvents]);
+  const projectRemainingTasks = useMemo(()=> activeProjectTasks.filter(t=> !t.completed && !projectOverdueTasks.includes(t)), [activeProjectTasks, projectOverdueTasks]);
+  const projectCompletedTasks = useMemo(()=> activeProjectTasks.filter(t=> t.completed), [activeProjectTasks]);
+  // Due soon (3 days and 7 days) using endDate to match ProjectInsights counts; exclude overdue and completed
+  const projectDueSoon3Tasks = useMemo(()=> activeProjectTasks.filter(t=> {
+    if(t.completed) return false;
+    const dueIso = (t as any).endDate; if(!dueIso) return false;
+    // not overdue
+    let endTime = (t as any).endTime || ((t as any).time && (t as any).time.includes('-') ? (t as any).time.split('-')[1] : undefined);
+    const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+    if(Date.now() > deadline.getTime()) return false;
+    const d = diffDays(nowISO, dueIso);
+    return d >= 0 && d <= 3;
+  }), [activeProjectTasks, nowISO]);
+  const projectDueSoon7Tasks = useMemo(()=> activeProjectTasks.filter(t=> {
+    if(t.completed) return false;
+    const dueIso = (t as any).endDate; if(!dueIso) return false;
+    let endTime = (t as any).endTime || ((t as any).time && (t as any).time.includes('-') ? (t as any).time.split('-')[1] : undefined);
+    const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+    if(Date.now() > deadline.getTime()) return false;
+    const d = diffDays(nowISO, dueIso);
+    return d >= 0 && d <= 7;
+  }), [activeProjectTasks, nowISO]);
+
+  // Callback handlers passed into ProjectInsights (will open popup lists)
+  const handleOverduePress = () => setInsightsPopup('overdue');
+  const handleUpcomingEventsPress = () => setInsightsPopup('upcomingEvents');
+  const handleRemainingPress = () => setInsightsPopup('remaining');
+  const handleCompletedPress = () => setInsightsPopup('completed');
+  const handleDueSoon3Press = () => setInsightsPopup('dueSoon3');
+  const handleDueSoon7Press = () => setInsightsPopup('dueSoon7');
+
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>
       <FlatList
@@ -1793,6 +1851,7 @@ export default function DashboardScreen() {
                   </View>
                 ))}
                 {/* Day detail card: show both events and tasks for selected day */}
+
                 {selectedDateISO ? (
                   (() => {
                     const iso = selectedDateISO;
@@ -2224,16 +2283,34 @@ export default function DashboardScreen() {
                   </View>
                   {/* Quick actions in project */}
                   <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
-                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#2f6690' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ projectId: projId } }); }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#2f6690' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ projectId: projId, refProjectModal:'1' } }); }}>
                       <Ionicons name='add-circle-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Tác vụ mới</Text>
                     </Pressable>
-                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ projectId: projId } }); }}>
+                    <Pressable style={[styles.inviteAcceptBtn,{ backgroundColor:'#3a7ca5' }]} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-calendar', params:{ projectId: projId, refProjectModal:'1' } }); }}>
                       <Ionicons name='calendar-outline' size={16} color='#fff' />
                       <Text style={styles.inviteAcceptText}>Lịch mới</Text>
                     </Pressable>
                   </View>
                   {/* Project view content */}
+                  {/* Insights charts */}
+                  <View style={{ marginTop:16 }}>
+                    <ProjectInsights
+                      project={activeProject as any}
+                      tasks={activeProjectTasks as any}
+                      events={activeProjectEvents as any}
+                      onOverduePress={handleOverduePress}
+                      onUpcomingEventsPress={handleUpcomingEventsPress}
+                      onRemainingPress={handleRemainingPress}
+                      onCompletedPress={handleCompletedPress}
+                      onDueSoon3Press={handleDueSoon3Press}
+                      onDueSoon7Press={handleDueSoon7Press}
+                      visibleSections={['overview','gantt']}
+                      overviewSimple
+                      hideTabs
+                    />
+                  </View>
+
                   {projectSelectedTab === 'Hôm nay' && (()=>{
                     const iso = todayISO;
                     const dayEvents = events.filter(ev => (ev.projectId===projId) && occursOnDate(ev as any, iso) && matchesQueryEvent(ev));
@@ -2260,7 +2337,7 @@ export default function DashboardScreen() {
                         {dayTasks.length>0 && (
                           <View style={{ gap:8, marginTop:10 }}>
                             {dayTasks.map(t => (
-                              <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }} />
+                              <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso, refProjectModal:'1', projectId: projId } }); }} />
                             ))}
                           </View>
                         )}
@@ -2322,7 +2399,7 @@ export default function DashboardScreen() {
                               {dayTasks.length>0 ? (
                                 <View style={styles.dayTaskChips}>
                                   {dayTasks.map((t, idx)=> (
-                                    <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }}>
+                                    <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso, refProjectModal:'1', projectId: projId } }); }}>
                                       <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
                                       <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
                                     </Pressable>
@@ -2401,7 +2478,7 @@ export default function DashboardScreen() {
                                 {dayTasks.length>0 && (
                                   <View style={{ gap:8, marginTop:10 }}>
                                     {dayTasks.map(t => (
-                                      <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso } }); }} />
+                                      <EnhancedProjectTaskChip key={t.id} t={t} occDate={iso} onPress={()=> { setProjectModalAnim('none'); setShowProjectsModal(false); router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: iso, refProjectModal:'1', projectId: projId } }); }} />
                                     ))}
                                   </View>
                                 )}
@@ -2478,6 +2555,104 @@ export default function DashboardScreen() {
                 </View>
               );
             })()}
+            {/* INSIGHTS POPUP (Modal to stick center) */}
+            <Modal
+              visible={!!insightsPopup}
+              transparent
+              animationType='fade'
+              onRequestClose={closeInsightsPopup}
+            >
+              <Pressable style={[styles.insightsPopupOverlay, { zIndex: 999 }]} onPress={closeInsightsPopup}>
+                <Pressable style={styles.insightsPopupCard} onPress={(e)=> e.stopPropagation()}>
+                  <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                    <Text style={styles.insightsPopupTitle}>
+                      {insightsPopup==='overdue' && 'Tác vụ quá hạn'}
+                      {insightsPopup==='upcomingEvents' && 'Lịch sắp diễn ra (14 ngày)'}
+                      {insightsPopup==='remaining' && 'Tác vụ còn lại'}
+                      {insightsPopup==='completed' && 'Đã hoàn thành'}
+                      {insightsPopup==='dueSoon3' && 'Sắp tới hạn (3 ngày)'}
+                      {insightsPopup==='dueSoon7' && 'Sắp tới hạn (7 ngày)'}
+                    </Text>
+                    <Pressable onPress={closeInsightsPopup} style={styles.popupCloseBtn}>
+                      <Ionicons name='close' size={18} color='#334155' />
+                    </Pressable>
+                  </View>
+                  <ScrollView style={{ maxHeight:400 }}>
+                    {insightsPopup==='overdue' && projectOverdueTasks.map(t => (
+                      <View key={t.id} style={styles.popupItem}>
+                        <Ionicons name='alert-circle-outline' size={16} color='#dc2626' style={{ marginRight:8 }} />
+                        <Pressable style={{ flex:1 }} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, refProjectModal:'1' } })}>
+                          <Text style={styles.popupItemText} numberOfLines={1}>{t.title}</Text>
+                        </Pressable>
+                        <Pressable onPress={()=> handleDelete(t.id)} hitSlop={8}>
+                          <Ionicons name='trash-outline' size={18} color='#dc2626' />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {insightsPopup==='upcomingEvents' && projectUpcomingEvents.map(ev => (
+                      <Pressable key={ev.id} style={styles.popupItem} onPress={()=> router.push({ pathname:'/create-calendar', params:{ editId: ev.id, refProjectModal:'1' } })}>
+                        <Ionicons name='calendar-outline' size={16} color='#0f766e' style={{ marginRight:8 }} />
+                        <Text style={styles.popupItemText} numberOfLines={1}>{ev.title}</Text>
+                      </Pressable>
+                    ))}
+                    {insightsPopup==='remaining' && projectRemainingTasks.map(t => (
+                      <View key={t.id} style={styles.popupItem}>
+                        <Ionicons name='checkbox-outline' size={16} color='#2563eb' style={{ marginRight:8 }} />
+                        <Pressable style={{ flex:1 }} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, refProjectModal:'1' } })}>
+                          <Text style={styles.popupItemText} numberOfLines={1}>{t.title}</Text>
+                        </Pressable>
+                        <Pressable onPress={()=> handleDelete(t.id)} hitSlop={8}>
+                          <Ionicons name='trash-outline' size={18} color='#dc2626' />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {insightsPopup==='completed' && projectCompletedTasks.map(t => (
+                      <View key={t.id} style={styles.popupItem}>
+                        <Ionicons name='checkmark-circle-outline' size={16} color='#16a34a' style={{ marginRight:8 }} />
+                        <Pressable style={{ flex:1 }} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, refProjectModal:'1' } })}>
+                          <Text style={[styles.popupItemText, { textDecorationLine:'line-through', color:'#64748b' }]} numberOfLines={1}>{t.title}</Text>
+                        </Pressable>
+                        <Pressable onPress={()=> handleDelete(t.id)} hitSlop={8}>
+                          <Ionicons name='trash-outline' size={18} color='#dc2626' />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {insightsPopup==='dueSoon3' && projectDueSoon3Tasks.map(t => (
+                      <View key={t.id} style={styles.popupItem}>
+                        <Ionicons name='time-outline' size={16} color='#2563eb' style={{ marginRight:8 }} />
+                        <Pressable style={{ flex:1 }} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, refProjectModal:'1' } })}>
+                          <Text style={styles.popupItemText} numberOfLines={1}>{t.title}</Text>
+                        </Pressable>
+                        <Pressable onPress={()=> handleDelete(t.id)} hitSlop={8}>
+                          <Ionicons name='trash-outline' size={18} color='#dc2626' />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {insightsPopup==='dueSoon7' && projectDueSoon7Tasks.map(t => (
+                      <View key={t.id} style={styles.popupItem}>
+                        <Ionicons name='time-outline' size={16} color='#2563eb' style={{ marginRight:8 }} />
+                        <Pressable style={{ flex:1 }} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, refProjectModal:'1' } })}>
+                          <Text style={styles.popupItemText} numberOfLines={1}>{t.title}</Text>
+                        </Pressable>
+                        <Pressable onPress={()=> handleDelete(t.id)} hitSlop={8}>
+                          <Ionicons name='trash-outline' size={18} color='#dc2626' />
+                        </Pressable>
+                      </View>
+                    ))}
+                    {insightsPopup && (
+                      ((insightsPopup==='overdue' && projectOverdueTasks.length===0) ||
+                       (insightsPopup==='upcomingEvents' && projectUpcomingEvents.length===0) ||
+                       (insightsPopup==='remaining' && projectRemainingTasks.length===0) ||
+                       (insightsPopup==='completed' && projectCompletedTasks.length===0) ||
+                       (insightsPopup==='dueSoon3' && projectDueSoon3Tasks.length===0) ||
+                       (insightsPopup==='dueSoon7' && projectDueSoon7Tasks.length===0)) && (
+                        <Text style={styles.popupEmpty}>Không có mục</Text>
+                      )
+                    )}
+                  </ScrollView>
+                </Pressable>
+              </Pressable>
+            </Modal>
             <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
               <Text style={styles.membersHeader}>Thành viên</Text>
               <Pressable onPress={()=> { setShowProjectsModal(false); if(activeProject?._id){ router.push({ pathname:'/project-members/[id]', params:{ id: activeProject._id } }); } }} style={[styles.inviteAcceptBtn,{ backgroundColor:'#16425b' }]}> 
@@ -2569,6 +2744,7 @@ export default function DashboardScreen() {
     </SafeAreaView>
   );
 }
+
 
 // Action sheet modal appended after main return earlier? (Ensure inside component before export). Adding below component export logic isn't valid. We integrate above just before closing SafeAreaView.
 
@@ -2827,4 +3003,16 @@ const styles = StyleSheet.create({
   checkCircleSmallDone:{ backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
   overduePill:{ backgroundColor:'#dc2626', paddingHorizontal:8, paddingVertical:3, borderRadius:10 },
   overduePillText:{ color:'#fff', fontSize:11, fontWeight:'700' },
+  // Added project insights modal + popup styles
+  projectModalBackdrop:{ flex:1, backgroundColor:'rgba(0,0,0,0.35)' },
+  projectModalContainer:{ flex:1, backgroundColor:'#f1f5f9' },
+  projectTitle:{ fontSize:18, fontWeight:'700', color:'#16425b' },
+  projectCloseBtn:{ padding:8, borderRadius:24, backgroundColor:'#e2e8f0' },
+  insightsPopupOverlay:{ position:'absolute', top:0, left:0, right:0, bottom:0, justifyContent:'center', alignItems:'center', backgroundColor:'rgba(0,0,0,0.4)' },
+  insightsPopupCard:{ width:'86%', maxWidth:520, backgroundColor:'#ffffff', borderRadius:16, padding:16, borderWidth:1, borderColor:'#e2e8f0' },
+  insightsPopupTitle:{ fontSize:16, fontWeight:'700', color:'#0f172a' },
+  popupCloseBtn:{ padding:6, borderRadius:24, backgroundColor:'#f1f5f9' },
+  popupItem:{ flexDirection:'row', alignItems:'center', paddingVertical:10, paddingHorizontal:12, borderRadius:10, backgroundColor:'#f8fafc', borderWidth:1, borderColor:'#e2e8f0', marginBottom:8 },
+  popupItemText:{ flex:1, fontSize:13, color:'#1e293b' },
+  popupEmpty:{ textAlign:'center', paddingVertical:24, color:'#64748b', fontSize:12 },
 });
