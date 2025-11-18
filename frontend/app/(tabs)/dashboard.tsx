@@ -1404,7 +1404,8 @@ export default function DashboardScreen() {
     }
     return occDates.length>0;
   }), [activeProjectEvents]);
-  const projectRemainingTasks = useMemo(()=> activeProjectTasks.filter(t=> !t.completed && !projectOverdueTasks.includes(t)), [activeProjectTasks, projectOverdueTasks]);
+  // Remaining now includes ALL not completed (including overdue) so the KPI card matches popup list expectation
+  const projectRemainingTasks = useMemo(()=> activeProjectTasks.filter(t=> !t.completed), [activeProjectTasks]);
   const projectCompletedTasks = useMemo(()=> activeProjectTasks.filter(t=> t.completed), [activeProjectTasks]);
   // Due soon (3 days and 7 days) using endDate to match ProjectInsights counts; exclude overdue and completed
   const projectDueSoon3Tasks = useMemo(()=> activeProjectTasks.filter(t=> {
@@ -2011,29 +2012,61 @@ export default function DashboardScreen() {
                       </Animated.View>
                     </Pressable>
                     <Pressable
-                      style={{ flex:1 }}
+                      style={{ flex:1, minWidth:0 }}
                       hitSlop={4}
                       delayLongPress={350}
                       onLongPress={()=>{ setActionTask(item); setShowActions(true); }}
                       onPress={()=> { if(item.subTasks && item.subTasks.length>0){ openSubModal(item); } else { const occ = selectedTab==='Hôm nay' ? todayISO : selectedDateISO; router.push({ pathname:'/create-task', params:{ editId: item.id, occDate: occ } }); } }}
                     >
-                      <View style={{ flexDirection:'row', alignItems:'center' }}>
+                      <View style={{ flexDirection:'row', alignItems:'flex-start', gap:8 }}>
                         <View style={[styles.priorityDot,{ backgroundColor: priorityColor(item.priority)}]} />
-                        <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone]} numberOfLines={1}>{item.title}</Text>
+                        <Text style={[styles.taskTitle, item.completed && styles.taskTitleDone, { flex:1 }]} numberOfLines={2}>{item.title}</Text>
                       </View>
-                      <View style={styles.metaRow}>
+                      <View style={[styles.metaRow,{ flexWrap:'wrap', marginTop:6 }]}>                        
                         {overdueLabel && (
                           <View style={styles.overduePill}><Text style={styles.overduePillText}>{overdueLabel}</Text></View>
                         )}
-                        {!!item.time && (<>
-                          <Ionicons name="time" size={12} color="#2f6690" />
-                          <Text style={styles.metaText}>{item.time}</Text>
-                        </>)}
-                        {item.importance && <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>}
+                        {/* Time range */}
+                        {!!item.time && (
+                          <View style={styles.metaSmallRow}>
+                            <Ionicons name="time-outline" size={12} color="#2f6690" />
+                            <Text style={styles.metaText}>{item.time}</Text>
+                          </View>
+                        )}
+                        {!!item.startTime && !item.time && (
+                          <View style={styles.metaSmallRow}>
+                            <Ionicons name="time-outline" size={12} color="#2f6690" />
+                            <Text style={styles.metaText}>{item.startTime}{item.endTime? `-${item.endTime}`:''}</Text>
+                          </View>
+                        )}
+                        {/* Multi-day span */}
+                        {item.endDate && item.date && item.endDate !== item.date && (
+                          <View style={styles.metaSmallRow}>
+                            <Ionicons name="calendar-outline" size={12} color="#2563eb" />
+                            <Text style={[styles.metaText,{ color:'#2563eb' }]}>{fmtDM(item.date!)}–{fmtDM(item.endDate!)}</Text>
+                          </View>
+                        )}
+                        {/* Importance */}
+                        {item.importance && (
+                          <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>
+                        )}
+                        {/* Project badge */}
                         {item.type === 'group' && (() => {
                           const pid = (item as any).projectId as string | undefined;
                           const name = pid ? projectNameById[pid] : undefined;
                           return <Text style={styles.groupBadge}>{name || 'Nhóm'}</Text>;
+                        })()}
+                        {/* Due soon pill (<=7d and not overdue) */}
+                        {(() => {
+                          if(item.completed) return null;
+                          const dueIso = item.endDate || item.date;
+                          if(!dueIso) return null;
+                          const endTime = item.endTime || (item.time && item.time.includes('-') ? item.time.split('-')[1] : undefined);
+                          const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+                          if(Date.now() > deadline.getTime()) return null;
+                          const diffDaysVal = Math.round((deadline.getTime() - Date.now())/86400000);
+                          if(diffDaysVal < 0 || diffDaysVal > 7) return null;
+                          return <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{diffDaysVal===0? 'Hôm nay' : `Còn ${diffDaysVal}d`}</Text></View>;
                         })()}
                       </View>
                     </Pressable>
@@ -2292,25 +2325,6 @@ export default function DashboardScreen() {
                       <Text style={styles.inviteAcceptText}>Lịch mới</Text>
                     </Pressable>
                   </View>
-                  {/* Project view content */}
-                  {/* Insights charts */}
-                  <View style={{ marginTop:16 }}>
-                    <ProjectInsights
-                      project={activeProject as any}
-                      tasks={activeProjectTasks as any}
-                      events={activeProjectEvents as any}
-                      onOverduePress={handleOverduePress}
-                      onUpcomingEventsPress={handleUpcomingEventsPress}
-                      onRemainingPress={handleRemainingPress}
-                      onCompletedPress={handleCompletedPress}
-                      onDueSoon3Press={handleDueSoon3Press}
-                      onDueSoon7Press={handleDueSoon7Press}
-                      visibleSections={['overview','gantt']}
-                      overviewSimple
-                      hideTabs
-                    />
-                  </View>
-
                   {projectSelectedTab === 'Hôm nay' && (()=>{
                     const iso = todayISO;
                     const dayEvents = events.filter(ev => (ev.projectId===projId) && occursOnDate(ev as any, iso) && matchesQueryEvent(ev));
@@ -2490,6 +2504,24 @@ export default function DashboardScreen() {
                       </View>
                     );
                   })()}
+
+                  {/* Insights charts moved below Today/Week/Month as requested */}
+                  <View style={{ marginTop:16 }}>
+                    <ProjectInsights
+                      project={activeProject as any}
+                      tasks={activeProjectTasks as any}
+                      events={activeProjectEvents as any}
+                      onOverduePress={handleOverduePress}
+                      onUpcomingEventsPress={handleUpcomingEventsPress}
+                      onRemainingPress={handleRemainingPress}
+                      onCompletedPress={handleCompletedPress}
+                      onDueSoon3Press={handleDueSoon3Press}
+                      onDueSoon7Press={handleDueSoon7Press}
+                      visibleSections={['overview','gantt']}
+                      overviewSimple
+                      hideTabs
+                    />
+                  </View>
 
                   {/* Edit box (project settings inline when editing) */}
                   {editingProject && (

@@ -127,12 +127,36 @@ export default function ProjectInsights({ project, tasks, events, onOverduePress
   const endInDays = (iso?: string) => {
     if(!iso) return NaN; const d = new Date(iso + 'T00:00:00'); return dayDiff(today, d);
   };
+  // Helper to compute an absolute deadline (date + optional end time)
+  const getDeadline = (t: { date?: string; endDate?: string; endTime?: string; [k:string]:any }) => {
+    const dueIso = t.endDate || t.date;
+    if(!dueIso) return null;
+    const timeStr: string | undefined = t.endTime || (t.time && typeof t.time==='string' && t.time.includes('-') ? String(t.time).split('-')[1] : undefined);
+    return timeStr ? new Date(`${dueIso}T${timeStr}:00`) : new Date(`${dueIso}T23:59:59`);
+  };
   const completedCount = projTasks.filter(t => t.status==='completed').length;
   const inProgCount = projTasks.filter(t => t.status==='in-progress' || t.status==='todo').length;
   const uncompletedCount = total - completedCount;
-  const overdueCount = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && (new Date(t.endDate+'T23:59:59') < today)).length;
-  const dueSoonCount = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && endInDays(t.endDate) >= 0 && endInDays(t.endDate) <= 7).length;
-  const dueSoon3Count = projTasks.filter(t => (t.status!=='completed') && !!t.endDate && endInDays(t.endDate) >= 0 && endInDays(t.endDate) <= 3).length;
+  const overdueCount = projTasks.filter(t => {
+    if(t.status==='completed') return false;
+    const dl = getDeadline(t as any); if(!dl) return false; return dl.getTime() < Date.now();
+  }).length;
+  const dueSoonCount = projTasks.filter(t => {
+    if(t.status==='completed') return false;
+    const dl = getDeadline(t as any); if(!dl) return false;
+    if(dl.getTime() < Date.now()) return false; // exclude overdue
+    const iso = (t.endDate || t.date); if(!iso) return false;
+    const d = endInDays(iso);
+    return d >= 0 && d <= 7;
+  }).length;
+  const dueSoon3Count = projTasks.filter(t => {
+    if(t.status==='completed') return false;
+    const dl = getDeadline(t as any); if(!dl) return false;
+    if(dl.getTime() < Date.now()) return false; // exclude overdue
+    const iso = (t.endDate || t.date); if(!iso) return false;
+    const d = endInDays(iso);
+    return d >= 0 && d <= 3;
+  }).length;
   const pctDone = total ? Math.round((completedCount/total)*100) : 0;
 
   // Weekly due bar chart (easier visual than per-task Gantt)
