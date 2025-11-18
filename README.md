@@ -1,176 +1,226 @@
-## KLTN_TASKLY – Task, Project & Calendar for students
+Đã rõ — mình soạn một README dạng Markdown “đẹp, dễ đọc” để bạn dán thẳng lên GitHub.
 
-KLTN_TASKLY là ứng dụng quản lý học tập và cộng tác nhóm dành cho sinh viên, gồm:
-- Tác vụ có lặp, nhiều ngày, nhắc nhở, tiến độ, checklist con
-- Lịch (Calendar) có loại (type), lặp, nhắc nhở giống iOS Calendar
-- Dự án với lời mời, chấp nhận/từ chối, phân quyền cơ bản
-- Thông báo đẩy (Expo push) và mô phỏng local trong Expo Go (tránh trùng lặp)
-- Realtime với Socket.IO, cập nhật tức thì theo dự án
-- Scheduler trên server: tóm tắt hàng ngày và nhắc đúng thời điểm
+---
 
-## Monorepo
+# KLTN_TASKLY — Task, Project & Calendar cho sinh viên
 
-- backend/ — Node.js + Express + Mongoose + Socket.IO (API, push scheduler)
-- frontend/ — Expo Router + React Native (ứng dụng di động/web)
+[![Node.js >= 18](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
+[![Expo SDK 54](https://img.shields.io/badge/Expo-SDK%2054-000000.svg?logo=expo&logoColor=white)](https://docs.expo.dev/)
+[![React Native](https://img.shields.io/badge/React%20Native-mobile-blue.svg)](https://reactnative.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](#license)
 
-## Tính năng chính
+Ứng dụng quản lý học tập và cộng tác nhóm:
+- Tác vụ: lặp/ngày, nhiều ngày, giờ bắt đầu/kết thúc, mức độ quan trọng, checklist con, tiến độ.
+- Lịch (Calendar): loại lịch (type) và trường tùy biến, lặp, nhiều ngày, nhắc nhở như iOS Calendar.
+- Dự án: mời thành viên qua email, chấp nhận/từ chối, phân quyền cơ bản.
+- Thông báo: Expo push (build/dev client) và mô phỏng local (Expo Go).
+- Realtime: Socket.IO theo dự án.
+- AI: gợi ý sắp xếp ưu tiên, hỏi đáp thời gian tự nhiên (VI/EN).
 
-- Tác vụ
-  - Lặp (ngày/tuần/tháng/năm), kéo dài nhiều ngày, giờ bắt đầu/kết thúc
-  - Checklist con, phần trăm hoàn thành, mức độ quan trọng
-  - Nhắc nhở theo phút trước sự kiện hoặc giờ cụ thể
-- Lịch (Calendar)
-  - Phân loại (Calendar Type), trường tùy biến theo loại (label + key)
-  - Lặp, kéo dài nhiều ngày, nhắc nhở (giống iOS)
-  - Giao diện tạo/sửa rõ ràng, hiển thị tóm tắt
-- Dự án & mời thành viên
-  - Gửi lời mời theo email, chấp nhận/từ chối, thu hồi
-  - Thông báo chỉ gửi cho người mời (fallback owner), hạn chế spam
-  - Quản lý thành viên, rời dự án
-- Thông báo
-  - Server là nguồn push duy nhất (Expo Push API); có cửa sổ “dedupe” tránh trùng
-  - Trong Expo Go, mô phỏng local notification khi chưa có push token
-- Realtime
-  - Socket.IO, phòng theo dự án, gửi sự kiện: task created/updated, project updated
-- Scheduler
-  - Quét nhắc nhở theo phút (tasks & calendar) và gửi push “đúng giờ”
-  - Tóm tắt hàng ngày (có thể tùy chỉnh)
+---
 
-## Công nghệ
+## Mục lục
 
-- Backend: Node.js, Express 5, Mongoose 8, Socket.IO 4, JWT, dotenv
-- Frontend: Expo SDK 54, expo-router 6, React Native 0.81, expo-notifications
-- Hạ tầng: Expo Go/dev client, LAN
+- Tính năng nổi bật
+- Kiến trúc & Công nghệ
+- Cấu trúc thư mục
+- Bắt đầu nhanh
+- Cấu hình & Biến môi trường
+- Giám sát dự án (Project Insights)
+- Thông báo & Realtime
+- Scripts hữu ích
+- Troubleshooting
+- Lộ trình
+- Đóng góp
+- License
 
-## Yêu cầu
+---
 
-- Node.js LTS (>= 18)
-- MongoDB (local hoặc Atlas)
-- Thiết bị/simulator trong cùng mạng LAN với backend khi chạy Expo Go
+## Tính năng nổi bật
 
-## Cấu trúc thư mục (rút gọn)
+- Tổng quan dự án (KPI tương tác)
+  - Chưa hoàn thành • Hoàn thành • Quá hạn
+  - Sắp tới hạn (3 ngày) • Sắp tới hạn (7 ngày)
+  - Bấm KPI → Popup danh sách giữa màn hình (Modal “stick”), hỗ trợ:
+    - Mở chỉnh sửa
+    - Xóa nhanh qua icon thùng rác
+- Biểu đồ theo dõi:
+  - Donut: % hoàn thành
+  - Burndown: số tác vụ còn lại theo ngày
+  - Tiến độ tích lũy (Flow)
+  - Hạn theo tuần (thay Gantt): biểu đồ cột số tác vụ đến hạn từng tuần — dễ đọc trên màn hình nhỏ
+- Giao diện thân thiện iOS: thẻ bo tròn, bóng đổ nhẹ, target chạm lớn, responsive
+- AI:
+  - Gợi ý sắp xếp danh sách tác vụ theo ưu tiên
+  - Hỏi đáp thời gian tự nhiên (VD: “trong 7 ngày tới”, “cuối tuần này”, khoảng ngày)
 
-- backend/
-  - server.js, controllers/, models/, routes/, middleware/
-- frontend/
-  - app/ (file-based routing)
-    - create-task.tsx, create-calendar.tsx, create-calendar-type.tsx
-    - (tabs)/dashboard.tsx, auth/, project-members/[id].tsx, …
-  - contexts/ (Auth, Notifications)
-  - utils/ (calendar.ts, dashboard.ts, …)
-  - scripts/update-env-ip.js
+---
 
-## Backend – Cài đặt & chạy
+## Kiến trúc & Công nghệ
 
-1) Cài dependencies
+- Monorepo
+  - `backend/` — Node.js + Express 5 + Mongoose 8 + Socket.IO 4 (API, scheduler push)
+  - `frontend/` — Expo Router + React Native (ứng dụng di động/web)
+- Yêu cầu
+  - Node.js LTS (>= 18), MongoDB (local/Atlas), thiết bị/simulator cùng LAN khi dùng Expo Go
+
+---
+
+## Cấu trúc thư mục
+
+```
+KLTN_TASKLY/
+├─ backend/
+│  ├─ server.js
+│  ├─ controllers/  models/  routes/  middleware/
+│  └─ package.json
+├─ frontend/
+│  ├─ app/                # file-based routing (expo-router)
+│  │  ├─ (tabs)/dashboard.tsx
+│  │  ├─ create-task.tsx
+│  │  ├─ create-calendar.tsx
+│  │  └─ create-calendar-type.tsx
+│  ├─ components/ProjectInsights.tsx
+│  ├─ contexts/           # Auth, Notifications
+│  ├─ utils/              # calendar.ts, dashboard.ts, ...
+│  ├─ scripts/update-env-ip.js
+│  └─ package.json
+└─ README.md
+```
+
+---
+
+## Bắt đầu nhanh
+
+### 1) Backend
+
 ```bash
 cd backend
 npm install
 ```
 
-2) Tạo file .env (ví dụ):
+Tạo `.env`:
+
 ```
 MONGODB_URI=mongodb://localhost:27017/kltn_taskly
 JWT_SECRET=change-me
 PORT=5000
 ```
 
-3) Chạy server
+Chạy server:
+
 ```bash
 npm run dev
 # hoặc:
 npm start
 ```
 
-4) Kiểm tra health
-- GET http://localhost:5000/api/health → 200 OK
+Health check: GET http://localhost:5000/api/health → 200 OK
 
-Ghi chú:
-- Server có scheduler gửi nhắc nhở và tóm tắt; không cần bật riêng.
-- Socket.IO bật sẵn (transport websocket), client sẽ join theo dự án.
+### 2) Frontend
 
-## Frontend – Cài đặt & chạy
-
-1) Cài dependencies
 ```bash
 cd frontend
 npm install
 ```
 
-2) Cấu hình API base cho LAN
-- Tùy chọn A (khuyến nghị): dùng script tự động cập nhật IP LAN cho Expo
+Cấu hình API base theo IP LAN:
+
+- Cách A (khuyến nghị) – script tự động
   - macOS:
     ```bash
     npm run start:mac
     ```
-    Script sẽ cập nhật endpoint theo IP máy và port backend (mặc định 5050/5000 theo cấu hình) rồi mở Expo.
   - Windows:
     ```bash
     npm run start:win
     ```
-- Tùy chọn B (thủ công): đặt biến môi trường `EXPO_PUBLIC_API_BASE` (ví dụ: http://192.168.1.10:5000/api) thông qua app config/env theo hướng dẫn Expo. Ứng dụng dùng `process.env.EXPO_PUBLIC_API_BASE`.
+- Cách B (thủ công) — đặt `EXPO_PUBLIC_API_BASE` (VD: http://192.168.1.10:5000/api)
 
-3) Chạy ứng dụng
+Chạy ứng dụng:
+
 ```bash
 npx expo start
-# mở bằng:
+# Mở trên:
 # - iOS Simulator
 # - Android Emulator
-# - Expo Go trên thiết bị thật (cùng LAN)
+# - Expo Go (thiết bị thật, cùng LAN)
 ```
 
-4) Thông báo đẩy
-- Lần đầu, ứng dụng sẽ xin quyền thông báo.
-- Trong Expo Go, app sẽ mô phỏng local notification nếu chưa đăng ký push token, tránh duplicate với push server.
-- Khi build dev client/production và có push token, server sẽ gửi Expo push; client sẽ tắt mô phỏng local để không bị trùng.
+---
 
-## Luồng chính trong ứng dụng
+## Cấu hình & Biến môi trường
 
-- Dashboard
-  - Tabs Hôm nay/Tuần/Tháng, hiển thị cả Tasks & Calendar occurrences
-  - Nút nổi (FAB) để tạo Nhanh: Tác vụ, Lịch, Dự án
-- Tạo Tác vụ (`/create-task`)
-  - Ngày, giờ, lặp, nhiều ngày, nhắc nhở, checklist
-- Tạo Lịch (`/create-calendar`)
-  - Loại lịch (Calendar Type), thuộc tính theo loại, lặp, nhiều ngày, nhắc nhở
-- Loại Lịch (`/create-calendar-type`)
-  - Tạo các trường hiển thị (label/key), đặt mặc định
-- Dự án & thành viên
-  - Quản lý trong modal từ Dashboard và màn hình thành viên `/project-members/[id]`
-  - Lời mời: chỉ hiển thị “pending”; có “X” để thu hồi; input mời có xử lý tránh bị bàn phím che
+- Backend `.env` (bắt buộc)
+  - `MONGODB_URI`, `JWT_SECRET`, `PORT`
+- Frontend (Expo)
+  - `EXPO_PUBLIC_API_BASE` → ví dụ: `http://<IP_LAN>:5000/api`
+  - Có thể cập nhật tự động qua `scripts/update-env-ip.js` với `start:mac` / `start:win`
 
-## Đặt tên & chuyển đổi
+---
 
-- “Event” đã được đổi sang “Calendar” ở frontend:
-  - create-event.tsx → create-calendar.tsx
-  - create-event-type.tsx → create-calendar-type.tsx
-  - events.ts → calendar.ts
-- Các route và import đã cập nhật tương ứng.
+## Giám sát dự án (Project Insights)
 
-## Scripts hữu ích (frontend)
+- KPI Overview: bấm để mở Modal danh sách (giữa màn hình, không bị trôi theo cuộn)
+- Donut % hoàn thành
+- Burndown: Số tác vụ còn lại theo thời gian
+- Flow: Hoàn thành vs Còn lại (stacked)
+- Hạn theo tuần (thay Gantt)
+  - Biểu đồ cột số lượng tác vụ đến hạn từng tuần (Mon–Sun)
+  - Tooltip: “X tác vụ” + tuần (dd/mm–dd/mm)
+  - Dễ nhìn trên màn hình nhỏ hơn so với Gantt truyền thống
 
+---
+
+## Thông báo & Realtime
+
+- Push
+  - Server là nguồn push duy nhất khi có push token (Expo Push API)
+  - Trong Expo Go (chưa có token), mô phỏng local notification để tránh trùng
+- Realtime
+  - Socket.IO rooms theo dự án
+  - Sự kiện: task created/updated/deleted, project updated/invite, …
+
+---
+
+## Scripts hữu ích
+
+Frontend:
 - `npm run start:mac` — cập nhật IP LAN + start Expo (macOS)
 - `npm run start:win` — cập nhật IP LAN + start Expo (Windows)
-- `npm run update:ip -- <PORT>` — chỉ chạy phần cập nhật IP (advanced)
+- `npm run update:ip -- <PORT>` — chỉ cập nhật endpoint (nâng cao)
 - `npm run lint` — linting
+
+---
 
 ## Troubleshooting
 
-- Không nhận được dữ liệu trong Expo Go
-  - Đảm bảo `EXPO_PUBLIC_API_BASE` trỏ đúng IP LAN của máy chạy backend và thiết bị ở chung mạng
-  - Thử `npm run start:mac` hoặc `start:win` để tự set
+- Không thấy dữ liệu trong Expo Go
+  - Kiểm tra `EXPO_PUBLIC_API_BASE` đúng IP LAN + port backend
+  - Dùng `start:mac` / `start:win` để auto set
 - Thông báo đẩy bị trùng
-  - App đã chặn mô phỏng local khi có push token; nếu đang dùng Expo Go, hãy chấp nhận quyền thông báo và/hoặc đăng ký token đúng cách
-- Giờ/ngày lệch múi giờ
-  - Ứng dụng chuẩn hóa ngày theo local device (YYYY-MM-DD), lưu ý khi test qua nhiều múi giờ
+  - Expo Go mô phỏng local khi chưa có push token; khi có token thật, client tự tắt mô phỏng
+- Lệch giờ/ngày
+  - Ứng dụng chuẩn hóa ngày theo local device (YYYY-MM-DD)
 
-## Lộ trình (gợi ý)
+---
 
-- Nâng cấp phân quyền dự án (owner/admin/member chi tiết hơn)
-- Nhắc nhở theo chuỗi (nhiều mốc cho cùng một mục)
+## Lộ trình
+
+- Phân quyền dự án chi tiết hơn (owner/admin/member)
+- Nhắc nhở nhiều mốc cho cùng một mục
 - Bộ lọc/nhãn nâng cao, search
-- Hỗ trợ offline-first
+- Offline-first
+
+---
+
+## Đóng góp
+
+PRs/Issues được chào đón! Hãy mở một issue để thảo luận trước khi triển khai thay đổi lớn.
+
+---
 
 ## License
 
-MIT (tùy chỉnh theo yêu cầu của bạn)
+MIT
+
