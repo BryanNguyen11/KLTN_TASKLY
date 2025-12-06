@@ -257,6 +257,26 @@ export default function ScanPreview() {
         body.repeat = { frequency: 'weekly', endMode: 'onDate', endDate: repeatEnd };
       }
       if(payload?.projectId) body.projectId = String(payload.projectId);
+      // Duplicate check: fetch existing events and compare
+      const existing = await axios.get(`${API_BASE}/api/events`, { headers: { Authorization: token ? `Bearer ${token}` : '' } }).then(r=> Array.isArray(r.data)? r.data: []).catch(()=>[]);
+      const sameDay = existing.filter((ev:any)=> String(ev.date||'') === String(body.date||''));
+      const overlaps = sameDay.find((ev:any)=> {
+        const t1s = String(body.startTime||''); const t1e = String(body.endTime||'');
+        const t2s = String(ev.startTime||''); const t2e = String(ev.endTime||'');
+        const toM = (t:string)=>{ const [h,m] = String(t||'').split(':'); return (parseInt(h||'0')*60)+(parseInt(m||'0')||0); };
+        if(!t1s || !t1e || !t2s || !t2e) return false;
+        const a1=toM(t1s), b1=toM(t1e), a2=toM(t2s), b2=toM(t2e);
+        const timeConflict = Math.max(a1,a2) < Math.min(b1,b2);
+        const titleConflict = String(ev.title||'').trim().toLowerCase() === String(body.title||'').trim().toLowerCase();
+        return timeConflict && titleConflict;
+      });
+      if(overlaps){
+        const msg = `Tác vụ "${String(body.title||'').trim()}" đã có trong thời gian biểu, bạn vẫn muốn tạo tác vụ mới chứ?`;
+        const proceed = await new Promise<boolean>((resolve)=>{
+          Alert.alert('Trùng lịch', msg, [ { text:'Huỷ', style:'cancel', onPress:()=> resolve(false) }, { text:'Vẫn tạo', style:'default', onPress:()=> resolve(true) } ]);
+        });
+        if(!proceed) return;
+      }
       await axios.post(`${API_BASE}/api/events`, body, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
   addNotification({ id:`evt_${Date.now()}`, type:'upcoming-event', title:`Đã tạo 1 lịch: ${e.title}`, at: Date.now() });
       setEdit(null);
@@ -281,7 +301,10 @@ export default function ScanPreview() {
         if(!typeId){ Alert.alert('Thiếu loại lịch','Không có loại lịch mặc định để tạo. Hãy tạo loại lịch trước.'); return; }
       }
       try{
-        for(const it of selected){
+        // Fetch existing events once for duplicate check
+        const existing = await axios.get(`${API_BASE}/api/events`, { headers:{ Authorization: token? `Bearer ${token}`:'' } }).then(r=> Array.isArray(r.data)? r.data: []).catch(()=>[]);
+        // Build bodies list
+        const bodies = selected.map(it => {
           const body:any = {
             title: it.title || 'Lịch mới',
             typeId,
@@ -294,6 +317,67 @@ export default function ScanPreview() {
             repeat: it.repeat || undefined,
           };
           if(payload?.projectId) body.projectId = String(payload.projectId);
+          return body;
+        });
+        // Detect conflicts first
+        const conflicts = bodies.filter(body => {
+          const sameDay = existing.filter((ev:any)=> String(ev.date||'') === String(body.date||''));
+          const overlaps = sameDay.find((ev:any)=> {
+            const t1s = String(body.startTime||''); const t1e = String(body.endTime||'');
+            const t2s = String(ev.startTime||''); const t2e = String(ev.endTime||'');
+            const toM = (t:string)=>{ const [h,m] = String(t||'').split(':'); return (parseInt(h||'0')*60)+(parseInt(m||'0')||0); };
+            if(!t1s || !t1e || !t2s || !t2e) return false;
+            const a1=toM(t1s), b1=toM(t1e), a2=toM(t2s), b2=toM(t2e);
+            const timeConflict = Math.max(a1,a2) < Math.min(b1,b2);
+            const titleConflict = String(ev.title||'').trim().toLowerCase() === String(body.title||'').trim().toLowerCase();
+            return timeConflict && titleConflict;
+          });
+          return !!overlaps;
+        });
+
+        let proceedAll = true;
+        if(conflicts.length > 3){
+          // Show popup listing conflicts with a global decision
+          await new Promise<void>((resolve)=>{
+            Alert.alert(
+              'Nhiều mục trùng lịch',
+              conflicts.map(c=> `• ${c.title} (${c.date} ${c.startTime||''}-${c.endTime||''})`).join('\n'),
+              [
+                { text:'Bỏ qua tất cả', style:'destructive', onPress:()=>{ proceedAll = false; resolve(); } },
+                { text:'Vẫn tạo tất cả', style:'default', onPress:()=>{ proceedAll = true; resolve(); } },
+              ],
+              { cancelable: true }
+            );
+          });
+        }
+
+        for(const body of bodies){
+          // If global modal was shown and user chose skip, skip conflicted ones
+          if(conflicts.length > 3){
+            const isConflict = conflicts.find(c => c === body);
+            if(isConflict && !proceedAll) continue;
+          }
+          // Otherwise, fall back to per-item alert
+          if(!(conflicts.length > 3)){
+            const sameDay = existing.filter((ev:any)=> String(ev.date||'') === String(body.date||''));
+            const overlaps = sameDay.find((ev:any)=> {
+              const t1s = String(body.startTime||''); const t1e = String(body.endTime||'');
+              const t2s = String(ev.startTime||''); const t2e = String(ev.endTime||'');
+              const toM = (t:string)=>{ const [h,m] = String(t||'').split(':'); return (parseInt(h||'0')*60)+(parseInt(m||'0')||0); };
+              if(!t1s || !t1e || !t2s || !t2e) return false;
+              const a1=toM(t1s), b1=toM(t1e), a2=toM(t2s), b2=toM(t2e);
+              const timeConflict = Math.max(a1,a2) < Math.min(b1,b2);
+              const titleConflict = String(ev.title||'').trim().toLowerCase() === String(body.title||'').trim().toLowerCase();
+              return timeConflict && titleConflict;
+            });
+            if(overlaps){
+              const msg = `Lịch "${String(body.title||'').trim()}" đã có trong thời gian biểu, bạn vẫn muốn tạo lịch mới chứ?`;
+              const proceed = await new Promise<boolean>((resolve)=>{
+                Alert.alert('Trùng lịch', msg, [ { text:'Bỏ qua', style:'cancel', onPress:()=> resolve(false) }, { text:'Vẫn tạo', style:'default', onPress:()=> resolve(true) } ]);
+              });
+              if(!proceed) continue;
+            }
+          }
           await axios.post(`${API_BASE}/api/events`, body, { headers:{ Authorization: token? `Bearer ${token}`:'' } });
         }
   addNotification({ id:`evt_${Date.now()}`, type:'upcoming-event', title:`Đã tạo ${selected.length} lịch`, at: Date.now() });
