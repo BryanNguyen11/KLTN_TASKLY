@@ -34,7 +34,7 @@ export default function AutoScheduleScreen(){
   const [busy, setBusy] = useState(false);
   const [sttLang, setSttLang] = useState<STTLanguage>('vi-VN');
   const [messages, setMessages] = useState<Msg[]>([
-    { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hãy mô tả thời khóa biểu hoặc công việc bạn muốn sắp xếp, mình sẽ gợi ý lịch và tác vụ. Bạn có thể đính kèm ảnh/PDF nếu cần.' }
+    { id:'m_welcome', role:'assistant', text:'Xin chào! Mình là TASKLY AI. Hiện chỉ hỗ trợ trò chuyện và phân tích thời gian biểu. Các chức năng tạo lịch/tác vụ và tạo lịch từ PDF đã được gỡ bỏ.' }
   ]);
   const scrollRef = useRef<ScrollView>(null);
   const inputRef = useRef<TextInput>(null);
@@ -475,34 +475,7 @@ export default function AutoScheduleScreen(){
     DeviceEventEmitter.emit('toast', `Đã tạo ${created} lịch, bỏ qua ${skipped} trùng.`);
   };
 
-  // Direct PDF → events generation inside Taskly AI
-  const createEventsFromPdf = async () => {
-    try{
-      const pick = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], multiple:false, copyToCacheDirectory:true });
-      const anyPick:any = pick as any; if(anyPick.canceled) return;
-      const asset:any = Array.isArray(anyPick.assets)? anyPick.assets[0]: anyPick;
-      const uri:string|undefined = asset?.uri; if(!uri){ Alert.alert('Lỗi','Không chọn được tệp'); return; }
-      const name:string = (asset?.name as string) || (uri.split('/').pop() || 'upload.pdf');
-      const formData = new FormData();
-      // @ts-ignore React Native FormData file
-      formData.append('file', { uri, name, type: 'application/pdf' });
-      setBusy(true);
-      const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, { headers:{ Authorization: token? `Bearer ${token}` : '' } });
-      const structured = res.data?.structured;
-      const items = Array.isArray(structured?.items)? structured.items: [];
-      if(!items.length){ Alert.alert('Không tìm thấy','PDF không có nội dung phù hợp để tạo lịch.'); setBusy(false); return; }
-      appendMsg({ id:'ai_'+Date.now(), role:'assistant', text:`Đã phân tích được ${items.length} sự kiện từ PDF. Nhấn "Tạo tất cả" để thêm vào lịch hoặc "Xem trước" để chỉnh sửa.`, meta:{ evFormItems: items } });
-      Alert.alert('Tạo lịch từ PDF', `Tạo ${items.length} lịch ngay?`, [
-        { text:'Hủy', style:'cancel' },
-        { text:'Xem trước', onPress: ()=> onPreviewEventsForm(items) },
-        { text:'Tạo tất cả', onPress: ()=> createManyEvents(items, (typeId as string|undefined), (projectId as string|undefined)) }
-      ]);
-    }catch(e:any){
-      const msg = e?.response?.data?.message || 'Không xử lý được PDF';
-      const reason = e?.response?.data?.reason;
-      Alert.alert('Lỗi', reason? `${msg}\nLý do: ${reason}`: msg);
-    } finally { setBusy(false); }
-  };
+  // PDF → events generation removed per request
 
 
   // Explicit generation on demand with current prompt and attachments
@@ -604,34 +577,7 @@ export default function AutoScheduleScreen(){
   <KeyboardAvoidingView behavior={Platform.OS==='ios' ? 'padding' : undefined} keyboardVerticalOffset={12} style={{ flex:1 }}>
         <View style={{ flex:1 }}>
           <ScrollView ref={scrollRef} contentContainerStyle={{ padding:12, paddingBottom:8 }} keyboardShouldPersistTaps='handled'>
-            {/* Actions: explicit generation and quick prompt */}
-            <View style={[styles.card, { paddingVertical:10, paddingHorizontal:12 }]}> 
-              <Text style={styles.subTitle}>Hành động</Text>
-              <View style={{ flexDirection:'row', gap:8, flexWrap:'wrap' }}>
-                <Pressable onPress={()=> generateFromCurrent('events')} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo lịch từ yêu cầu'>
-                  <Ionicons name='calendar-outline' size={16} color='#fff' />
-                  <Text style={styles.actionText}>Tạo lịch</Text>
-                </Pressable>
-                <Pressable onPress={()=> generateFromCurrent('tasks')} style={[styles.actionBtn, styles.secondary]} accessibilityLabel='Tạo tác vụ từ yêu cầu'>
-                  <Ionicons name='checkmark-done-outline' size={16} color='#16425b' />
-                  <Text style={styles.actionTextAlt}>Tạo tác vụ</Text>
-                </Pressable>
-                <Pressable onPress={()=> generateFromCurrent('both')} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo cả lịch và tác vụ'>
-                  <Ionicons name='git-merge-outline' size={16} color='#fff' />
-                  <Text style={styles.actionText}>Tạo cả hai</Text>
-                </Pressable>
-                <Pressable onPress={createEventsFromPdf} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo lịch từ PDF'>
-                  <Ionicons name='document-text-outline' size={16} color='#fff' />
-                  <Text style={styles.actionText}>Tạo lịch từ PDF</Text>
-                </Pressable>
-              </View>
-              <View style={{ marginTop:10, flexDirection:'row', flexWrap:'wrap', gap:8 }}>
-                <Pressable onPress={onEvaluateSchedule} style={styles.quickChip} accessibilityLabel='Đánh giá thời gian biểu của tôi'>
-                  <Ionicons name='analytics-outline' size={14} color='#1d4ed8' />
-                  <Text style={styles.quickChipText}>Đánh giá thời gian biểu của tôi</Text>
-                </Pressable>
-              </View>
-            </View>
+            {/* Hành động tạo lịch/tác vụ và PDF đã được gỡ bỏ */}
             {/* Attachments (optional) */}
             {(images.length>0) && (
               <View style={[styles.card, { padding:12 }] }>
@@ -751,17 +697,7 @@ export default function AutoScheduleScreen(){
 
           {/* Bottom composer */}
           <View style={styles.composer}>
-            <Pressable onPress={onEvaluateSchedule} style={[styles.iconBtn, { backgroundColor:'#dbeafe' }]} accessibilityLabel='Đánh giá thời gian biểu của tôi'>
-              <Ionicons name='analytics-outline' size={18} color='#1d4ed8' />
-            </Pressable>
-            <Pressable onPress={onAddImages} style={styles.iconBtn}><Ionicons name='image-outline' size={18} color='#16425b' /></Pressable>
-            <Pressable onPress={onAddFile} style={styles.iconBtn}><Ionicons name='document-text-outline' size={18} color='#16425b' /></Pressable>
-            <Pressable onPress={onToggleMic} style={[styles.iconBtn, isRecording && { backgroundColor:'rgba(220,38,38,0.1)' }]} accessibilityLabel='Ghi âm'>
-              <Ionicons name={isRecording? 'mic' : 'mic-outline'} size={18} color={isRecording? '#b91c1c' : '#16425b'} />
-            </Pressable>
-            <Pressable onPress={onSwitchLang} style={styles.langBtn} accessibilityLabel='Chuyển ngôn ngữ STT'>
-              <Text style={styles.langText}>{sttLang === 'vi-VN' ? 'VI' : 'EN'}</Text>
-            </Pressable>
+            {/* Removed evaluation, image, document, mic, and VI/EN toggle icons per request */}
             <TextInput
               ref={inputRef}
               style={[styles.composerInput, Platform.OS==='ios' && { paddingBottom:10 }]}

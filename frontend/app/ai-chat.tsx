@@ -4,7 +4,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router';
 import axios from 'axios';
 import { useAuth } from '@/contexts/AuthContext';
-import { setOcrScanPayload } from '@/contexts/OcrScanStore';
+// bỏ tạo từ ảnh/PDF: không cần payload preview
 
 type Msg = { id: string; role: 'user' | 'assistant' | 'system'; text: string; meta?: any };
 
@@ -14,7 +14,7 @@ export default function AiChat() {
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
   const [msgs, setMsgs] = useState<Msg[]>([
-    { id: 'sys', role: 'assistant', text: 'Xin chào! Mô tả tác vụ hoặc lịch bạn muốn tạo. Bạn có thể ghi theo dạng: "Tạo 3 tác vụ cho môn Toán tuần này", hoặc "Tạo lịch học Thứ 2 tiết 1-3, Thứ 4 tiết 4-6".' }
+    { id: 'sys', role: 'assistant', text: 'Xin chào! Bạn có thể hỏi/nhờ AI đánh giá thời gian biểu, gợi ý sắp xếp thời gian, hoặc tóm tắt lịch/tác vụ theo khoảng thời gian.' }
   ]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -31,15 +31,12 @@ export default function AiChat() {
     setMsgs(prev => [...prev, { id: 'u'+mid, role: 'user', text: prompt }]);
     setBusy(true);
     try {
-      const res = await axios.post(`${API_BASE}/api/events/ai-generate`, { prompt }, { headers:{ Authorization: `Bearer ${token}` } });
-      const items = res.data?.structured?.items || [];
-      if (!Array.isArray(items) || items.length===0) {
-        setMsgs(prev => [...prev, { id: 'a'+mid, role: 'assistant', text: 'Mình chưa tạo được lịch/tác vụ từ mô tả này. Hãy thử mô tả rõ hơn (ngày, thời gian hoặc tiết).' }]);
-        return;
-      }
-      // Store payload for preview screen
-  setOcrScanPayload({ structured: { kind: 'progress-table', items }, raw: '' });
-      setMsgs(prev => [...prev, { id: 'a'+mid, role: 'assistant', text: `Đã phân tích được ${items.length} mục. Nhấn "Xem trước" để xác nhận và tạo trong hệ thống.`, meta:{ itemsCount: items.length } }]);
+      const res = await axios.post(`${API_BASE}/api/ai/chat`, { prompt }, { headers:{ Authorization: `Bearer ${token}` } });
+      const answer: string = res.data?.answer || '';
+      const provider: string = res.data?.provider || '';
+      const model: string = res.data?.model || '';
+      const text = answer ? answer : 'Xin lỗi, mình chưa có câu trả lời phù hợp. Hãy thử diễn đạt lại câu hỏi.';
+      setMsgs(prev => [...prev, { id: 'a'+mid, role: 'assistant', text, meta: { provider, model } }]);
     } catch(e:any) {
       const msg = e?.response?.data?.message || 'Lỗi AI. Vui lòng thử lại.';
       setMsgs(prev => [...prev, { id: 'a'+mid, role: 'assistant', text: msg }]);
@@ -48,9 +45,7 @@ export default function AiChat() {
     }
   };
 
-  const openPreview = () => {
-    router.push('/scan-preview');
-  };
+  // Không còn preview tạo lịch/tác vụ
 
   return (
     <SafeAreaView style={{ flex:1, backgroundColor:'#f1f5f9' }} edges={['top']}>      
@@ -58,16 +53,14 @@ export default function AiChat() {
         <View style={styles.header}>
           <Pressable onPress={()=> router.back()} style={styles.headerBtn}><Text style={styles.headerBtnText}>{'‹'}</Text></Pressable>
           <Text style={styles.headerTitle}>Chat AI</Text>
-          <Pressable onPress={openPreview} style={[styles.headerBtn, styles.previewBtn]} disabled={busy}>
-            <Text style={[styles.headerBtnText,{ color:'#fff' }]}>Xem trước</Text>
-          </Pressable>
+          <View style={{ width:88 }} />
         </View>
         <ScrollView contentContainerStyle={{ padding:16, paddingBottom:20 }}>
           {msgs.map(m => (
             <View key={m.id} style={[styles.msg, m.role==='user'? styles.me : styles.ai]}>
               <Text style={styles.msgText}>{m.text}</Text>
-              {typeof m.meta?.itemsCount==='number' && (
-                <Text style={styles.msgMeta}>Phân tích được: {m.meta.itemsCount} mục</Text>
+              {m.meta?.provider && (
+                <Text style={styles.msgMeta}>Nguồn: {m.meta.provider}{m.meta?.model? ` • ${m.meta.model}`:''}</Text>
               )}
             </View>
           ))}
