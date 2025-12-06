@@ -42,7 +42,10 @@ function hhmmToPeriodStart(hhmm){
   return best;
 }
 function hhmmToPeriodEnd(hhmm){
-  const t = __hm(hhmm);
+  if(!prompt){ return res.status(400).json({ message: 'Thiếu prompt' }); }
+  if(!req.body?.items || !Array.isArray(req.body.items) || req.body.items.length === 0) {
+    return res.status(400).json({ message: 'Thiếu danh sách items để biến đổi' });
+  }
   // choose the period whose end is >= t and closest; fallback to last
   let best = __mins[__mins.length-1].i; let bestDiff = 1e9; let found=false;
   for(const p of __mins){
@@ -1150,6 +1153,10 @@ exports.scanFile = async (req, res) => {
         const parsed = await pdfParse(uploadBuffer);
         const text = String(parsed.text || '').trim();
         if (!text) return res.status(400).json({ message: 'Không đọc được nội dung PDF', reason: 'empty-pdf' });
+        if(OCR_DEBUG){
+          const sample = text.slice(0, 400).replace(/\s+/g,' ').trim();
+          console.log(`[OCR] pdf text.len=${text.length} sample="${sample}"`);
+        }
         // Rule-based parse only
         const items = parseProgressTable(text) || [];
         if(OCR_DEBUG) console.log('[OCR] rule-based progress-table items='+items.length);
@@ -1179,13 +1186,84 @@ exports.scanFile = async (req, res) => {
           });
           return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: forms } });
         }
+        // Try parsing tabular credit schedule when progress-table returns empty
+        const creditItems = parseCreditScheduleTable(text) || [];
+        if(OCR_DEBUG) console.log('[OCR] credit-table items='+creditItems.length);
+        if(OCR_DEBUG && creditItems.length){
+          const samp = creditItems.slice(0, Math.min(3, creditItems.length));
+          for(let si=0; si<samp.length; si++){
+            const it = samp[si];
+            console.log(`[OCR] credit-items[${si}] code=${it.code||''} title="${it.title||''}" mode=${it.mode||''} from=${it.from} to=${it.to} start=${it.startDate||''} end=${it.endDate||''}`);
+          }
+        }
+        if(creditItems.length){
+          const toHHMM = (from,to)=>({ startTime: PERIOD_TIME[from]?.start || '09:00', endTime: PERIOD_TIME[to]?.end || '' });
+          const pad2 = (n)=> String(n).padStart(2,'0');
+          const todayISO = (()=>{ const d=new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; })();
+          const firstWeekdayOnOrAfter = (baseISO, weekday)=>{
+            try{ const [y,m,d] = String(baseISO||'').split('-').map(n=>parseInt(n,10)); const dt = new Date(y||new Date().getFullYear(), (m||1)-1, d||1); const js = dt.getDay() || 7; const w = Math.min(7,Math.max(1,weekday||2)); const diff = (w - js + 7) % 7; if(diff>0) dt.setDate(dt.getDate()+diff); return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`; }catch{ const now=new Date(); return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`; }
+          };
+          const toISO = (dmy)=>{ const m = String(dmy||'').match(/^(\d{2})\/(\d{2})\/(\d{4})$/); if(!m) return todayISO; const dd=parseInt(m[1],10), mm=parseInt(m[2],10)-1, yy=parseInt(m[3],10); const d=new Date(yy,mm,dd); const p=(n)=> String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; };
+          const titleFromText = (code)=>{
+            try{
+              // Markers that indicate schedule info begins; also include standalone credit count like '3' or '134'
+              const markerRegex = /(\bThứ\b|\bTiết\b|\bLý\s*thuyết\b|\bThực\s*hành\b|\bPhòng\b|\b\d{1,3}\b\s+(?=\d{1,2}\s*[\-–]\s*\d{1,2})|\d{1,2}\/\d{1,2}\/\d{4})/i;
+              let idx = -1; let keyCode = String(code||'').trim();
+              if(keyCode){ idx = text.indexOf(keyCode); }
+              if(idx<0){
+                const mFirstCode = text.match(/\b(\d{6,})\b/);
+                if(mFirstCode){ keyCode = mFirstCode[1]; idx = text.indexOf(keyCode); }
+              }
+              if(idx<0){
+                // Direct regex over whole text: code + course name up to first marker
+                const re = new RegExp(String.raw`(\d{6,})\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*?(?:\d)?)\s*(?=(?:\b\d{1,3}\b\s+\d{1,2}\s*[\-–]\s*\d{1,2}|\d{1,2}\s*[\-–]\s*\d{1,2}|Lý\s*thuyết|Thực\s*hành|Phòng|\d{1,2}\/\d{1,2}\/\d{4}))`, 'i');
+                const m = text.match(re);
+                if(m){ const nm = String(m[2]||'').replace(/\s+/g,' ').trim(); return nm; }
+                return '';
+              }
+              const window = text.slice(Math.max(0, idx), Math.min(text.length, idx+400)).replace(/\s+/g,' ').trim();
+              const seg = window.substring(String(keyCode).length).trim();
+              const cutIdx = seg.search(markerRegex);
+              const cand = (cutIdx>-1? seg.slice(0,cutIdx): seg).trim();
+              const m = cand.match(/^[A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*\d*$/);
+              return m? m[0].replace(/\s+/g,' ').trim() : '';
+            }catch{ return ''; }
+          };
+          const forms = creditItems.map((it, idx) => {
+            const { startTime, endTime } = toHHMM(it.from, it.to);
+            const base = toISO(it.startDate);
+            // If weekday is missing, use the start date directly; else align to next occurrence of weekday
+            const date = (it.weekday && Number.isFinite(it.weekday)) ? firstWeekdayOnOrAfter(base, it.weekday) : base;
+            const endISO = it.endDate ? toISO(it.endDate) : undefined;
+            const repeat = endISO ? { frequency:'weekly', endMode:'onDate', endDate: endISO } : undefined;
+            let titlePrimary = String(it.title||'').trim();
+            if(!titlePrimary){ titlePrimary = titleFromText(it.code); }
+            if(OCR_DEBUG){
+              console.log(`[OCR] credit-map[${idx}] code=${it.code} mode=${it.mode} rawTitle="${String(it.title||'').trim()}" titleFromText="${titlePrimary}"`);
+            }
+            const title = titlePrimary ? [ titlePrimary, String(it.mode||'').trim() ].filter(Boolean).join(' ') : (it.code ? `Môn ${String(it.code).trim()}${it.mode? ' '+String(it.mode).trim(): ''}` : (String(it.mode||'').trim() || ''));
+            const notes = [ String(it.lecturer||'').trim() ? `GV: ${String(it.lecturer).trim()}` : '', String(it.code||'').trim() ? `MH: ${String(it.code).trim()}` : '' ].filter(Boolean).join(' • ');
+            return {
+              title: title || 'Lịch mới',
+              date,
+              endDate: '',
+              startTime,
+              endTime,
+              location: String(it.room||'').trim() || undefined,
+              notes: notes || undefined,
+              repeat,
+            };
+          });
+          const metaTitles = OCR_DEBUG? forms.map(f=>f.title).slice(0,10): undefined;
+          return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: forms }, meta: { strategy: 'credit-table', titlesSample: metaTitles } });
+        }
         // Fallback: direct Vietnamese date/time extraction to events-form
         const direct = directEventsFromText(text);
         if(direct.items.length){
           return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: direct.items }, meta: { strategy: 'direct' } });
         }
         // Return raw when no items parsed
-        return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: [] }, meta: { strategy: 'none' } });
+        return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: [] }, meta: { strategy: 'none', hint: 'no-items-after-progress-and-credit' } });
       } catch (e) {
         return res.status(500).json({ message: 'Lỗi đọc PDF', error: e.message });
       }
@@ -1320,6 +1398,225 @@ function directEventsFromText(raw){
   const uniq = []; const seen = new Set();
   for(const it of items){ const k=key(it); if(!seen.has(k)){ seen.add(k); uniq.push(it); } }
   return { items: uniq };
+}
+
+// Parse tabular credit schedule (Lịch học tín chỉ) from PDF text
+function parseCreditScheduleTable(raw){
+  const text = String(raw||'');
+  const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
+  const pad2 = (n)=> String(n).padStart(2,'0');
+  const weekdayFromThu = (s)=>{ const m = s.match(/\bTh(?:ứ)?\s*(\d)\b/i); return m? parseInt(m[1],10): null; };
+  const parseTiet = (s)=>{ const m = s.match(/\bTiết\s*(\d{1,2})\s*[-–]\s*(\d{1,2})\b/i); if(m){ return { from: parseInt(m[1],10), to: parseInt(m[2],10) }; } return null; };
+  const parseDateDMY = (s)=>{ const m = s.match(/\b(\d{1,2})[\/]?(\d{1,2})[\/]?(\d{4})\b/); if(m){ return `${pad2(parseInt(m[1],10))}/${pad2(parseInt(m[2],10))}/${m[3]}`; } return null; };
+  const isCourseName = (s)=>{
+    const t = String(s||'').trim();
+    if(!/[A-Za-zÀ-ỹ]{2,}/.test(t)) return false;
+    if(/^(STT|Mã\s*học\s*phần|Lịch\s*học\s*tín\s*chỉ|HK|Trường|Họ\s*tên|Mã\s*sinh\s*viên|Lớp\s*học|Thông\s*tin|Thời\s*gian\s*học|Giờ|Bắt\s*đầu|Kết\s*thúc|Phòng\s*học|Giảng\s*viên)$/i.test(t)) return false;
+    const digits = (t.match(/\d/g)||[]).length;
+    const letters = (t.match(/[A-Za-zÀ-ỹ]/g)||[]).length;
+    if(digits>letters) return false;
+    return true;
+  };
+  const items = [];
+  let currentCourse = '';
+  let currentMode = '';
+  let currentCode = '';
+  for(let i=0;i<lines.length;i++){
+    const line = lines[i];
+    // New: handle rows like 'STT CODE NAME ...' where STT is a leading number
+    const sttCodeName = line.match(/^\s*\d+\s+(\d{6,})\s+([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*)(?:\s+\d{1,3})?/);
+    if(sttCodeName){
+      currentCode = sttCodeName[1];
+      // Stop name before the next numeric-only token (credits/weekday)
+      let nm = String(sttCodeName[2]||'').trim();
+      // If next line continues name (rare), append until hitting a marker or numeric-only token
+      for(let k=1;k<=2;k++){
+        const nxt = (lines[i+k]||'').trim();
+        if(nxt && /^(Lý\s*thuyết|Thực\s*hành|Thi\s*(giữa|cuối)\s*kỳ|Phòng|TT\.TEAMS|Trực\s*tuyến)/i.test(nxt)) break;
+        if(nxt && !/^\d{1,3}$/.test(nxt) && /[A-Za-zÀ-ỹ]{2,}/.test(nxt)){ nm = (nm + ' ' + nxt).trim(); } else { break; }
+      }
+      currentCourse = nm.replace(/\s+/g,' ').trim();
+    }
+    // Pattern: <Mã học phần><Tên môn>[<Số tín chỉ>?]
+    // Do not greedily treat trailing digit in course name (e.g., 'Anh văn 1') as credits.
+  // Allow no space between code and course name (e.g., '1422001525570Anh văn 1')
+    const codeNameCredits = line.match(/(\d{6,})\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*?)(?:\s+(\d{1,3})\b)?/);
+    if(codeNameCredits){
+      currentCode = codeNameCredits[1];
+      // Derive course name as the segment between code and the first schedule marker
+      const afterCode = line.slice(line.indexOf(codeNameCredits[1]) + codeNameCredits[1].length);
+      const markers = [/\bTiết\b/i, /\bLý\s*thuyết\b/i, /\bThực\s*hành\b/i, /\bPhòng\b/i, /\b\d{1,2}\s*[\-–]\s*\d{1,2}\b/, /\b\d{1,2}\/\d{1,2}\/\d{4}\b/];
+      let cutIdx = afterCode.length;
+      for(const re of markers){ const m = afterCode.match(re); if(m){ cutIdx = Math.min(cutIdx, m.index||cutIdx); } }
+      let nameCand = afterCode.slice(0, cutIdx).trim();
+      // If regex group already captured name, prefer longer meaningful segment
+      const groupName = String(codeNameCredits[2]||'').trim();
+      if(groupName.length && groupName.length >= nameCand.length) nameCand = groupName;
+      // Keep trailing digit (e.g., 'Anh văn 1') if present
+      nameCand = nameCand.replace(/^[:\-\s]+|[:\-\s]+$/g,'').trim();
+      currentCourse = nameCand;
+    }
+    // Pattern: <Mã học phần><Tên môn> (no credits token visible)
+    if(!currentCourse){
+      const codeNameOnly = line.match(/\b(\d{6,})\b\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]+)/);
+      if(codeNameOnly){
+        currentCode = codeNameOnly[1];
+        currentCourse = String(codeNameOnly[2]||'').trim();
+      }
+    }
+    // Capture course code and name (often adjacent)
+    const codeMatch = line.match(/\b\d{6,}\b/);
+    if(codeMatch){
+      currentCode = codeMatch[0];
+      // Capture course title segment between code and first schedule marker.
+      const markerRegex = /(\bThứ\b|\bTiết\b|\bLý\s*thuyết\b|\bThực\s*hành\b|\bPhòng\b|\d{1,2}\/\d{1,2}\/\d{4})/i;
+      // Join current and a couple of next lines to handle OCR newlines
+      const lookahead = [lines[i]||'', lines[i+1]||'', lines[i+2]||''].join(' ').replace(/\s+/g,' ').trim();
+      const seg = lookahead.substring(lookahead.indexOf(currentCode) + currentCode.length).trim();
+      if(seg){
+        const cutIdx = seg.search(markerRegex);
+        const rawTitle = (cutIdx > -1 ? seg.slice(0, cutIdx) : seg).trim();
+        // Title should start with a letter (including Vietnamese) and may contain spaces, hyphens, and digits (e.g., 'Anh văn 1')
+        const titleMatch = rawTitle.match(/^[A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*\d*$/);
+        if(titleMatch){
+          currentCourse = titleMatch[0].replace(/\s+/g,' ').trim();
+        }
+      }
+    }
+    if(isCourseName(line)){
+      // If line includes code then name, strip code from the course title
+      const m2 = line.match(/\b\d{6,}\b\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]+)/);
+      currentCourse = m2 ? String(m2[1]).trim() : line;
+      // Mode on next lines (Lý thuyết/Thực hành)
+      const next2 = [lines[i+1]||'', lines[i+2]||''].join(' ');
+      const mMode = next2.match(/\b(Lý\s*thuyết|Thực\s*hành)\b/i);
+      currentMode = mMode? mMode[1] : '';
+    }
+    const wd = weekdayFromThu(line);
+    const t = parseTiet(line);
+    const roomMatch = line.match(/\bPhòng\s*học\b[:\s]*([A-Za-z0-9\.\-() ]+)/i) || (lines[i+1]||'').match(/\bPhòng\s*học\b[:\s]*([A-Za-z0-9\.\-() ]+)/i);
+    const room = roomMatch? String(roomMatch[1]).trim() : undefined;
+    const start = parseDateDMY(line) || parseDateDMY(lines[i+1]||'') || parseDateDMY(lines[i+2]||'');
+    // Kết thúc thường nằm cùng khối với Bắt đầu
+    let end = null;
+    for(let k=0;k<3;k++){ const mm = (lines[i+k]||'').match(/\bKết\s*thúc\b.*?(\d{1,2}[\/]\d{1,2}[\/]\d{4})/i); if(mm){ end = mm[1]; break; } }
+    // Lecturer on nearby lines (giảng viên)
+    const lecMatch = (lines[i+3]||'').match(/\bGiảng\s*viên\b[:\s]*([A-Za-zÀ-ỹ .\-']+)/i) || (lines[i+4]||'').match(/\bGiảng\s*viên\b[:\s]*([A-Za-zÀ-ỹ .\-']+)/i);
+    const lecturer = lecMatch? String(lecMatch[1]).trim(): undefined;
+    if(start && t){
+      // Allow missing weekday (some PDFs lose the 'Thứ' token when flattened)
+      let title = currentCourse || '';
+      // Neighborhood window to recover code/title if missing
+      const neighLines = [lines[i-2]||'', lines[i-1]||'', lines[i]||'', lines[i+1]||'', lines[i+2]||''];
+      const neighJoined = neighLines.join(' ').replace(/\s+/g,' ').trim();
+      if(!currentCode){
+        const cm = neighJoined.match(/\b(\d{6,})\b/);
+        if(cm) currentCode = cm[1];
+      }
+      if(!title || /^\s*$/.test(title)){
+        // Scan neighborhood for a course name between code and schedule markers
+        const neigh = [lines[i-1]||'', lines[i]||'', lines[i+1]||'', lines[i+2]||''];
+  const markerRegex = /(\bThứ\b|\bTiết\b|\bTiet\b|\bLý\s*thuyết\b|\bLy\s*thuyet\b|\bThực\s*hành\b|\bThuc\s*hanh\b|\bPhòng\b|\bPhong\b|\d{1,2}\/\d{1,2}\/\d{4})/i;
+        const joined = neighJoined;
+        if(currentCode && joined.includes(currentCode)){
+          const seg = joined.substring(joined.indexOf(currentCode)+String(currentCode).length).trim();
+          const cutIdx = seg.search(markerRegex);
+          const cand = (cutIdx>-1? seg.slice(0,cutIdx): seg).trim();
+          if(cand && isCourseName(cand)) title = cand;
+        }
+        // Fallback: pick the first nearby line that looks like a course name
+        if(!title || /^\s*$/.test(title)){
+          for(const l of neigh){ if(isCourseName(l)){ title = l.trim(); break; } }
+        }
+        // Final fallback: derive from code + mode
+        if(!title || /^\s*$/.test(title)) title = currentCode? `Môn ${currentCode}${currentMode? ' '+currentMode: ''}` : (currentMode||'');
+      }
+      items.push({ title, code: currentCode, mode: currentMode, weekday: wd || null, from: t.from, to: t.to, room, startDate: start, endDate: end || undefined, lecturer });
+    }
+  }
+  // Fallback: dense text without line breaks – scan whole text with regex
+  if(items.length === 0){
+    const re = new RegExp(
+      String.raw`(?:\b(\d{6,})\b)?\s*([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]+?)\s+(\d{1,2})\s*[\-–]\s*(\d{1,2})\s*(Lý\s*thuyết|Thực\s*hành)?\s*([A-Z]\d+\.\d+(?:\.\d+)?|[A-Z]\d+|C\d+\.\d+(?:\.\d+)?|B\d+\.\d+(?:\.\d+)?|H\d+(?:\.\d+)+|C\d+\.\d+\s*\([^)]*\))?[^\d]*(\d{1,2}\/\d{1,2}\/\d{4})(?:[^\d]*(\d{1,2}\/\d{1,2}\/\d{4}))?`,
+      'gi'
+    );
+    let m;
+    while((m = re.exec(text))){
+      const code = m[1] || '';
+      const title = (m[2] || '').trim();
+      const from = parseInt(m[3],10);
+      const to = parseInt(m[4],10);
+      const mode = m[5] || '';
+      const roomRaw = m[6] || '';
+      const room = roomRaw.replace(/\s+/g,' ').trim();
+      const start = m[7];
+      const end = m[8] || undefined;
+      if(title && from && to && start){
+        let finalTitle = title;
+        if(!finalTitle){
+          const backCand = [lines[(m.index||0)/1 - 1]||'', lines[(m.index||0)/1 - 2]||''];
+          const fwdCand = [lines[(m.index||0)/1 + 1]||'', lines[(m.index||0)/1 + 2]||''];
+          const cands = [...backCand, ...fwdCand];
+          for(const c of cands){ if(isCourseName(c)){ finalTitle = c.trim(); break; } }
+        }
+        items.push({ title: finalTitle, code, mode, weekday: null, from, to, room, startDate: start, endDate: end });
+      }
+    }
+    // Secondary fallback: look for glued labels like "Bắt đầuKết thúc" and parse dates around them
+    if(items.length === 0){
+      const glued = text.replace(/\s+/g,' ');
+      const datePairs = [...glued.matchAll(/(\d{1,2}\/\d{1,2}\/\d{4}).{0,40}?(\d{1,2}\/\d{1,2}\/\d{4})/g)];
+      const periodMatches = [...glued.matchAll(/\b(\d{1,2})\s*[\-–]\s*(\d{1,2})\b/g)];
+      if(datePairs.length && periodMatches.length){
+        // Heuristic: assume same order; take nearest room token preceding
+        for(let idx=0; idx<Math.min(datePairs.length, periodMatches.length); idx++){
+          const dp = datePairs[idx]; const pm = periodMatches[idx];
+          const start = dp[1]; const end = dp[2];
+          const from = parseInt(pm[1],10); const to = parseInt(pm[2],10);
+          // Room token near pair
+          let room = '';
+          const pre = glued.slice(Math.max(0, dp.index-60), dp.index);
+          const r = pre.match(/([A-Z]\d+\.\d+(?:\.\d+)?(?:\s*\([^)]*\))?)/);
+          if(r) room = r[1];
+          // Title nearby (previous 100 chars)
+          let title = '';
+          const tPrev = glued.slice(Math.max(0, pm.index-100), pm.index).match(/([A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]{4,})$/);
+          if(tPrev) title = tPrev[1].trim();
+          if(from && to && start){ items.push({ title, code:'', mode:'', weekday: null, from, to, room, startDate: start, endDate: end }); }
+        }
+      }
+    }
+  }
+  // Augmentation: for items missing code/title, derive them by scanning around the start date in full text
+  if(items.length){
+    const normalize = (s)=> String(s||'').replace(/\s+/g,' ').trim();
+    for(const it of items){
+      const hasTitle = Boolean(normalize(it.title));
+      const hasCode = Boolean(normalize(it.code));
+      if(hasTitle && hasCode) continue;
+      const dStr = normalize(it.startDate||'');
+      if(!dStr) continue;
+      const idx = text.indexOf(dStr);
+      if(idx<0) continue;
+      const windowBack = text.slice(Math.max(0, idx-300), idx).replace(/\s+/g,' ').trim();
+      // Find the last 6+ digit code before the date
+      const codes = [...windowBack.matchAll(/\b(\d{6,})\b/g)];
+      const code = codes.length? codes[codes.length-1][1] : '';
+      // Find course name after that code, stopping at markers
+      let title = '';
+      if(code){
+        const pos = windowBack.lastIndexOf(code);
+        const seg = windowBack.slice(pos + String(code).length).trim();
+        const marker = /(\bThứ\b|\bTiết\b|\bTiet\b|\bLý\s*thuyết\b|\bLy\s*thuyet\b|\bThực\s*hành\b|\bThuc\s*hanh\b|\bPhòng\b|\bPhong\b|\b\d{1,3}\b\s+\d{1,2}\s*[\-–]\s*\d{1,2}|\d{1,2}\/\d{1,2}\/\d{4})/i;
+        const cut = seg.search(marker);
+        const cand = (cut>-1? seg.slice(0,cut): seg).trim();
+        if(/^[A-Za-zÀ-ỹ][A-Za-zÀ-ỹ\s\-()]*\d*$/i.test(cand)) title = cand.replace(/\s+/g,' ').trim();
+      }
+      if(title && !hasTitle) it.title = title;
+      if(code && !hasCode) it.code = code;
+    }
+  }
+  return items;
 }
 
 // AI generate timetable items purely from a user prompt (no files)

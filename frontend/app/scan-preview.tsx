@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Alert, Modal } from 'rea
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import axios from 'axios';
+import { useNotifications } from '@/contexts/NotificationContext';
 import EventForm from '@/components/EventForm';
 import { useAuth } from '@/contexts/AuthContext';
 import { getOcrScanPayload, setOcrScanPayload } from '@/contexts/OcrScanStore';
@@ -13,6 +14,7 @@ type Editable = CandidateEvent & { id: string; selected: boolean };
 export default function ScanPreview() {
   const router = useRouter();
   const { token } = useAuth();
+  const { addNotification } = useNotifications();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
   const payload = getOcrScanPayload();
   const [days, setDays] = useState<WeekdayBlock[]>([]);
@@ -24,6 +26,57 @@ export default function ScanPreview() {
   const [types, setTypes] = useState<Array<{ _id:string; name:string; isDefault?:boolean }>>([]);
   const [loadingTypes, setLoadingTypes] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+  const [detail, setDetail] = useState<{ kind:'events-form'|'weekly'; data:any }|null>(null);
+  const renderDetail = ()=>{
+    if(!detail) return null;
+    const data = detail.kind==='events-form' ? detail.data.it : detail.data;
+    const title = data.title || 'Lịch';
+    const time = (data.startTime||'') ? `${data.startTime}${data.endTime? '–'+data.endTime: ''}` : 'Cả ngày';
+    const dateLine = data.date? `Ngày: ${toDisplay(data.date)}` : '';
+    const room = data.location? `Phòng: ${data.location}` : '';
+    const notes = data.notes? `Ghi chú: ${data.notes}` : '';
+    const lecturer = data.lecturer? `GV: ${data.lecturer}` : '';
+    const toggle = ()=>{
+      if(detail?.kind==='weekly'){
+        const e = detail.data;
+        setDays(prev => prev.map(d => ({ ...d, events: (d.events as any).map((ev:any)=> ev.id===e.id? { ...ev, selected: !ev.selected }: ev) })) as any);
+      } else if(detail?.kind==='events-form'){
+        const s = detail.data;
+        setItemsSel(prev => prev.map(p => p.id===s.id? ({ ...p, selected: !p.selected }): p));
+      }
+      setDetail(null);
+    };
+    return (
+      <Modal visible={!!detail} transparent animationType='fade' onRequestClose={()=> setDetail(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxWidth: 440 }]}> 
+            <Text style={styles.modalTitle}>{title}</Text>
+            <View style={{ gap:6, marginTop:8 }}>
+              {!!time && <Text style={styles.cardSub}>{time}</Text>}
+              {!!dateLine && <Text style={styles.cardSub}>{dateLine}</Text>}
+              {!!room && <Text style={styles.cardSub}>{room}</Text>}
+              {!!lecturer && <Text style={styles.cardSub}>{lecturer}</Text>}
+              {!!notes && <Text style={styles.cardNote}>{notes}</Text>}
+            </View>
+            <View style={{ flexDirection:'row', gap:10, marginTop:12 }}>
+              <Pressable onPress={()=> setDetail(null)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
+              <Pressable onPress={toggle} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>{(detail.kind==='weekly'? detail.data.selected : (itemsSel.find(p=>p.id===detail.data.id)?.selected))? 'Bỏ chọn':'Chọn'}</Text></Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  };
+  // Events-form preview list state (must be top-level hooks)
+  const [itemsSel, setItemsSel] = useState<Array<{ id:string; selected:boolean; it:any }>>([]);
+  useEffect(()=>{
+    if(isEventsForm){
+      const initial = eventsFormItems.map((it, idx)=> ({ id: String(idx), selected: true, it }));
+      setItemsSel(initial);
+    } else {
+      setItemsSel([]);
+    }
+  }, [isEventsForm, eventsFormItems.length]);
 
   useEffect(() => {
     // Short-circuit if we're in events-form mode
@@ -159,7 +212,7 @@ export default function ScanPreview() {
             if(payload?.projectId) payloadEvt.projectId = String(payload.projectId);
         await axios.post(`${API_BASE}/api/events`, payloadEvt, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
       }
-      Alert.alert('Thành công','Đã tạo các lịch từ ảnh');
+  addNotification({ id:`evt_${Date.now()}`, type:'upcoming-event', title:`Đã tạo ${selected.length} lịch`, at: Date.now() });
       setOcrScanPayload(null);
       router.back();
     } catch (e: any) {
@@ -205,16 +258,51 @@ export default function ScanPreview() {
       }
       if(payload?.projectId) body.projectId = String(payload.projectId);
       await axios.post(`${API_BASE}/api/events`, body, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
-      Alert.alert('Thành công','Đã tạo lịch');
+  addNotification({ id:`evt_${Date.now()}`, type:'upcoming-event', title:`Đã tạo 1 lịch: ${e.title}`, at: Date.now() });
       setEdit(null);
     }catch(err:any){
       Alert.alert('Lỗi', err?.response?.data?.message || 'Không thể tạo lịch');
     }
   };
 
-  // If using the new events-form flow: show a single compact EventForm and optional stepper when multiple items provided
+  // If using the new events-form flow: show a selectable list and bulk confirmation
   if (isEventsForm) {
-    const current = eventsFormItems[formIdx] || eventsFormItems[0] || null;
+    const allSelectedEF = itemsSel.length>0 && itemsSel.every(s => s.selected);
+    const toggleAllEF = (sel:boolean)=> setItemsSel(prev => prev.map(p => ({ ...p, selected: sel })));
+    const toggleOneEF = (id:string)=> setItemsSel(prev => prev.map(p => p.id===id? ({ ...p, selected: !p.selected }): p));
+    const createAllEF = async ()=>{
+      if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+      const selected = itemsSel.filter(s=> s.selected).map(s=> s.it);
+      if(!selected.length){ Alert.alert('Chưa chọn','Vui lòng chọn ít nhất một lịch'); return; }
+      // Resolve typeId
+      let typeId = String((payload as any)?.defaultTypeId || '');
+      if(!typeId){
+        try { const res = await axios.get(`${API_BASE}/api/event-types`, { headers:{ Authorization: token? `Bearer ${token}`:'' } }); typeId = (res.data?.find?.((t:any)=>t.isDefault)?._id) || (res.data?.[0]?._id) || ''; } catch {}
+        if(!typeId){ Alert.alert('Thiếu loại lịch','Không có loại lịch mặc định để tạo. Hãy tạo loại lịch trước.'); return; }
+      }
+      try{
+        for(const it of selected){
+          const body:any = {
+            title: it.title || 'Lịch mới',
+            typeId,
+            date: it.date,
+            endDate: it.endDate || undefined,
+            startTime: it.startTime || undefined,
+            endTime: it.endTime || undefined,
+            location: it.location || undefined,
+            notes: it.notes || undefined,
+            repeat: it.repeat || undefined,
+          };
+          if(payload?.projectId) body.projectId = String(payload.projectId);
+          await axios.post(`${API_BASE}/api/events`, body, { headers:{ Authorization: token? `Bearer ${token}`:'' } });
+        }
+  addNotification({ id:`evt_${Date.now()}`, type:'upcoming-event', title:`Đã tạo ${selected.length} lịch`, at: Date.now() });
+        setOcrScanPayload(null);
+        router.back();
+      }catch(e:any){
+        Alert.alert('Lỗi', e?.response?.data?.message || 'Không thể tạo lịch');
+      }
+    };
     return (
       <SafeAreaView style={{ flex:1, backgroundColor: '#f1f5f9' }}>
         <View style={styles.header}>
@@ -222,42 +310,51 @@ export default function ScanPreview() {
           <Text style={styles.headerTitle}>Xem trước lịch</Text>
           <View style={{ width: 40 }} />
         </View>
-        <View style={{ padding:12 }}>
-          {current ? (
-            <View style={[styles.modalCard, { alignSelf:'center', maxWidth: 520 }]}> 
-              <EventForm
-                mode='compact'
-                initialValues={{
-                  title: current.title || 'Lịch mới',
-                  typeId: String((payload as any)?.defaultTypeId || ''),
-                  date: current.date,
-                  endDate: current.endDate || '',
-                  startTime: current.startTime || '09:00',
-                  endTime: current.endTime || '',
-                  location: current.location || '',
-                  notes: current.notes || '',
-                  link: current.link || '',
-                  repeat: current.repeat,
-                }}
-                projectId={payload?.projectId? String(payload.projectId): undefined}
-                onClose={()=> router.back()}
-                onSaved={()=>{
-                  if (formIdx + 1 < eventsFormItems.length) { setFormIdx(formIdx+1); }
-                  else { router.back(); }
-                }}
-              />
-              {eventsFormItems.length>1 && (
-                <View style={{ flexDirection:'row', justifyContent:'center', marginTop:8 }}>
-                  <Text style={{ color:'#16425b', fontWeight:'700' }}>{formIdx+1}/{eventsFormItems.length}</Text>
-                </View>
-              )}
-            </View>
-          ) : (
-            <View style={{ padding: 16 }}>
-              <Text style={{ color:'#16425b', fontWeight:'700' }}>Không có mục nào để tạo</Text>
-            </View>
-          )}
+        <View style={styles.actions}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color:'#16425b', fontWeight:'700' }}>Nhận dạng: {itemsSel.length} lịch</Text>
+            <Pressable onPress={()=> setShowRaw(true)}><Text style={{ color:'#3a7ca5', fontWeight:'700', marginTop:4 }}>Xem văn bản OCR</Text></Pressable>
+          </View>
+          <Pressable style={[styles.actionBtn, allSelectedEF? styles.secondary: styles.primary]} onPress={()=>toggleAllEF(!allSelectedEF)}>
+            <Text style={allSelectedEF? styles.secondaryText: styles.primaryText}>{allSelectedEF? 'Bỏ chọn tất cả' : 'Chọn tất cả'}</Text>
+          </Pressable>
+          <Pressable style={[styles.actionBtn, styles.primary]} onPress={createAllEF}>
+            <Text style={styles.primaryText}>Xác nhận tạo</Text>
+          </Pressable>
         </View>
+        <ScrollView style={{ flex:1 }} contentContainerStyle={{ padding:12 }}>
+          {itemsSel.map(s => (
+            <Pressable key={s.id} style={styles.card} onLongPress={()=> setDetail({ kind:'events-form', data:s })}>
+              <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                <Text style={styles.cardTitle} numberOfLines={2}>{s.it.title || 'Lịch mới'}</Text>
+                <Pressable onPress={()=> toggleOneEF(s.id)}>
+                  <Text style={[styles.toggle, s.selected? styles.toggleOn: styles.toggleOff]}>{s.selected? '✓' : '✗'}</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.cardTime}>{(s.it.startTime||'').trim()? `${s.it.startTime}–${s.it.endTime||''}` : 'Cả ngày'}</Text>
+              {!!s.it.date && <Text style={styles.cardSub}>Ngày: {toDisplay(s.it.date)}</Text>}
+              {!!s.it.location && <Text style={styles.cardSub}>Phòng: {s.it.location}</Text>}
+              {!!s.it.notes && <Text style={styles.cardNote} numberOfLines={2}>{s.it.notes}</Text>}
+            </Pressable>
+          ))}
+        </ScrollView>
+  {/* Detail Modal */}
+  {renderDetail()}
+  {/* Raw OCR Modal (reuse) */}
+        <Modal visible={showRaw} transparent animationType='fade' onRequestClose={()=> setShowRaw(false)}>
+          <View style={styles.modalBackdrop}>
+            <View style={[styles.modalCard, { maxHeight: '80%' }]}>
+              <Text style={styles.modalTitle}>Văn bản OCR</Text>
+              <ScrollView style={{ maxHeight: '70%' }}>
+                <Text style={{ color:'#0f172a' }}>{payload?.raw || ''}</Text>
+              </ScrollView>
+              <View style={{ flexDirection:'row', gap:10, marginTop:10 }}>
+                <Pressable onPress={()=> setShowRaw(false)} style={[styles.actionBtn, styles.secondary, { flex:1 }]}><Text style={styles.secondaryText}>Đóng</Text></Pressable>
+                <Pressable onPress={()=> { setShowRaw(false); router.back(); }} style={[styles.actionBtn, styles.primary, { flex:1 }]}><Text style={styles.primaryText}>Quét lại</Text></Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     );
   }
@@ -298,7 +395,7 @@ export default function ScanPreview() {
               <View key={slot} style={styles.slotBlock}>
                 <Text style={styles.slotLabel}>{slot==='morning'?'Sáng':slot==='afternoon'?'Chiều':'Tối'}</Text>
                 {(day.events as any).filter((e: Editable)=> e.slot===slot).map((e: Editable)=> (
-                  <Pressable key={e.id} onPress={()=> setEdit(e)} style={[styles.card, !e.selected && { opacity: 0.5 }]}>
+                  <Pressable key={e.id} onPress={()=> setEdit(e)} onLongPress={()=> setDetail({ kind:'weekly', data:e })} style={[styles.card, !e.selected && { opacity: 0.5 }]}> 
                     <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
                       <Text style={styles.cardTitle} numberOfLines={2} ellipsizeMode='tail'>{e.title}</Text>
                       <Pressable onPress={()=> setDays(prev => prev.map(d => ({ ...d, events: (d.events as any).map((ev: any) => ev.id===e.id? { ...ev, selected: !ev.selected }: ev) })) as any)}>
@@ -344,7 +441,9 @@ export default function ScanPreview() {
         </View>
       </Modal>
 
-      {/* Raw OCR Modal */}
+  {/* Detail Modal */}
+  {renderDetail()}
+  {/* Raw OCR Modal */}
       <Modal visible={showRaw} transparent animationType='fade' onRequestClose={()=> setShowRaw(false)}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { maxHeight: '80%' }]}>

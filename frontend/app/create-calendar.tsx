@@ -15,6 +15,8 @@ import { Platform, Linking } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as DocumentPicker from 'expo-document-picker';
+// PDF import utility (new flow)
+import { pickAndScanFile, createItems } from '@/utils/pdfImport';
 import { setOcrScanPayload } from '@/contexts/OcrScanStore';
 import { parseWeeklyFromRaw } from '@/utils/ocrTimetable';
 // Optional: image conversion. If not installed, we'll skip conversion.
@@ -466,31 +468,24 @@ Lý do: ${reason}` : message);
 
   // Pick a PDF or image via DocumentPicker and send to unified /scan-file endpoint
   const scanFromPdf = async () => {
+    setScanning(true);
     try {
-      const pick = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'image/*'],
-        multiple: false,
-        copyToCacheDirectory: true,
-      });
-      // Support both legacy and v12 result shapes safely
-      const anyPick: any = pick as any;
-      if (anyPick.canceled) return;
-      const asset: any = Array.isArray(anyPick.assets) ? anyPick.assets[0] : anyPick;
-      const uri: string | undefined = asset?.uri as string | undefined;
-      if (!uri) return;
-      const name: string = (asset?.name as string) || (uri.split('/').pop() || 'upload');
-      const mime: string = (asset?.mimeType as string) || (name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/*');
-      setScanning(true);
-      const formData = new FormData();
-      // @ts-ignore React Native FormData file
-      formData.append('file', { uri, name, type: mime });
-      const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, { headers: { Authorization: token ? `Bearer ${token}` : '' } });
-    const raw = res.data?.raw || '';
-    const extracted = res.data?.extracted || {};
-    const structured = res.data?.structured;
-  setOcrScanPayload({ raw, extracted, structured, defaultTypeId: form.typeId, projectId: projectId? String(projectId): undefined } as any);
+      const { raw, items, strategy } = await pickAndScanFile(API_BASE!, authHeader);
+      // Chọn typeId nếu chưa có
+      let typeIdToUse = form.typeId;
+      if(!typeIdToUse){
+        const preferred = types.find(t=> t.isDefault) || types[0];
+        if(preferred) typeIdToUse = preferred._id;
+        if(typeIdToUse) setForm(prev=> ({ ...prev, typeId: typeIdToUse! }));
+      }
+      // Always require confirmation: show preview with parsed items
+      if(!items.length){
+        DeviceEventEmitter.emit('toast', `Không tìm thấy mục nào trong tệp${strategy? ` (${strategy})`:''}. Mời bạn xem trước để chỉnh sửa.`);
+      }
+      setOcrScanPayload({ raw, extracted: {}, structured: { kind: 'events-form', items }, defaultTypeId: typeIdToUse || form.typeId, projectId: projectId? String(projectId): undefined } as any);
+      setImportOpen(false);
       router.push('/scan-preview');
-    } catch (e:any) {
+    } catch(e:any){
       const reason = e?.response?.data?.reason;
       const message = e?.response?.data?.message || 'Không xử lý được tệp';
       Alert.alert('Lỗi', reason ? `${message}\nLý do: ${reason}` : message);
@@ -608,16 +603,12 @@ Lý do: ${reason}` : message);
         </View>
       </View>
 
-      {/* Nút Tạo lịch tự động nằm ngay dưới tiêu đề màn hình */}
+      {/* Import actions (auto-create removed as requested) */}
       {!editId && (
-        <View style={{ alignItems:'center', paddingBottom:8, flexDirection:'row', justifyContent:'center', gap:14 }}>
-          <Pressable onPress={startAutoCreate} style={[styles.autoBtn]} hitSlop={8}>
-            <Ionicons name='sparkles' size={16} color='#fff' style={{ marginRight:8 }} />
-            <Text style={styles.autoBtnText}>Tạo lịch tự động</Text>
-          </Pressable>
+        <View style={{ alignItems:'center', paddingBottom:8, flexDirection:'row', justifyContent:'center' }}>
           <Pressable onPress={()=> setImportOpen(true)} style={[styles.importBtn, { backgroundColor:'#e2e8f0' }]} hitSlop={6}>
             <Ionicons name='download-outline' size={18} color='#16425b' style={{ marginRight:6 }} />
-            <Text style={styles.importText}>Import</Text>
+            <Text style={styles.importText}>Tạo lịch nhanh</Text>
           </Pressable>
         </View>
       )}
@@ -851,18 +842,27 @@ Lý do: ${reason}` : message);
         </Pressable>
       </View>
 
-      {/* Import modal – redesigned with source tabs (Device / Google) and sticky footer */}
-      {/* Import modal – redesigned with source tabs (Device / Google) and sticky footer */}
+      {/* Import modal – Quick Import with balanced layout */}
+      {/* Import modal – Quick Import with balanced layout */}
       <Modal visible={importOpen} animationType='slide' onRequestClose={()=> setImportOpen(false)}>
   <SafeAreaView style={{ flex:1, backgroundColor:'#fff', paddingBottom: insets.bottom }} edges={['top','bottom']}>
           <View style={[styles.importHeader, { paddingTop: insets.top, paddingBottom: 8 }]}> 
-            <Text style={styles.importTitle}>Nhập sự kiện</Text>
+            <Text style={styles.importTitle}>Nhập lịch nhanh</Text>
             <Pressable onPress={()=> setImportOpen(false)} style={styles.closeBtn}><Ionicons name='close' size={22} color='#16425b' /></Pressable>
           </View>
-          {/* Source tabs removed; device-only import */}
-          <View style={{ flexDirection:'row', paddingHorizontal:16, paddingBottom:8 }}>
-            <View style={[styles.typeChip, styles.typeChipActive]}>
-              <Text style={[styles.typeChipText, styles.typeChipTextActive]}>Thiết bị</Text>
+          {/* Primary actions: Device calendar and PDF/Tệp import */}
+          <View style={{ paddingHorizontal:16 }}>
+            <View style={styles.actionRow}>
+              <Pressable onPress={reqDevPerm} style={[styles.actionTile, { backgroundColor:'#eef2ff', borderColor:'#c7d2fe' }]}> 
+                <Ionicons name='calendar-outline' size={22} color='#3730a3' />
+                <Text style={[styles.actionTileText, { color:'#1e293b' }]}>Nhập từ ứng dụng lịch</Text>
+                <Text style={styles.actionTileSub}>Xem và chọn sự kiện trên máy</Text>
+              </Pressable>
+              <Pressable onPress={scanFromPdf} style={[styles.actionTile, { backgroundColor:'#ecfeff', borderColor:'#a5f3fc' }]}> 
+                <Ionicons name='document-text-outline' size={22} color='#0e7490' />
+                <Text style={[styles.actionTileText, { color:'#1e293b' }]}>Nhập từ PDF/Tệp</Text>
+                <Text style={styles.actionTileSub}>Quét thời khóa biểu từ tệp</Text>
+              </Pressable>
             </View>
           </View>
 
@@ -882,22 +882,21 @@ Lý do: ${reason}` : message);
             )}
             {importSource==='device' && devPerm==='granted' && (
               <View style={{ gap:8 }}>
-                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                  <Text style={styles.smallLabel}>Khoảng thời gian</Text>
-                  <View style={{ flexDirection:'row', alignItems:'center' }}>
-                    <Pressable onPress={()=> { setLookAheadDays(7); refreshDev(); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>7 ngày</Text></Pressable>
-                    <Pressable onPress={()=> { setLookAheadDays(30); refreshDev(); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>30 ngày</Text></Pressable>
-                    <Pressable onPress={()=> { const from=new Date(); const to=new Date(); to.setMonth(to.getMonth()+3); refreshRange(from,to); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>3 tháng</Text></Pressable>
-                    <Pressable onPress={refreshDev} style={styles.refreshBtn}><Ionicons name='refresh' size={18} color='#16425b' /></Pressable>
-                  </View>
+                <View style={styles.sectionHeader}><Text style={styles.sectionHeaderText}>Thiết lập phạm vi</Text></View>
+                <View style={styles.actionRow}>
+                  <Pressable onPress={()=> { setLookAheadDays(7); refreshDev(); setMonthView(false); }} style={[styles.rangeChip]}><Text style={styles.rangeText}>7 ngày</Text></Pressable>
+                  <Pressable onPress={()=> { setLookAheadDays(30); refreshDev(); setMonthView(false); }} style={[styles.rangeChip]}><Text style={styles.rangeText}>30 ngày</Text></Pressable>
+                  <Pressable onPress={()=> { const from=new Date(); const to=new Date(); to.setMonth(to.getMonth()+3); refreshRange(from,to); setMonthView(false); }} style={[styles.rangeChip]}><Text style={styles.rangeText}>3 tháng</Text></Pressable>
+                  <Pressable onPress={refreshDev} style={[styles.rangeChip, { flexDirection:'row', gap:6 }]}>
+                    <Ionicons name='refresh' size={16} color='#16425b' />
+                    <Text style={styles.rangeText}>Làm mới</Text>
+                  </Pressable>
                 </View>
-                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                  <Text style={styles.smallLabel}>Chế độ tháng</Text>
-                  <View style={{ flexDirection:'row', alignItems:'center' }}>
-                    <Pressable onPress={()=> setMonthView(v=>!v)} style={styles.rangeBtn}><Text style={styles.rangeText}>{monthView? 'Đang bật':'Đang tắt'}</Text></Pressable>
-                    <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===0? prev.year-1: prev.year, month: prev.month===0? 11: prev.month-1 }))} style={styles.rangeBtn}><Text style={styles.rangeText}>{'Tháng trước'}</Text></Pressable>
-                    <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===11? prev.year+1: prev.year, month: prev.month===11? 0: prev.month+1 }))} style={styles.rangeBtn}><Text style={styles.rangeText}>{'Tháng sau'}</Text></Pressable>
-                  </View>
+                <View style={styles.sectionHeader}><Text style={styles.sectionHeaderText}>Chế độ tháng</Text></View>
+                <View style={styles.actionRow}>
+                  <Pressable onPress={()=> setMonthView(v=>!v)} style={styles.rangeChip}><Text style={styles.rangeText}>{monthView? 'Đang bật':'Đang tắt'}</Text></Pressable>
+                  <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===0? prev.year-1: prev.year, month: prev.month===0? 11: prev.month-1 }))} style={styles.rangeChip}><Text style={styles.rangeText}>Tháng trước</Text></Pressable>
+                  <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===11? prev.year+1: prev.year, month: prev.month===11? 0: prev.month+1 }))} style={styles.rangeChip}><Text style={styles.rangeText}>Tháng sau</Text></Pressable>
                 </View>
               </View>
             )}
@@ -908,8 +907,7 @@ Lý do: ${reason}` : message);
               </View>
             )}
             {importSource==='device' && devError && <Text style={[styles.infoText,{ color:'#b91c1c' }]}>{devError}</Text>}
-
-            {/* Google import UI removed */}
+            {/* Secondary action already provided in tiles above */}
           </View>
 
           {/* Grouped list by date (source-aware) */}
@@ -1117,4 +1115,10 @@ const styles = StyleSheet.create({
   pickerActionText:{ fontSize:15, fontWeight:'600', color:'#16425b' },
   autoBtn:{ flexDirection:'row', alignItems:'center', paddingHorizontal:16, paddingVertical:10, backgroundColor:'#4f46e5', borderRadius:16, borderWidth:1, borderColor:'#a78bfa', shadowColor:'#000', shadowOpacity:0.12, shadowRadius:6, elevation:3 },
   autoBtnText:{ color:'#fff', fontWeight:'800', fontSize:13, letterSpacing:0.3 },
+  // Quick Import balanced layout additions
+  actionRow:{ flexDirection:'row', gap:12 },
+  actionTile:{ flex:1, borderWidth:1, padding:14, borderRadius:16, alignItems:'flex-start', justifyContent:'center' },
+  actionTileText:{ fontSize:14, fontWeight:'700', color:'#16425b', marginTop:6 },
+  actionTileSub:{ fontSize:12, color:'#475569', marginTop:4 },
+  rangeChip:{ backgroundColor:'#f1f5f9', paddingHorizontal:12, paddingVertical:8, borderRadius:12 },
 });

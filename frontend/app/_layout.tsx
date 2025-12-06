@@ -8,6 +8,7 @@ import { NotificationProvider } from '@/contexts/NotificationContext';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
+import Toast from '@/components/ui/Toast';
 
 export const unstable_settings = { anchor: '(tabs)' };
 
@@ -49,6 +50,7 @@ export default function RootLayout() {
               <Stack.Screen name="modal" options={{ presentation: 'modal', headerShown: true, title: 'Modal' }} />
             </Stack>
             <StatusBar style="dark" />
+            <Toast />
           </ThemeProvider>
           </NotificationProvider>
         </AuthProvider>
