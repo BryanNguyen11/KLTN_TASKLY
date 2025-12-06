@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, TextInput, Pressable, Alert, ActivityIndicator, Modal, Switch, DeviceEventEmitter, FlatList } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDeviceCalendarEvents } from '@/hooks/useDeviceCalendarEvents';
-import { useGoogleCalendar } from '@/hooks/useGoogleCalendar';
+// Google Calendar import removed
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -48,6 +49,7 @@ export default function CreateEventScreen(){
   const { editId, occDate, projectId, refProjectModal } = useLocalSearchParams<{ editId?: string; occDate?: string; projectId?: string; refProjectModal?: string }>();
   const { token } = useAuth();
   const API_BASE = process.env.EXPO_PUBLIC_API_BASE;
+  const insets = useSafeAreaInsets();
 
   const toLocalISODate = (d: Date) => {
     const y = d.getFullYear();
@@ -95,87 +97,26 @@ export default function CreateEventScreen(){
   const [importOpen, setImportOpen] = useState(false);
   const { events: deviceEvents, loading: devLoading, error: devError, permission: devPerm, requestPermission: reqDevPerm, refresh: refreshDev, mapToFormValues, setLookAheadDays, refreshRange } = useDeviceCalendarEvents({ lookAheadDays: 30 });
   useEffect(()=>{ if(importOpen && devPerm==='granted'){ refreshDev(); } }, [importOpen, devPerm]);
-  // Google import state
-  const [importSource, setImportSource] = useState<'device'|'google'>('device');
-  const {
-    signIn: googleSignIn,
-    signOut: googleSignOut,
-    accessToken: gAccess,
-    listCalendars: gListCals,
-    listEvents: gListEvents,
-    error: gError,
-  } = useGoogleCalendar({});
-  const [gCalendars, setGCalendars] = useState<Array<{ id:string; summary:string; primary?:boolean }>>([]);
-  const [gSelectedCal, setGSelectedCal] = useState<string | null>(null);
-  const [gLoading, setGLoading] = useState(false);
-  const [gEvents, setGEvents] = useState<any[]>([]);
-  const [gRange, setGRange] = useState<{min: Date; max: Date}>(()=>{ const from=new Date(); const to=new Date(); to.setDate(to.getDate()+30); return { min: from, max: to }; });
-  const toRFC3339 = (d: Date)=> new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString();
-  const fetchGCalendars = useCallback(async ()=>{
-    if(!gAccess) return;
-    try{ const list = await gListCals(); setGCalendars(list); if(!gSelectedCal && list[0]) setGSelectedCal(list.find(c=>c.primary)?.id || list[0].id); }
-    catch(e){ /* noop */ }
-  }, [gAccess, gListCals, gSelectedCal]);
-  const fetchGEvents = useCallback(async ()=>{
-    if(!gAccess || !gSelectedCal) return;
-    setGLoading(true);
-    try{
-      const items = await gListEvents(gSelectedCal, toRFC3339(gRange.min), toRFC3339(gRange.max));
-      // Map to uniform shape similar to DeviceCalendarEvent
-      const mapped = (items||[]).map((ev:any)=>{
-        const parseDT = (x:any)=> x?.dateTime ? new Date(x.dateTime) : x?.date ? new Date(x.date+'T00:00:00') : null;
-        const start = parseDT(ev.start) || new Date();
-        const end = parseDT(ev.end) || start;
-        const allDay = !!ev.start?.date;
-        return {
-          __source: 'google',
-          id: ev.id,
-          title: ev.summary || '(Không tiêu đề)',
-          startDate: start,
-          endDate: end,
-          allDay,
-          location: ev.location || undefined,
-          notes: ev.description || undefined,
-          calendarTitle: gCalendars.find(c=>c.id===gSelectedCal)?.summary || 'Google',
-          recurrenceRule: undefined,
-        };
-      });
-      setGEvents(mapped);
-    }catch(e){ /* noop */ } finally { setGLoading(false); }
-  }, [gAccess, gSelectedCal, gRange, gListEvents, gCalendars]);
-  useEffect(()=>{ if(importOpen && importSource==='google' && gAccess){ fetchGCalendars(); }
-  }, [importOpen, importSource, gAccess]);
-  useEffect(()=>{ if(importOpen && importSource==='google' && gSelectedCal && gAccess){ fetchGEvents(); } }, [importOpen, importSource, gSelectedCal, gAccess, gRange.min, gRange.max]);
+  // Google import removed; only device import is available
+  const [importSource, setImportSource] = useState<'device'>('device');
+  // Google Calendar state and hooks removed
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [monthView, setMonthView] = useState<boolean>(false);
+  const [currentMonth, setCurrentMonth] = useState<{year:number; month:number}>(()=>{ const d=new Date(); return { year:d.getFullYear(), month:d.getMonth() }; });
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [ ...prev, id ]);
   };
-  const currentImportList: any[] = importSource==='device' ? deviceEvents : gEvents;
-  const allSelectedImport = currentImportList.length>0 && selectedIds.length === currentImportList.length;
+  const currentImportList: any[] = deviceEvents;
+  const isInCurrentMonth = (d: Date)=> d.getFullYear()===currentMonth.year && d.getMonth()===currentMonth.month;
+  const currentMonthList: any[] = currentImportList.filter(ev => isInCurrentMonth(ev.startDate));
+  const allSelectedImport = (!monthView ? (currentImportList.length>0 && selectedIds.length === currentImportList.length) : (currentMonthList.length>0 && selectedIds.length === currentMonthList.length));
   const clearSelection = () => setSelectedIds([]);
-  const selectAll = () => setSelectedIds(currentImportList.map((e:any)=> e.id));
-  const mapGoogleToForm = (item:any) => {
-    const pad = (n:number)=> String(n).padStart(2,'0');
-    const start = item.startDate as Date; const end = item.endDate as Date;
-    const date = `${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}`;
-    const endIso = `${end.getFullYear()}-${pad(end.getMonth()+1)}-${pad(end.getDate())}`;
-    const startTime = item.allDay? '09:00' : `${pad(start.getHours())}:${pad(start.getMinutes())}`;
-    const endTime = item.allDay? '23:59' : `${pad(end.getHours())}:${pad(end.getMinutes())}`;
-    return {
-      title: item.title,
-      date,
-      endDate: endIso !== date ? endIso : undefined,
-      startTime,
-      endTime: startTime !== endTime ? endTime : undefined,
-      location: item.location,
-      notes: item.notes,
-      repeat: undefined,
-    };
-  };
+  const selectAll = () => setSelectedIds((monthView? currentMonthList: currentImportList).map((e:any)=> e.id));
+  // Google mapping removed
   const previewSelected = () => {
     if(selectedIds.length === 0){ Alert.alert('Chưa chọn','Chọn ít nhất một sự kiện để xem trước'); return; }
     const items = currentImportList.filter(ev => selectedIds.includes(ev.id)).map(ev => {
-      const mapped = importSource==='device' ? mapToFormValues(ev) : mapGoogleToForm(ev);
+  const mapped = mapToFormValues(ev);
       return {
         title: mapped.title,
         date: mapped.date,
@@ -191,6 +132,53 @@ export default function CreateEventScreen(){
     setOcrScanPayload({ raw: '', structured: { kind: 'events-form', items }, defaultTypeId: '', projectId: projectId? String(projectId): undefined });
     setImportOpen(false);
     router.push('/scan-preview');
+  };
+
+  const addSelectedAll = async () => {
+    if(selectedIds.length === 0){ Alert.alert('Chưa chọn','Chọn ít nhất một sự kiện để thêm'); return; }
+    if(!form.typeId){ Alert.alert('Thiếu loại lịch','Vui lòng chọn Loại trước khi thêm tất cả'); return; }
+    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    const items = currentImportList.filter(ev => selectedIds.includes(ev.id));
+    const pad = (n:number)=> String(n).padStart(2,'0');
+    try{
+      // Fetch existing events for duplicate checking within month range
+      const from = new Date(currentMonth.year, currentMonth.month, 1);
+      const to = new Date(currentMonth.year, currentMonth.month+1, 0, 23,59,59);
+      const existingRes = await axios.get(`${API_BASE}/api/events`, { params:{ from: from.toISOString(), to: to.toISOString() }, headers:{ Authorization: token ? `Bearer ${token}` : '' } });
+      const existing: Array<any> = Array.isArray(existingRes.data)? existingRes.data: [];
+      const overlaps = (aStart:Date, aEnd:Date, bStart:Date, bEnd:Date)=> aStart <= bEnd && bStart <= aEnd;
+      await Promise.all(items.map(async (ev:any) => {
+  const m = mapToFormValues(ev);
+        // Duplicate check: same title and overlapping time range
+        const start = new Date(m.date + 'T' + (m.startTime || '00:00') + ':00');
+        const endIsoDate = m.endDate || m.date;
+        const end = new Date(endIsoDate + 'T' + (m.endTime || (m.startTime||'23:59')) + ':00');
+        const hasDup = existing.some(ex => {
+          const exStart = new Date(ex.date + 'T' + (ex.startTime || '00:00') + ':00');
+          const exEndIso = ex.endDate || ex.date;
+          const exEnd = new Date(exEndIso + 'T' + (ex.endTime || (ex.startTime||'23:59')) + ':00');
+          return (String(ex.title||'').trim() === String(m.title||'').trim()) && overlaps(start,end,exStart,exEnd);
+        });
+        if(hasDup) return; // skip duplicates
+        const payload:any = {
+          title: m.title || '(Không tiêu đề)',
+          typeId: form.typeId,
+          date: m.date,
+          endDate: m.endDate || undefined,
+          startTime: m.startTime || (ev.allDay ? undefined : undefined),
+          endTime: m.endTime || (ev.allDay ? undefined : undefined),
+          isAllDay: !!ev.allDay,
+          location: m.location,
+          notes: m.notes,
+          repeat: m.repeat,
+          reminders: [],
+        };
+        if(projectId) payload.projectId = String(projectId);
+        await axios.post(`${API_BASE}/api/events`, payload, { headers:{ Authorization: token ? `Bearer ${token}` : '' } });
+      }));
+      DeviceEventEmitter.emit('toast','Đã thêm tất cả lịch đã chọn');
+      setImportOpen(false);
+    }catch(e){ Alert.alert('Lỗi','Không thể thêm một số lịch. Thử lại sau.'); }
   };
 
   const fetchTypes = async () => {
@@ -864,25 +852,21 @@ Lý do: ${reason}` : message);
       </View>
 
       {/* Import modal – redesigned with source tabs (Device / Google) and sticky footer */}
+      {/* Import modal – redesigned with source tabs (Device / Google) and sticky footer */}
       <Modal visible={importOpen} animationType='slide' onRequestClose={()=> setImportOpen(false)}>
-        <SafeAreaView style={{ flex:1, backgroundColor:'#fff' }}>
-          <View style={[styles.importHeader, { paddingBottom: 8 }]}> 
+  <SafeAreaView style={{ flex:1, backgroundColor:'#fff', paddingBottom: insets.bottom }} edges={['top','bottom']}>
+          <View style={[styles.importHeader, { paddingTop: insets.top, paddingBottom: 8 }]}> 
             <Text style={styles.importTitle}>Nhập sự kiện</Text>
             <Pressable onPress={()=> setImportOpen(false)} style={styles.closeBtn}><Ionicons name='close' size={22} color='#16425b' /></Pressable>
           </View>
-          {/* Source tabs */}
-          <View style={{ flexDirection:'row', gap:8, paddingHorizontal:16, paddingBottom:8 }}>
-            {(['device','google'] as const).map(src=>{
-              const active = importSource===src;
-              return (
-                <Pressable key={src} onPress={()=> setImportSource(src)} style={[styles.typeChip, active && styles.typeChipActive]}>
-                  <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{src==='device'?'Thiết bị':'Google'}</Text>
-                </Pressable>
-              );
-            })}
+          {/* Source tabs removed; device-only import */}
+          <View style={{ flexDirection:'row', paddingHorizontal:16, paddingBottom:8 }}>
+            <View style={[styles.typeChip, styles.typeChipActive]}>
+              <Text style={[styles.typeChipText, styles.typeChipTextActive]}>Thiết bị</Text>
+            </View>
           </View>
 
-          <View style={{ paddingHorizontal:16, paddingBottom:8, gap:8 }}>
+          <View style={{ paddingHorizontal:16, paddingBottom:8 }}>
             {/* Device permission & error states */}
             {importSource==='device' && devPerm==='undetermined' && (
               <Pressable onPress={reqDevPerm} style={[styles.permBtn, { alignSelf:'stretch' }]}>
@@ -897,13 +881,23 @@ Lý do: ${reason}` : message);
               </View>
             )}
             {importSource==='device' && devPerm==='granted' && (
-              <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                <Text style={styles.smallLabel}>Khoảng thời gian</Text>
-                <View style={{ flexDirection:'row', gap:8, alignItems:'center' }}>
-                  <Pressable onPress={()=> { setLookAheadDays(7); refreshDev(); }} style={styles.rangeBtn}><Text style={styles.rangeText}>7 ngày</Text></Pressable>
-                  <Pressable onPress={()=> { setLookAheadDays(30); refreshDev(); }} style={styles.rangeBtn}><Text style={styles.rangeText}>30 ngày</Text></Pressable>
-                  <Pressable onPress={()=> { const from=new Date(); const to=new Date(); to.setMonth(to.getMonth()+3); refreshRange(from,to); }} style={styles.rangeBtn}><Text style={styles.rangeText}>3 tháng</Text></Pressable>
-                  <Pressable onPress={refreshDev} style={styles.refreshBtn}><Ionicons name='refresh' size={18} color='#16425b' /></Pressable>
+              <View style={{ gap:8 }}>
+                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                  <Text style={styles.smallLabel}>Khoảng thời gian</Text>
+                  <View style={{ flexDirection:'row', alignItems:'center' }}>
+                    <Pressable onPress={()=> { setLookAheadDays(7); refreshDev(); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>7 ngày</Text></Pressable>
+                    <Pressable onPress={()=> { setLookAheadDays(30); refreshDev(); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>30 ngày</Text></Pressable>
+                    <Pressable onPress={()=> { const from=new Date(); const to=new Date(); to.setMonth(to.getMonth()+3); refreshRange(from,to); setMonthView(false); }} style={styles.rangeBtn}><Text style={styles.rangeText}>3 tháng</Text></Pressable>
+                    <Pressable onPress={refreshDev} style={styles.refreshBtn}><Ionicons name='refresh' size={18} color='#16425b' /></Pressable>
+                  </View>
+                </View>
+                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
+                  <Text style={styles.smallLabel}>Chế độ tháng</Text>
+                  <View style={{ flexDirection:'row', alignItems:'center' }}>
+                    <Pressable onPress={()=> setMonthView(v=>!v)} style={styles.rangeBtn}><Text style={styles.rangeText}>{monthView? 'Đang bật':'Đang tắt'}</Text></Pressable>
+                    <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===0? prev.year-1: prev.year, month: prev.month===0? 11: prev.month-1 }))} style={styles.rangeBtn}><Text style={styles.rangeText}>{'Tháng trước'}</Text></Pressable>
+                    <Pressable onPress={()=> setCurrentMonth(prev=>({ year: prev.month===11? prev.year+1: prev.year, month: prev.month===11? 0: prev.month+1 }))} style={styles.rangeBtn}><Text style={styles.rangeText}>{'Tháng sau'}</Text></Pressable>
+                  </View>
                 </View>
               </View>
             )}
@@ -915,47 +909,16 @@ Lý do: ${reason}` : message);
             )}
             {importSource==='device' && devError && <Text style={[styles.infoText,{ color:'#b91c1c' }]}>{devError}</Text>}
 
-            {/* Google states */}
-            {importSource==='google' && !gAccess && (
-              <Pressable onPress={googleSignIn} style={[styles.permBtn, { alignSelf:'flex-start' }]}>
-                <Ionicons name='logo-google' size={18} color='#fff' />
-                <Text style={[styles.permBtnText, { marginLeft:8 }]}>Đăng nhập Google</Text>
-              </Pressable>
-            )}
-            {importSource==='google' && gAccess && (
-              <View style={{ gap:8 }}>
-                <View style={{ flexDirection:'row', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-                  {gCalendars.map(cal => {
-                    const active = gSelectedCal===cal.id;
-                    return (
-                      <Pressable key={cal.id} onPress={()=> setGSelectedCal(cal.id)} style={[styles.typeChip, active && styles.typeChipActive]}>
-                        <Text style={[styles.typeChipText, active && styles.typeChipTextActive]}>{cal.summary}{cal.primary? ' • Chính':''}</Text>
-                      </Pressable>
-                    );
-                  })}
-                  <Pressable onPress={fetchGCalendars} style={[styles.rangeBtn, { paddingVertical:6 }]}>
-                    <Text style={styles.rangeText}>Làm mới lịch</Text>
-                  </Pressable>
-                </View>
-                <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center' }}>
-                  <Text style={styles.smallLabel}>Khoảng thời gian</Text>
-                  <View style={{ flexDirection:'row', gap:8, alignItems:'center' }}>
-                    <Pressable onPress={()=>{ const from=new Date(); const to=new Date(); to.setDate(to.getDate()+7); setGRange({ min: from, max: to }); }} style={styles.rangeBtn}><Text style={styles.rangeText}>7 ngày</Text></Pressable>
-                    <Pressable onPress={()=>{ const from=new Date(); const to=new Date(); to.setDate(to.getDate()+30); setGRange({ min: from, max: to }); }} style={styles.rangeBtn}><Text style={styles.rangeText}>30 ngày</Text></Pressable>
-                    <Pressable onPress={()=>{ const from=new Date(); const to=new Date(); to.setMonth(to.getMonth()+3); setGRange({ min: from, max: to }); }} style={styles.rangeBtn}><Text style={styles.rangeText}>3 tháng</Text></Pressable>
-                    <Pressable onPress={fetchGEvents} style={styles.refreshBtn}><Ionicons name='refresh' size={18} color='#16425b' /></Pressable>
-                  </View>
-                </View>
-              </View>
-            )}
+            {/* Google import UI removed */}
           </View>
 
           {/* Grouped list by date (source-aware) */}
           {importSource==='device' && devPerm==='granted' && deviceEvents.length>0 && (()=>{
             const pad = (n:number)=> String(n).padStart(2,'0');
+            const sourceList = monthView ? deviceEvents.filter(ev=> isInCurrentMonth(ev.startDate)) : deviceEvents;
             const sections: Array<{ title:string; data: typeof deviceEvents }>=[];
             const map = new Map<string, { title:string; data: typeof deviceEvents }>();
-            for(const ev of deviceEvents){
+            for(const ev of sourceList){
               const y = ev.startDate.getFullYear();
               const m = pad(ev.startDate.getMonth()+1);
               const d = pad(ev.startDate.getDate());
@@ -968,7 +931,10 @@ Lý do: ${reason}` : message);
               <FlatList
                 data={sections}
                 keyExtractor={(g)=> g.title}
-                contentContainerStyle={{ padding:16, paddingBottom:88, gap:8 }}
+                contentContainerStyle={{ padding:16, paddingBottom: 88 + insets.bottom }}
+                ItemSeparatorComponent={() => <View style={{ height:8 }} />}
+                keyboardShouldPersistTaps='handled'
+                scrollEnabled={true}
                 renderItem={({ item: group }) => (
                   <View style={{ marginBottom:6 }}>
                     <View style={[styles.sectionHeader, { backgroundColor:'#f1f5f9' }]}><Text style={[styles.sectionHeaderText, { color:'#16425b' }]}>{group.title}</Text></View>
@@ -989,7 +955,7 @@ Lý do: ${reason}` : message);
                             <View style={[styles.checkbox, checked && styles.checkboxOn]}>{checked && <Ionicons name='checkmark' size={14} color='#fff' />}</View>
                             <View style={{ flex:1 }}>
                               <Text style={styles.eventTitle} numberOfLines={1}>{item.title}</Text>
-                              <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:2, flexWrap:'wrap' }}>
+                              <View style={{ flexDirection:'row', alignItems:'center', marginTop:2, flexWrap:'wrap' }}>
                                 <Text style={styles.eventMeta}>{time}</Text>
                                 {!!freqText && (
                                   <View style={styles.badge}><Text style={styles.badgeText}>Lặp: {freqText}{endText? ' • '+endText:''}</Text></View>
@@ -1025,88 +991,20 @@ Lý do: ${reason}` : message);
               />
             );
           })()}
-          {importSource==='google' && gAccess ? (
-            gLoading ? (
-              <ActivityIndicator color='#16425b' style={{ marginTop:12 }} />
-            ) : (
-              gEvents.length===0 ? (
-                <View style={{ paddingHorizontal:16 }}><Text style={styles.infoText}>Không có sự kiện Google trong khoảng này.</Text></View>
-              ) : (
-                <FlatList
-                  data={(function(){
-                    const pad = (n:number)=> String(n).padStart(2,'0');
-                    const sections: Array<{ title:string; data: any[] }>=[];
-                    const map = new Map<string, { title:string; data: any[] }>();
-                    for(const ev of gEvents){
-                      const d = ev.startDate; const key = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-                      if(!map.has(key)) map.set(key, { title: `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`, data: [] });
-                      map.get(key)!.data.push(ev);
-                    }
-                    sections.push(...Array.from(map.values()));
-                    return sections;
-                  })()}
-                  keyExtractor={g=> g.title}
-                  contentContainerStyle={{ padding:16, paddingBottom:88, gap:8 }}
-                  renderItem={({ item: group }) => (
-                    <View style={{ marginBottom:6 }}>
-                      <View style={[styles.sectionHeader, { backgroundColor:'#f1f5f9' }]}><Text style={[styles.sectionHeaderText, { color:'#16425b' }]}>{group.title}</Text></View>
-                      {group.data.map((item:any)=>{
-                        const start = item.startDate; const end = item.endDate;
-                        const tpad = (n:number)=> String(n).padStart(2,'0');
-                        const time = item.allDay? 'Cả ngày' : `${tpad(start.getHours())}:${tpad(start.getMinutes())}${(end && end.getTime()!==start.getTime())? ' - '+tpad(end.getHours())+':'+tpad(end.getMinutes()):''}`;
-                        const checked = selectedIds.includes(item.id);
-                        return (
-                          <Pressable key={item.id} onPress={()=> toggleSelect(item.id)} style={[styles.eventRow, checked && { backgroundColor:'#eef2ff' }]}> 
-                            <View style={{ flexDirection:'row', alignItems:'center', gap:10, flex:1 }}>
-                              <View style={[styles.checkbox, checked && styles.checkboxOn]}>{checked && <Ionicons name='checkmark' size={14} color='#fff' />}</View>
-                              <View style={{ flex:1 }}>
-                                <Text style={styles.eventTitle} numberOfLines={1}>{item.title}</Text>
-                                <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:2, flexWrap:'wrap' }}>
-                                  <Text style={styles.eventMeta}>{time}</Text>
-                                  {!!item.calendarTitle && (
-                                    <View style={[styles.badge, { backgroundColor:'#e0e7ff' }]}><Text style={[styles.badgeText,{ color:'#3730a3' }]}>{item.calendarTitle}</Text></View>
-                                  )}
-                                </View>
-                              </View>
-                            </View>
-                            <Pressable onPress={()=>{
-                              const mapped = mapGoogleToForm(item);
-                              setForm(prev => ({
-                                ...prev,
-                                title: mapped.title || prev.title,
-                                date: mapped.date || prev.date,
-                                endDate: mapped.endDate || '',
-                                startTime: (item.allDay ? prev.startTime : (mapped.startTime || prev.startTime)),
-                                endTime: (item.allDay ? '' : (mapped.endTime || '')),
-                                isAllDay: !!item.allDay,
-                                location: mapped.location || prev.location,
-                                notes: mapped.notes || prev.notes,
-                              }));
-                              setImportOpen(false);
-                            }} style={styles.quickImportBtn}>
-                              <Ionicons name='arrow-forward' size={18} color='#64748b' />
-                            </Pressable>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
-                />
-              )
-            )
-          ) : null}
+          {/* Google events list removed */}
 
           {/* Sticky footer for multi-select actions */}
-          {(importSource==='device' && deviceEvents.length>0) || (importSource==='google' && gEvents.length>0) ? (
-            <View style={[styles.selectionBar, { backgroundColor:'#ffffffee' }]}> 
+          {deviceEvents.length>0 ? (
+            <View style={[styles.selectionBar, { backgroundColor:'#ffffffee', paddingBottom: Math.max(10, insets.bottom) }]}> 
               <Text style={styles.selectionText}>Đã chọn: {selectedIds.length}</Text>
               <View style={{ flexDirection:'row', gap:10 }}>
                 <Pressable onPress={allSelectedImport? clearSelection: selectAll} style={[styles.selBtn, allSelectedImport? styles.selSecondary: styles.selPrimary]}>
                   <Text style={allSelectedImport? styles.selSecondaryText: styles.selPrimaryText}>{allSelectedImport? 'Bỏ chọn tất cả':'Chọn tất cả'}</Text>
                 </Pressable>
-                <Pressable onPress={previewSelected} style={[styles.selBtn, styles.selPrimary]} disabled={selectedIds.length===0}>
-                  <Text style={[styles.selPrimaryText, selectedIds.length===0 && { opacity:0.5 }]}>Xem trước nhiều</Text>
+                <Pressable onPress={addSelectedAll} style={[styles.selBtn, styles.selPrimary]} disabled={selectedIds.length===0}>
+                  <Text style={[styles.selPrimaryText, selectedIds.length===0 && { opacity:0.5 }]}>Thêm tất cả</Text>
                 </Pressable>
+                {/* Removed preview multiple to simplify flow */}
               </View>
             </View>
           ) : null}
@@ -1163,13 +1061,13 @@ const styles = StyleSheet.create({
   refreshBtn:{ padding:8, borderRadius:12, backgroundColor:'#e2e8f0' },
   rangeBtn:{ backgroundColor:'#f1f5f9', paddingHorizontal:10, paddingVertical:6, borderRadius:10 },
   rangeText:{ fontSize:12, color:'#0f172a', fontWeight:'600' },
-  eventRow:{ flexDirection:'row', alignItems:'center', paddingVertical:14, borderBottomWidth:1, borderColor:'#e2e8f0', gap:12 },
+  eventRow:{ flexDirection:'row', alignItems:'center', paddingVertical:14, borderBottomWidth:1, borderColor:'#e2e8f0', minHeight:56 },
   eventTitle:{ fontSize:14, fontWeight:'600', color:'#0f172a', marginBottom:2 },
   eventMeta:{ fontSize:12, color:'#475569' },
   eventCalendar:{ fontSize:11, color:'#64748b', marginTop:2 },
   checkbox:{ width:18, height:18, borderRadius:4, borderWidth:1, borderColor:'#c7d2fe', backgroundColor:'#fff', alignItems:'center', justifyContent:'center' },
   checkboxOn:{ backgroundColor:'#4f46e5', borderColor:'#4f46e5' },
-  quickImportBtn:{ padding:6, borderRadius:10 },
+  quickImportBtn:{ padding:6, borderRadius:10, marginLeft:8 },
   sectionHeader:{ backgroundColor:'#f8fafc', paddingVertical:6, paddingHorizontal:12, borderRadius:10, marginBottom:4 },
   sectionHeaderText:{ fontSize:12, fontWeight:'700', color:'#334155' },
   badge:{ backgroundColor:'#e2e8f0', paddingHorizontal:8, paddingVertical:4, borderRadius:12 },

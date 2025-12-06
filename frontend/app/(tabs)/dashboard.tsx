@@ -6,7 +6,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view
 import { Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor } from '@/utils/dashboard'; // mockProjects kept temporary fallback
+import { mockProjects, calculateProgress, Task, getDaysOfWeek, getCurrentWeek, priorityColor, getPriorityLabel } from '@/utils/dashboard'; // mockProjects kept temporary fallback
 import { aiOrderedTasks } from '@/utils/aiTaskSort';
 import axios from 'axios';
 import { Ionicons } from '@expo/vector-icons';
@@ -690,19 +690,26 @@ export default function DashboardScreen() {
       return aiMode ? aiOrderedTasks(list, today) : list;
     };
     if(selectedTab === 'Hôm nay'){
+      const getDeadline = (t:Task) => {
+        const dueIso = t.endDate || t.date; if(!dueIso) return null;
+        const endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+        return endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+      };
       const baseAll = tasks.filter(t => !t.completed && occursTaskOnDate(t, today));
-      // Skip tasks already ended today if they have an endTime (align with events Today card logic)
+      const overdue = tasks.filter(t => {
+        if(t.completed) return false; const dl = getDeadline(t); if(!dl) return false; return Date.now() > dl.getTime();
+      });
+      // Merge overdue tasks even if recurrence occurrence ended before now
+      const merged = [...new Set([...baseAll, ...overdue])];
       const nowHM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-      const notEnded = baseAll.filter(t => {
+      const notEnded = merged.filter(t => {
         const et = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
-        if(!et) return true; // no end time => consider ongoing
-        if(t.endDate){
-          if(today === t.endDate) return et > nowHM; // ends today and after now
-          if(today < t.endDate) return true;        // ends in the future
-          return false;                             // ended before today (shouldn't occur if occursTaskOnDate true)
-        }
-        // single-day task
-        return et > nowHM;
+        if(!et) return true;
+        const dueIso = t.endDate || t.date;
+        if(!dueIso) return true;
+        if(dueIso === today) return et > nowHM || overdue.includes(t); // keep overdue regardless of time
+        if(today < dueIso) return true;
+        return overdue.includes(t); // if overdue allow it
       });
       const inRange = isISOInRange(today);
       const base = notEnded.filter(t => inRange && matchesQueryTask(t));
@@ -1200,6 +1207,11 @@ export default function DashboardScreen() {
   }, [progress]);
   const progressStyle = useAnimatedStyle(() => ({ width: `${progressSV.value}%` }));
 
+  // Remaining tasks modal
+  const [showRemainingModal, setShowRemainingModal] = useState(false);
+  const uncompletedTasksAll = React.useMemo(()=> tasks.filter(t=> !t.completed), [tasks]);
+  const closeRemainingModal = () => setShowRemainingModal(false);
+
   // FAB pulse
   const fabScale = useSharedValue(1);
   useEffect(() => {
@@ -1298,6 +1310,47 @@ export default function DashboardScreen() {
           }
         }
       });
+  };
+
+  // Optimize ordering: send today's + overdue + due soon tasks to AI; fallback to heuristic
+  const onOptimizePress = async () => {
+    if(!token) return;
+    try{
+      setAiLoading(true);
+      setAiMode(true);
+      const nowD = new Date();
+      const todayIso = toLocalISODate(nowD);
+      const getDeadline = (t: Task) => {
+        const dueIso = t.endDate || t.date;
+        if(!dueIso) return null;
+        const endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+        return endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+      };
+      const occToday = tasks.filter(t => !t.completed && occursTaskOnDate(t, todayIso));
+      const overdue = tasks.filter(t => {
+        if(t.completed) return false; const dl = getDeadline(t); if(!dl) return false; return nowD.getTime() > dl.getTime();
+      });
+      const dueSoon = tasks.filter(t => {
+        if(t.completed) return false; const dl = getDeadline(t); if(!dl) return false; if(nowD.getTime() > dl.getTime()) return false; const iso = t.endDate || t.date; if(!iso) return false; const d = diffDays(todayIso, iso); return d>=0 && d<=7;
+      });
+      const byId: Record<string, Task> = {};
+      [...occToday, ...overdue, ...dueSoon].forEach(t => { byId[t.id] = t; });
+      const candidates = Object.values(byId);
+      const body = { 
+        prompt: 'Đánh giá và sắp xếp các tác vụ sau một cách hợp lý',
+        tasks: candidates.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours }))
+      };
+      const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } });
+      if(Array.isArray(res.data?.ordered) && res.data.ordered.length){
+        setAiOrdering(res.data.ordered);
+      } else {
+        setAiOrdering(null); // fallback: heuristic will apply via aiMode
+      }
+      setToast('Đã tối ưu thứ tự');
+    } catch(e){
+      setAiOrdering(null); // heuristic fallback
+      setToast('AI không khả dụng, dùng sắp xếp thông minh');
+    } finally { setAiLoading(false); }
   };
 
   // Remove animation helpers for debug simple menu
@@ -1481,7 +1534,7 @@ export default function DashboardScreen() {
               <Text style={[styles.searchInput,{ color:'#94a3b8' }]}>Tìm kiếm tác vụ, lịch...</Text>
             </Pressable>
 
-            <View style={styles.progressCard}>
+            <Pressable style={styles.progressCard} onPress={()=> setShowRemainingModal(true)}>
               <View style={styles.progressRow}>
                 <Text style={styles.progressTitle}>Tiến độ hôm nay</Text>
                 <Text style={styles.progressCounter}>{completed}/{total}</Text>
@@ -1492,7 +1545,7 @@ export default function DashboardScreen() {
               <Text style={styles.progressHint}>
                 {completed === total && total > 0 ? '🎉 Hoàn thành tất cả!' : `Còn ${total - completed} tác vụ`}
               </Text>
-            </View>
+            </Pressable>
 
             {pendingInviteProjects.length > 0 && (
               <View style={styles.inviteBanner}>
@@ -1641,59 +1694,7 @@ export default function DashboardScreen() {
                       ) : (
                         <Text style={styles.emptyHint}>Không có lịch còn lại trong hôm nay</Text>
                       )}
-                      {/* Overdue tasks */}
-                      {overdueTasks.length>0 && (
-                        <View style={{ marginTop:10 }}>
-                          <View style={{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:6 }}>
-                            <Ionicons name='alert-circle-outline' size={14} color='#dc2626' />
-                            <Text style={{ color:'#b91c1c', fontWeight:'700', fontSize:12 }}>Quá hạn</Text>
-                            <View style={[styles.countPill,{ backgroundColor:'rgba(220,38,38,0.1)' }]}><Text style={[styles.countText,{ color:'#b91c1c' }]}>{overdueTasks.length}</Text></View>
-                          </View>
-                          <View style={[styles.dayTaskChips,{ marginTop:0 }]}> 
-                            {overdueTasks.map((t, idx) => {
-                              const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
-                              return (
-                                <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
-                                  <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                                  <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                                  {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
-                                  {(t as any).projectId && (
-                                    <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
-                                  )}
-                                </Pressable>
-                              );
-                            })}
-                          </View>
-                        </View>
-                      )}
-                      {/* Due today tasks */}
-                      {dueTodayTasks.length>0 && (
-                        <View style={{ marginTop:10 }}>
-                          <View style={{ flexDirection:'row', alignItems:'center', gap:6, marginBottom:6 }}>
-                            <Ionicons name='calendar-outline' size={14} color='#2f6690' />
-                            <Text style={{ color:'#16425b', fontWeight:'700', fontSize:12 }}>Deadline hôm nay</Text>
-                            <View style={[styles.countPill, styles.tasksCountPill]}><Text style={[styles.countText, styles.tasksCountText]}>{dueTodayTasks.length}</Text></View>
-                          </View>
-                          <View style={[styles.dayTaskChips,{ marginTop:0 }]}> 
-                            {dueTodayTasks.map((t, idx) => {
-                              const timeText = (t.startTime && t.endTime) ? `${t.startTime}-${t.endTime}` : (t.time || '');
-                              return (
-                                <Pressable key={t.id+idx} style={styles.taskChip} onPress={()=> router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: todayISO } })}>
-                                  <View style={[styles.taskChipDot,{ backgroundColor: t.importance==='high'? '#dc2626' : t.importance==='medium'? '#f59e0b':'#3a7ca5' }]} />
-                                  <Text style={styles.taskChipText} numberOfLines={1}>{t.title}</Text>
-                                  {!!timeText && <Text style={styles.taskChipTime}>{timeText}</Text>}
-                                  {(t as any).projectId && (
-                                    <Text style={[styles.groupBadge, { marginLeft:6 }]} numberOfLines={1}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>
-                                  )}
-                                </Pressable>
-                              );
-                            })}
-                          </View>
-                        </View>
-                      )}
-                      {overdueTasks.length===0 && dueTodayTasks.length===0 && (
-                        <Text style={styles.emptyHint}>Không có tác vụ quá hạn hoặc deadline hôm nay</Text>
-                      )}
+                      {/* Overdue & due today merged into main task list now */}
                     </Animated.View>
                   );
                 })()}
@@ -1964,7 +1965,14 @@ export default function DashboardScreen() {
                   </>
                 )}
               </View>
-              <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
+              <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
+                <Pressable onPress={onOptimizePress} style={{ borderRadius:12, overflow:'hidden' }}>
+                  <LinearGradient colors={['#3a7ca5','#2f6690']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ paddingHorizontal:10, paddingVertical:6 }}>
+                    <Text style={{ color:'#fff', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang tối ưu...' : 'Tối ưu'}</Text>
+                  </LinearGradient>
+                </Pressable>
+                <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
+              </View>
             </View>
             {loading && <Text style={{ color:'#2f6690', marginBottom:12 }}>Đang tải...</Text>}
             {error && <Text style={{ color:'#ef4444', marginBottom:12 }}>{error}</Text>}
@@ -2006,11 +2014,6 @@ export default function DashboardScreen() {
                 >
                   <View style={[styles.taskCard, item.completed && styles.taskDone, { position:'relative' }]}>          
                     {celebrateId === item.id && <ConfettiBurst />}
-                    <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={{ marginRight:10 }}>
-                      <Animated.View style={[styles.checkCircle, item.completed && styles.checkCircleDone]} layout={Layout.springify()}>
-                        {item.completed && <Ionicons name="checkmark" size={14} color="#fff" />}
-                      </Animated.View>
-                    </Pressable>
                     <Pressable
                       style={{ flex:1, minWidth:0 }}
                       hitSlop={4}
@@ -2025,6 +2028,13 @@ export default function DashboardScreen() {
                       <View style={[styles.metaRow,{ flexWrap:'wrap', marginTop:6 }]}>                        
                         {overdueLabel && (
                           <View style={styles.overduePill}><Text style={styles.overduePillText}>{overdueLabel}</Text></View>
+                        )}
+                        {/* Priority badge with explicit label */}
+                        {item.priority && (
+                          <View style={styles.metaSmallRow}>
+                            <Ionicons name="alert-circle-outline" size={12} color="#ef4444" />
+                            <Text style={styles.metaText}>{`Mức độ ưu tiên: ${getPriorityLabel(item.priority)}`}</Text>
+                          </View>
                         )}
                         {/* Time range */}
                         {!!item.time && (
@@ -2046,6 +2056,20 @@ export default function DashboardScreen() {
                             <Text style={[styles.metaText,{ color:'#2563eb' }]}>{fmtDM(item.date!)}–{fmtDM(item.endDate!)}</Text>
                           </View>
                         )}
+                        {/* Deadline label */}
+                        {(() => {
+                          const dueIso = item.endDate || item.date;
+                          const endTime = item.endTime || (item.time && item.time.includes('-') ? item.time.split('-')[1] : undefined);
+                          if(!dueIso) return null;
+                          const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
+                          const label = endTime ? `${fmtDM(dueIso)} ${endTime}` : fmtDM(dueIso);
+                          return (
+                            <View style={styles.metaSmallRow}>
+                              <Ionicons name="calendar-outline" size={12} color="#374151" />
+                              <Text style={styles.metaText}>{`Hạn chót: ${label}`}</Text>
+                            </View>
+                          );
+                        })()}
                         {/* Importance */}
                         {item.importance && (
                           <Text style={[styles.importanceBadge, item.importance==='high' && styles.importanceHigh, item.importance==='medium' && styles.importanceMed]}>{item.importance==='high'?'Quan trọng': item.importance==='medium'?'Trung bình':'Thấp'}</Text>
@@ -2064,11 +2088,21 @@ export default function DashboardScreen() {
                           const endTime = item.endTime || (item.time && item.time.includes('-') ? item.time.split('-')[1] : undefined);
                           const deadline = endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`);
                           if(Date.now() > deadline.getTime()) return null;
-                          const diffDaysVal = Math.round((deadline.getTime() - Date.now())/86400000);
-                          if(diffDaysVal < 0 || diffDaysVal > 7) return null;
-                          return <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{diffDaysVal===0? 'Hôm nay' : `Còn ${diffDaysVal}d`}</Text></View>;
+                          const diffMs = deadline.getTime() - Date.now();
+                          if(diffMs <= 0) return null;
+                          const minutes = Math.floor(diffMs / 60000);
+                          const hours = Math.floor(diffMs / 3600000);
+                          const days = Math.floor(diffMs / 86400000);
+                          let text = '';
+                          if(days >= 1) text = `Hết hạn trong: ${days} ngày`;
+                          else if(hours >= 1) text = `Hết hạn trong: ${hours} giờ`;
+                          else text = `Hết hạn trong: ${minutes} phút`;
+                          return <View style={styles.dueSoonPill}><Text style={styles.dueSoonPillText}>{text}</Text></View>;
                         })()}
                       </View>
+                    </Pressable>
+                    <Pressable onPress={()=> toggleTask(item.id)} hitSlop={10} style={[item.completed ? styles.completeBtn : styles.completeBtnOutline, { marginLeft:'auto' }]}>
+                      <Text style={item.completed ? styles.completeBtnText : styles.completeBtnTextOutline}>{item.completed ? 'Đã hoàn thành' : 'Hoàn thành'}</Text>
                     </Pressable>
                   </View>
                 </Swipeable>
@@ -2223,6 +2257,42 @@ export default function DashboardScreen() {
             <Text style={styles.cancelActionText}>Đóng</Text>
           </Pressable>
         </View>
+      </Pressable>
+    </Modal>
+    {/* Remaining tasks modal */}
+    <Modal visible={showRemainingModal} transparent animationType='fade' onRequestClose={closeRemainingModal}>
+      <Pressable style={styles.insightsPopupOverlay} onPress={closeRemainingModal}>
+        <Pressable style={[styles.insightsPopupCard,{ maxHeight:480 }]} onPress={(e)=> e.stopPropagation()}>
+          <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+            <Text style={styles.insightsPopupTitle}>Tác vụ chưa hoàn thành ({uncompletedTasksAll.length})</Text>
+            <Pressable onPress={closeRemainingModal} style={styles.popupCloseBtn}><Ionicons name='close' size={18} color='#334155' /></Pressable>
+          </View>
+          <ScrollView style={{ maxHeight:420 }}>
+            {uncompletedTasksAll.map(t => {
+              const endTime = t.endTime || (t.time && t.time.includes('-') ? t.time.split('-')[1] : undefined);
+              const dueIso = t.endDate || t.date;
+              const dl = dueIso ? (endTime ? new Date(`${dueIso}T${endTime}:00`) : new Date(`${dueIso}T23:59:59`)) : null;
+              const overdue = dl ? Date.now() > dl.getTime() : false;
+              return (
+                <Pressable key={t.id} style={styles.popupItem} onPress={()=> { const occ = selectedTab==='Hôm nay' ? todayISO : selectedDateISO; router.push({ pathname:'/create-task', params:{ editId: t.id, occDate: occ } }); }}>
+                  <Ionicons name={overdue? 'alert-circle-outline':'checkbox-outline'} size={16} color={overdue? '#dc2626':'#2563eb'} style={{ marginRight:8 }} />
+                  <View style={{ flex:1 }}>
+                    <Text style={styles.popupItemText} numberOfLines={1}>{t.title}</Text>
+                    <View style={{ flexDirection:'row', flexWrap:'wrap', gap:6, marginTop:4 }}>
+                      {t.time && <Text style={{ fontSize:11, color:'#2f6690' }}>{t.time}</Text>}
+                      {t.startTime && !t.time && <Text style={{ fontSize:11, color:'#2f6690' }}>{t.startTime}{t.endTime? `-${t.endTime}`:''}</Text>}
+                      {t.endDate && t.date && t.endDate!==t.date && <Text style={{ fontSize:11, color:'#2563eb' }}>{fmtDM(t.date!)}–{fmtDM(t.endDate!)}</Text>}
+                      {overdue && <Text style={{ fontSize:11, color:'#dc2626', fontWeight:'700' }}>Quá hạn</Text>}
+                      {t.importance && <Text style={[styles.importanceBadge, t.importance==='high' && styles.importanceHigh, t.importance==='medium' && styles.importanceMed]}>{t.importance==='high'?'Quan trọng': t.importance==='medium'?'Trung bình':'Thấp'}</Text>}
+                      {(t as any).projectId && <Text style={styles.groupBadge}>{projectNameById[(t as any).projectId] || 'Dự án'}</Text>}
+                    </View>
+                  </View>
+                </Pressable>
+              );
+            })}
+            {uncompletedTasksAll.length===0 && <Text style={styles.popupEmpty}>Không có tác vụ</Text>}
+          </ScrollView>
+        </Pressable>
       </Pressable>
     </Modal>
     {toast && (
@@ -2860,6 +2930,10 @@ const styles = StyleSheet.create({
   taskDone: { backgroundColor: 'rgba(217,220,214,0.15)', opacity: 0.75 },
   deadlineTodayCard:{ borderWidth:1, borderColor:'#6d28d9' },
   deadlineOverdueCard:{ borderWidth:1, borderColor:'#dc2626' },
+  completeBtn:{ paddingHorizontal:10, paddingVertical:6, borderRadius:12, backgroundColor:'#3a7ca5', marginRight:0 },
+  completeBtnText:{ color:'#fff', fontSize:11, fontWeight:'700' },
+  completeBtnOutline:{ paddingHorizontal:10, paddingVertical:6, borderRadius:12, borderWidth:1, borderColor:'#3a7ca5', backgroundColor:'transparent' },
+  completeBtnTextOutline:{ color:'#3a7ca5', fontSize:11, fontWeight:'700' },
   checkCircle: { width:22, height:22, borderRadius:11, borderWidth:2, borderColor:'#2f6690', alignItems:'center', justifyContent:'center', marginRight: 12 },
   checkCircleDone: { backgroundColor:'#3a7ca5', borderColor:'#3a7ca5' },
   priorityDot: { width:10, height:10, borderRadius:5, marginRight: 12 },
