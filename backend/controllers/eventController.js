@@ -83,7 +83,7 @@ function detectSemanticsFromPrompt(prompt){
 }
 function normalizeItemsBySemantics(items, prompt){
   try{
-    const out = Array.isArray(items)? items.slice() : [];
+      // Rule-based mode: ignore userPrompt/AI paths
     const sem = detectSemanticsFromPrompt(prompt);
     if(sem.mode==='none') return out;
     // If a time is specified in prompt, align period range accordingly
@@ -94,15 +94,7 @@ function normalizeItemsBySemantics(items, prompt){
         const to = hhmmToPeriodEnd(t);
         const from = Math.max(1, to - 1); // single-period by default
         it.from = from; it.to = Math.max(from, to);
-        // If a date mentioned and endDate is empty, treat it as the repeat end date
-        if(sem.date && !it.endDate){ it.endDate = sem.date; }
-      } else if(sem.mode==='start' && t){
-        const from = hhmmToPeriodStart(t);
-        const to = Math.min(16, from + 1);
-        it.from = from; it.to = Math.max(from, to);
-        if(sem.date && !it.startDate){ it.startDate = sem.date; }
-      } else {
-        // No explicit time: if a date present, fill startDate in start-mode, endDate in due-mode
+          // Rule-based parsing to structured progress-table
         if(sem.mode==='start' && sem.date && !it.startDate) it.startDate = sem.date;
         if(sem.mode==='due' && sem.date && !it.endDate) it.endDate = sem.date;
       }
@@ -122,28 +114,7 @@ function detectStrictFromPrompt(prompt){
 // Resolve Vietnamese relative expressions like "9h sáng ngày t7 tuần này"
 function resolveRelativeDateTime(prompt, baseNowISO){
   try{
-    const s = String(prompt||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]+/g,'');
-    let now = new Date();
-    // If client passed local base date (YYYY-MM-DD), use it to anchor relative phrases like "ngày mai", "thứ 7 tuần sau"
-    if(typeof baseNowISO === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(baseNowISO)){
-      const [y,m,d] = baseNowISO.split('-').map(n=>parseInt(n,10));
-      if(y && m && d){
-        const cur = new Date();
-        now = new Date(y, (m||1)-1, d||1, cur.getHours(), cur.getMinutes(), 0, 0);
-      }
-    }
-    const pad2 = (n)=> String(n).padStart(2,'0');
-    const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
-    // time-of-day fallback keywords
-    const timeOfDayFallback = (()=>{
-      if(/\bsang\b/.test(s)) return '09:00';
-      if(/\btrua\b/.test(s)) return '12:00';
-      if(/\bchieu\b/.test(s)) return '15:00';
-      if(/\btoi\b/.test(s)) return '19:00';
-      return null;
-    })();
-    // weekday mapping
-    const map = { 2:1, 3:2, 4:3, 5:4, 6:5, 7:6, cn:0 };
+      // Rule-based OCR only: use Tesseract, then parse
     const weekdayNames = { 'thu 2':1, 'thu 3':2, 'thu 4':3, 'thu 5':4, 'thu 6':5, 'thu 7':6, 'chu nhat':0, 'cn':0 };
     const findWeekdayToken = ()=>{
       for(const [k,v] of Object.entries(weekdayNames)){
@@ -229,9 +200,6 @@ function tesseractParams(){
     logger: () => {},
     langPath: path.join(__dirname, '..'),
     // Hints for table-like text
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂĐĨŨƠƯàáâãèéêìíòóôõùúăđĩũơưỲỴÝỳỵýÂÊÔăâêô0123456789-–:/().,[] ' ,
-    preserve_interword_spaces: '1',
-    user_defined_dpi: '300',
     psm: 6,
   };
 }
@@ -1149,39 +1117,81 @@ exports.scanImage = async (req, res) => {
 exports.scanFile = async (req, res) => {
   try {
     const userId = req.user.userId;
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ message: 'Thiếu tệp tải lên (file)' });
+    // Accept both multipart file and base64 string from mobile
+    let uploadBuffer = null;
+    let uploadMime = '';
+    let uploadName = '';
+    if (req.file && req.file.buffer) {
+      uploadBuffer = req.file.buffer;
+      uploadMime = String(req.file.mimetype||'');
+      uploadName = String(req.file.originalname||'');
+    } else if (req.body && (req.body.fileBase64 || req.body.imageBase64)) {
+      try {
+        const b64 = String(req.body.fileBase64 || req.body.imageBase64 || '').trim();
+        // Allow data URL or plain base64
+        const m = b64.match(/^data:([^;]+);base64,(.+)$/);
+        if (m) { uploadMime = m[1]; uploadBuffer = Buffer.from(m[2], 'base64'); }
+        else { uploadBuffer = Buffer.from(b64, 'base64'); }
+      } catch(_e) { uploadBuffer = null; }
+      uploadName = 'upload';
+    }
+    if (!uploadBuffer) {
+      return res.status(400).json({ message: 'Thiếu tệp tải lên (file hoặc fileBase64)' });
     }
     const userPrompt = (req.body && req.body.prompt) ? String(req.body.prompt) : undefined;
-    const { mimetype = '', originalname = '' } = req.file;
+    const mimetype = uploadMime;
+    const originalname = uploadName;
     const isPdf = (mimetype && mimetype.includes('pdf')) || /\.pdf$/i.test(originalname);
     if (isPdf) {
       if (!pdfParse) {
         return res.status(500).json({ message: 'Máy chủ chưa hỗ trợ đọc PDF (thiếu pdf-parse)' });
       }
       try {
-        const parsed = await pdfParse(req.file.buffer);
+        const parsed = await pdfParse(uploadBuffer);
         const text = String(parsed.text || '').trim();
         if (!text) return res.status(400).json({ message: 'Không đọc được nội dung PDF', reason: 'empty-pdf' });
-        // Try Gemini text parsing first (AI structuring)
-        try{
-          if(OCR_DEBUG) console.log('[OCR] PDF detected, attempting Gemini text parse...');
-          const aiItems = await tryGeminiParseProgress(text, userPrompt);
-          if(aiItems && aiItems.length){
-            return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items: aiItems } });
-          }
-        }catch(_){ }
-        // If possible, parse to structured progress-table
-        const items = parseProgressTable(text);
-        if(items && items.length){ return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items } }); }
-        // Return raw text; frontend will parse to weekly preview
-        return res.json({ raw: text, rawLength: text.length, extracted: {} });
+        // Rule-based parse only
+        const items = parseProgressTable(text) || [];
+        if(OCR_DEBUG) console.log('[OCR] rule-based progress-table items='+items.length);
+        if(items.length){
+          // Map to events-form fields
+          const toHHMM = (from,to)=>({ startTime: PERIOD_TIME[from]?.start || '09:00', endTime: PERIOD_TIME[to]?.end || '' });
+          const pad2 = (n)=> String(n).padStart(2,'0');
+          const todayISO = (()=>{ const d=new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; })();
+          const firstWeekdayOnOrAfter = (baseISO, weekday)=>{
+            try{ const [y,m,d] = String(baseISO||'').split('-').map(n=>parseInt(n,10)); const dt = new Date(y||new Date().getFullYear(), (m||1)-1, d||1); const js = dt.getDay() || 7; const w = Math.min(7,Math.max(1,weekday||2)); const diff = (w - js + 7) % 7; if(diff>0) dt.setDate(dt.getDate()+diff); return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`; }catch{ const now=new Date(); return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`; }
+          };
+          const forms = items.map(it => {
+            const { startTime, endTime } = toHHMM(it.from, it.to);
+            const base = String(it.startDate||'').match(/^\d{4}-\d{2}-\d{2}$/) ? it.startDate : todayISO;
+            const date = firstWeekdayOnOrAfter(base, it.weekday);
+            const repeat = it.endDate ? { frequency:'weekly', endMode:'onDate', endDate: it.endDate } : undefined;
+            return {
+              title: String(it.title||'').trim() || 'Lịch',
+              date,
+              endDate: '',
+              startTime,
+              endTime,
+              location: String(it.location||'').trim() || undefined,
+              notes: String(it.notes||'').trim() || undefined,
+              repeat,
+            };
+          });
+          return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: forms } });
+        }
+        // Fallback: direct Vietnamese date/time extraction to events-form
+        const direct = directEventsFromText(text);
+        if(direct.items.length){
+          return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: direct.items }, meta: { strategy: 'direct' } });
+        }
+        // Return raw when no items parsed
+        return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: [] }, meta: { strategy: 'none' } });
       } catch (e) {
         return res.status(500).json({ message: 'Lỗi đọc PDF', error: e.message });
       }
     }
     // else treat as image (reuse scanImage pipeline but inline to avoid re-calling middleware)
-    let buffer = req.file.buffer;
+  let buffer = uploadBuffer;
     try {
       buffer = await sharp(buffer)
         .rotate()
@@ -1191,28 +1201,7 @@ exports.scanFile = async (req, res) => {
         .toFormat('jpeg', { quality: 94 })
         .toBuffer();
     } catch(_e) {}
-    // Try Gemini Vision structured first, then Vision OCR text, then external DEMINI
-    try{
-      const gStruct = await tryGeminiVisionToStructured(buffer, userPrompt);
-      if(gStruct && gStruct.length){
-        const best = gStruct;
-        return res.json({ raw: '', rawLength: 0, structured: { kind:'progress-table', items: best } });
-      }
-    }catch(_){ }
-    try{
-      const gText = await tryGeminiOCR(buffer, userPrompt);
-      if(gText && gText.trim().length>0){
-        const best = gText.trim();
-        return res.json({ raw: best, rawLength: best.length, extracted: {} });
-      }
-    }catch(_){ }
-    try{
-      const extText = await tryExternalOCR(buffer);
-      if(extText && extText.trim().length>0){
-        const best = extText.trim();
-        return res.json({ raw: best, rawLength: best.length, extracted: {} });
-      }
-    }catch(_){ }
+    // Rule-based only: no AI/external OCR fallbacks
     try {
       const img = await Jimp.read(buffer);
       img.contrast(0.35).normalize();
@@ -1234,14 +1223,104 @@ exports.scanFile = async (req, res) => {
         text = (data2 && data2.text ? String(data2.text) : '').trim();
       } catch(_e) {}
     }
-    if (!text) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr' });
-    const items = parseProgressTable(text);
-    if(items && items.length){ return res.json({ raw: text, rawLength: text.length, structured: { kind:'progress-table', items } }); }
-    return res.json({ raw: text, rawLength: text.length, extracted: {} });
+  if (!text) return res.status(400).json({ message: 'Không nhận dạng được nội dung từ ảnh', reason: 'empty-ocr' });
+  const prog = parseProgressTable(text) || [];
+    const toHHMM = (from,to)=>{
+      const st = PERIOD_TIME[from]?.start || '09:00';
+      const en = PERIOD_TIME[to]?.end || '';
+      return { startTime: st, endTime: en };
+    };
+    const pad2 = (n)=> String(n).padStart(2,'0');
+    const todayISO = (()=>{ const d=new Date(); return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; })();
+    const firstWeekdayOnOrAfter = (baseISO, weekday)=>{
+      try{ const [y,m,d] = String(baseISO||'').split('-').map(n=>parseInt(n,10)); const dt = new Date(y||new Date().getFullYear(), (m||1)-1, d||1); const js = dt.getDay() || 7; const w = Math.min(7,Math.max(1,weekday||2)); const diff = (w - js + 7) % 7; if(diff>0) dt.setDate(dt.getDate()+diff); return `${dt.getFullYear()}-${pad2(dt.getMonth()+1)}-${pad2(dt.getDate())}`; }catch{ const now=new Date(); return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`; }
+    };
+    const forms = prog.map(it => {
+      const { startTime, endTime } = toHHMM(it.from, it.to);
+      const base = String(it.startDate||'').match(/^\d{4}-\d{2}-\d{2}$/) ? it.startDate : todayISO;
+      const date = firstWeekdayOnOrAfter(base, it.weekday);
+      const repeat = it.endDate ? { frequency:'weekly', endMode:'onDate', endDate: it.endDate } : undefined;
+      return {
+        title: String(it.title||'').trim() || 'Lịch',
+        date,
+        endDate: '',
+        startTime,
+        endTime,
+        location: String(it.location||'').trim() || undefined,
+        notes: String(it.notes||'').trim() || undefined,
+        repeat,
+      };
+    });
+    if(forms.length){ return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: forms } }); }
+    // Fallback: direct Vietnamese date/time extraction to events-form
+    const direct = directEventsFromText(text);
+    if(direct.items.length){
+      return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: direct.items }, meta: { strategy: 'direct' } });
+    }
+    return res.json({ raw: text, rawLength: text.length, structured: { kind:'events-form', items: [] }, meta: { strategy: 'none' } });
   } catch (e) {
     return res.status(500).json({ message: 'Lỗi xử lý tệp', error: e.message });
   }
 };
+
+// Fallback: extract events directly from Vietnamese text (dates like dd/mm/yyyy, weekdays, and time ranges HH:MM-HH:MM or "Tiết a-b")
+function directEventsFromText(raw){
+  const text = String(raw||'');
+  const lines = text.split(/\r?\n+/).map(s=>s.trim()).filter(Boolean);
+  const pad2 = (n)=> String(n).padStart(2,'0');
+  const norm = (s)=> s.normalize('NFC');
+  const mapThuByName = { hai:2, ba:3, tu:4, tư:4, nam:5, năm:5, sau:6, bảy:7, bay:7, cn:7, chủnhật:7, 'chủ nhật':7 };
+  const toISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+  const parseDate = (s)=>{
+    // dd/mm/yyyy or dd-mm-yyyy
+    const m = s.match(/\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})\b/);
+    if(m){ const dd=parseInt(m[1]); const mm=parseInt(m[2])-1; let yy=parseInt(m[3]); if(yy<100) yy+=2000; const d=new Date(yy,mm,dd); if(!isNaN(d.getTime())) return toISO(d); }
+    return null;
+  };
+  const parseWeekday = (s)=>{
+    const p = s.toLowerCase();
+    const m = p.match(/\bthu\s*(hai|ba|tu|tư|nam|năm|sau|bay|bảy)\b/) || p.match(/\b(chu nhat|chủ nhật|cn)\b/);
+    if(m){ const k=(m[1]||m[0]).replace(/\s+/g,''); return mapThuByName[k]||null; }
+    return null;
+  };
+  const parseTimeRange = (s)=>{
+    // HH:MM - HH:MM or Hh-Hh, also "Tiết a-b"
+    const mm = s.match(/\b(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})\b/);
+    if(mm){ const st=`${pad2(parseInt(mm[1]))}:${mm[2]}`; const en=`${pad2(parseInt(mm[3]))}:${mm[4]}`; return { startTime: st, endTime: en }; }
+    const hm = s.match(/\b(\d{1,2})h\s*[-–]\s*(\d{1,2})h\b/);
+    if(hm){ const st=`${pad2(parseInt(hm[1]))}:00`; const en=`${pad2(parseInt(hm[2]))}:00`; return { startTime: st, endTime: en }; }
+    const tm = s.match(/\b(tiết|tiet)\s*(\d{1,2})\s*[-–]\s*(\d{1,2})\b/i);
+    if(tm){ const from=parseInt(tm[2]); const to=parseInt(tm[3]); const st=PERIOD_TIME[from]?.start||'09:00'; const en=PERIOD_TIME[to]?.end||''; return { startTime: st, endTime: en }; }
+    return null;
+  };
+  const items = [];
+  let currentDateISO = null;
+  let currentWeekday = null;
+  for(const rawLine of lines){
+    const line = norm(rawLine);
+    const dISO = parseDate(line);
+    if(dISO){ currentDateISO = dISO; continue; }
+    const wd = parseWeekday(line);
+    if(wd){ currentWeekday = wd; continue; }
+    const tr = parseTimeRange(line);
+    if(tr){
+      // Title on same line or previous non-empty line
+      const idx = lines.indexOf(rawLine);
+      let title = 'Lịch';
+      for(let j=Math.max(0, idx-1); j>=Math.max(0, idx-3); j--){ const t = lines[j]; if(t && !parseTimeRange(t) && !parseDate(t) && !parseWeekday(t)){ title = t.replace(/^[\-•\*]\s*/, '').slice(0, 120); break; } }
+      const date = currentDateISO || (()=>{ const today=new Date(); // if weekday known, find next
+        if(currentWeekday){ const js = today.getDay()||7; const diff = (currentWeekday - js + 7) % 7; const d=new Date(today); d.setDate(today.getDate()+diff); return toISO(d); }
+        return toISO(today);
+      })();
+      items.push({ title, date, endDate:'', startTime: tr.startTime, endTime: tr.endTime, location: undefined, notes: undefined });
+    }
+  }
+  // Deduplicate trivial duplicates (same date+time+title)
+  const key = (it)=> `${it.title}|${it.date}|${it.startTime}|${it.endTime}`.toLowerCase();
+  const uniq = []; const seen = new Set();
+  for(const it of items){ const k=key(it); if(!seen.has(k)){ seen.add(k); uniq.push(it); } }
+  return { items: uniq };
+}
 
 // AI generate timetable items purely from a user prompt (no files)
 exports.aiGenerate = async (req, res) => {

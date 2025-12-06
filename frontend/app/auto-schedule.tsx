@@ -12,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { setOcrScanPayload } from '@/contexts/OcrScanStore';
 import useSpeechToText, { STTLanguage } from '@/hooks/useSpeechToText';
 import { mockTasks, todayISO } from '@/utils/dashboard';
+import { DeviceEventEmitter } from 'react-native';
 
 // Optional ImageManipulator to normalize picked images
 let ImageManipulator: any;
@@ -426,6 +427,83 @@ export default function AutoScheduleScreen(){
     setSttLang(prev => prev === 'vi-VN' ? 'en-US' : 'vi-VN');
   };
 
+  // Bulk-create events with duplicate checks (title + overlapping time)
+  const createManyEvents = async (items: any[], defaultTypeId?: string, projectId?: string) => {
+    if(!token){ Alert.alert('Lỗi','Chưa đăng nhập'); return; }
+    const API = API_BASE;
+    const dates = items.map(it=> it.date).filter(Boolean);
+    const sample = dates.length? new Date(dates[0]+'T00:00:00') : new Date();
+    const from = new Date(sample.getFullYear(), sample.getMonth(), 1);
+    const to = new Date(sample.getFullYear(), sample.getMonth()+1, 0, 23,59,59);
+    let existing:any[] = [];
+    try{
+      const res = await axios.get(`${API}/api/events`, { params:{ from: from.toISOString(), to: to.toISOString() }, headers:{ Authorization:`Bearer ${token}` } });
+      existing = Array.isArray(res.data)? res.data: [];
+    }catch{}
+    const overlaps = (aStart:Date, aEnd:Date, bStart:Date, bEnd:Date)=> aStart <= bEnd && bStart <= aEnd;
+    let created = 0, skipped = 0;
+    for(const m of items){
+      const title = String(m.title||'').trim();
+      const date = m.date; const endDate = m.endDate || m.date;
+      const startTime = m.startTime || '00:00';
+      const endTime = m.endTime || (m.startTime||'23:59');
+      const start = new Date(date + 'T' + startTime + ':00');
+      const end = new Date(endDate + 'T' + endTime + ':00');
+      const hasDup = existing.some(ex => {
+        const exTitle = String(ex.title||'').trim();
+        const exStart = new Date((ex.date||date) + 'T' + (ex.startTime || '00:00') + ':00');
+        const exEndIso = ex.endDate || ex.date || date;
+        const exEnd = new Date(exEndIso + 'T' + (ex.endTime || (ex.startTime||'23:59')) + ':00');
+        return exTitle.localeCompare(title, 'vi', { sensitivity:'base' })===0 && overlaps(start,end,exStart,exEnd);
+      });
+      if(hasDup){ skipped++; continue; }
+      const payload:any = {
+        title: title || '(Không tiêu đề)',
+        typeId: defaultTypeId || m.typeId,
+        date,
+        endDate: m.endDate || undefined,
+        startTime: m.startTime || undefined,
+        endTime: m.endTime || undefined,
+        location: m.location || undefined,
+        notes: m.notes || undefined,
+        repeat: m.repeat || undefined,
+        reminders: [],
+      };
+      if(projectId) payload.projectId = String(projectId);
+      try{ await axios.post(`${API}/api/events`, payload, { headers:{ Authorization:`Bearer ${token}` } }); created++; } catch{ /* skip */ }
+    }
+    DeviceEventEmitter.emit('toast', `Đã tạo ${created} lịch, bỏ qua ${skipped} trùng.`);
+  };
+
+  // Direct PDF → events generation inside Taskly AI
+  const createEventsFromPdf = async () => {
+    try{
+      const pick = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], multiple:false, copyToCacheDirectory:true });
+      const anyPick:any = pick as any; if(anyPick.canceled) return;
+      const asset:any = Array.isArray(anyPick.assets)? anyPick.assets[0]: anyPick;
+      const uri:string|undefined = asset?.uri; if(!uri){ Alert.alert('Lỗi','Không chọn được tệp'); return; }
+      const name:string = (asset?.name as string) || (uri.split('/').pop() || 'upload.pdf');
+      const formData = new FormData();
+      // @ts-ignore React Native FormData file
+      formData.append('file', { uri, name, type: 'application/pdf' });
+      setBusy(true);
+      const res = await axios.post(`${API_BASE}/api/events/scan-file`, formData, { headers:{ Authorization: token? `Bearer ${token}` : '' } });
+      const structured = res.data?.structured;
+      const items = Array.isArray(structured?.items)? structured.items: [];
+      if(!items.length){ Alert.alert('Không tìm thấy','PDF không có nội dung phù hợp để tạo lịch.'); setBusy(false); return; }
+      appendMsg({ id:'ai_'+Date.now(), role:'assistant', text:`Đã phân tích được ${items.length} sự kiện từ PDF. Nhấn "Tạo tất cả" để thêm vào lịch hoặc "Xem trước" để chỉnh sửa.`, meta:{ evFormItems: items } });
+      Alert.alert('Tạo lịch từ PDF', `Tạo ${items.length} lịch ngay?`, [
+        { text:'Hủy', style:'cancel' },
+        { text:'Xem trước', onPress: ()=> onPreviewEventsForm(items) },
+        { text:'Tạo tất cả', onPress: ()=> createManyEvents(items, (typeId as string|undefined), (projectId as string|undefined)) }
+      ]);
+    }catch(e:any){
+      const msg = e?.response?.data?.message || 'Không xử lý được PDF';
+      const reason = e?.response?.data?.reason;
+      Alert.alert('Lỗi', reason? `${msg}\nLý do: ${reason}`: msg);
+    } finally { setBusy(false); }
+  };
+
 
   // Explicit generation on demand with current prompt and attachments
   const generateFromCurrent = async (mode: 'events'|'tasks'|'both') => {
@@ -541,6 +619,10 @@ export default function AutoScheduleScreen(){
                 <Pressable onPress={()=> generateFromCurrent('both')} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo cả lịch và tác vụ'>
                   <Ionicons name='git-merge-outline' size={16} color='#fff' />
                   <Text style={styles.actionText}>Tạo cả hai</Text>
+                </Pressable>
+                <Pressable onPress={createEventsFromPdf} style={[styles.actionBtn, styles.primary]} accessibilityLabel='Tạo lịch từ PDF'>
+                  <Ionicons name='document-text-outline' size={16} color='#fff' />
+                  <Text style={styles.actionText}>Tạo lịch từ PDF</Text>
                 </Pressable>
               </View>
               <View style={{ marginTop:10, flexDirection:'row', flexWrap:'wrap', gap:8 }}>
