@@ -1312,12 +1312,11 @@ export default function DashboardScreen() {
       });
   };
 
-  // Optimize ordering: send today's + overdue + due soon tasks to AI; fallback to heuristic
+  // Optimize ordering using deterministic Eisenhower matrix (no AI)
   const onOptimizePress = async () => {
-    if(!token) return;
     try{
       setAiLoading(true);
-      setAiMode(true);
+      // Consider today's, overdue, and due-soon tasks as candidates
       const nowD = new Date();
       const todayIso = toLocalISODate(nowD);
       const getDeadline = (t: Task) => {
@@ -1336,20 +1335,15 @@ export default function DashboardScreen() {
       const byId: Record<string, Task> = {};
       [...occToday, ...overdue, ...dueSoon].forEach(t => { byId[t.id] = t; });
       const candidates = Object.values(byId);
-      const body = { 
-        prompt: 'Đánh giá và sắp xếp các tác vụ sau một cách hợp lý',
-        tasks: candidates.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours }))
-      };
-      const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } });
-      if(Array.isArray(res.data?.ordered) && res.data.ordered.length){
-        setAiOrdering(res.data.ordered);
-      } else {
-        setAiOrdering(null); // fallback: heuristic will apply via aiMode
-      }
-      setToast('Đã tối ưu thứ tự');
+      // Use local matrix-based sorter
+  // Import sorter lazily to avoid circular deps; type-safe mapping
+  const { aiOrderedTasks } = await import('@/utils/aiTaskSort');
+  const ordered = aiOrderedTasks(candidates, todayIso).map((t: Task) => t.id);
+      setAiOrdering(ordered);
+      setToast('Đã sắp xếp theo ma trận');
     } catch(e){
-      setAiOrdering(null); // heuristic fallback
-      setToast('AI không khả dụng, dùng sắp xếp thông minh');
+      setAiOrdering(null);
+      setToast('Không thể sắp xếp');
     } finally { setAiLoading(false); }
   };
 
@@ -1517,12 +1511,6 @@ export default function DashboardScreen() {
                 <Pressable onPress={()=> router.push('/notifications')} style={styles.notifBtn}>
                   <Ionicons name='notifications-outline' size={18} color='#2f6690' />
                   {unreadCount>0 && <View style={styles.notifDot}><Text style={styles.notifDotText}>{Math.min(unreadCount,9)}</Text></View>}
-                </Pressable>
-                <Pressable onPress={()=> router.push('/auto-schedule')} style={{ borderRadius:22, overflow:'hidden' }}>
-                  <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.aiTopBtn}>
-                    <Ionicons name='sparkles' size={18} color={'#ffffff'} />
-                    <Text style={[styles.aiTopText, styles.aiTopTextActive]}>AI</Text>
-                  </LinearGradient>
                 </Pressable>
               </View>
             </View>
@@ -1951,24 +1939,11 @@ export default function DashboardScreen() {
             <View style={styles.sectionHeader}>
               <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
                 <Text style={styles.sectionTitle}>Tác vụ</Text>
-                {aiMode && (
-                  <>
-                    <View style={[styles.aiBadge, { backgroundColor:'transparent', overflow:'hidden' }]}>
-                      <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={[StyleSheet.absoluteFill, { borderRadius:8 }]} />
-                      <Text style={styles.aiBadgeText}>AI</Text>
-                    </View>
-                    <Pressable onPress={()=>{ if(!token) return; (async()=>{ try{ setAiLoading(true); const body = { tasks: tasks.map(t => ({ id: t.id, title: t.title, importance: t.importance, priority: t.priority, urgency: (t as any).urgency, date: t.date, endDate: t.endDate, estimatedHours: (t as any).estimatedHours })) }; const res = await axios.post(`${API_BASE}/api/tasks/ai-sort`, body, { headers:{ Authorization:`Bearer ${token}` } }); if(Array.isArray(res.data?.ordered)) setAiOrdering(res.data.ordered); } catch{ /*silent*/ } finally{ setAiLoading(false); } })(); }} style={{ borderRadius:12, overflow:'hidden' }}>
-                      <LinearGradient colors={['#7b8cff','#66d1ff','#a88bff']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ paddingHorizontal:10, paddingVertical:6 }}>
-                        <Text style={{ color:'#fff', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang AI...' : 'Làm mới AI'}</Text>
-                      </LinearGradient>
-                    </Pressable>
-                  </>
-                )}
               </View>
               <View style={{ flexDirection:'row', alignItems:'center', gap:8 }}>
                 <Pressable onPress={onOptimizePress} style={{ borderRadius:12, overflow:'hidden' }}>
                   <LinearGradient colors={['#3a7ca5','#2f6690']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ paddingHorizontal:10, paddingVertical:6 }}>
-                    <Text style={{ color:'#fff', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang tối ưu...' : 'Tối ưu'}</Text>
+                    <Text style={{ color:'#fff', fontWeight:'700', fontSize:12 }}>{aiLoading? 'Đang sắp xếp...' : 'Sắp xếp'}</Text>
                   </LinearGradient>
                 </Pressable>
                 <Text style={styles.sectionSub}>{filteredTasks.length} hiển thị</Text>
