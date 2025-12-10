@@ -5,6 +5,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/contexts/AuthContext';
 import axios from 'axios';
+import { Platform, Modal as RNModal } from 'react-native';
+import { DateTimePickerAndroid } from '@react-native-community/datetimepicker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 interface Stats {
   totalCompleted: number;
@@ -12,6 +15,9 @@ interface Stats {
   late: number;
   onTimeRate: number;
   evaluation: string;
+  mode?: 'month'|'year'|'custom';
+  range?: { from?: string|null; to?: string|null };
+  breakdown?: Array<{ period: string; total: number; onTime: number; late: number; onTimeRate: number }>;
 }
 
 export default function ProfileScreen(){
@@ -23,6 +29,11 @@ export default function ProfileScreen(){
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
+  const [mode, setMode] = useState<'month'|'year'|'custom'>('month');
+  const [from, setFrom] = useState<string | null>(null);
+  const [to, setTo] = useState<string | null>(null);
+  const [iosPicker, setIosPicker] = useState<{ visible: boolean; which: 'from'|'to' | null; date: Date }>(() => ({ visible: false, which: null, date: new Date() }));
+  const [anchor, setAnchor] = useState<Date>(new Date()); // used for month/year navigation
   const [avatarModal, setAvatarModal] = useState(false);
   const [savingAvatar, setSavingAvatar] = useState(false);
 
@@ -36,17 +47,58 @@ export default function ProfileScreen(){
 
   useEffect(()=> { setName(user?.name || ''); }, [user?.name]);
 
+  const toISO = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,'0');
+    const day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const pickDate = (which: 'from'|'to') => {
+    const cur = new Date();
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        mode: 'date', value: cur,
+        onChange: (_, date) => {
+          if (!date) return;
+          const iso = toISO(date);
+          if (which === 'from') setFrom(iso); else setTo(iso);
+        }
+      });
+    } else {
+      // iOS: show inline picker in a modal
+      setIosPicker({ visible: true, which, date: cur });
+    }
+  };
+
   const loadStats = async () => {
     if(!API_BASE) return;
     setLoadingStats(true);
     try {
-      const res = await axios.get(`${API_BASE}/api/users/me/stats`);
+      const params: any = { mode };
+      if (mode === 'custom') {
+        if (from) params.from = from;
+        if (to) params.to = to;
+      } else if (mode === 'month') {
+        // compute first and last day of the selected month from anchor
+        const y = anchor.getFullYear();
+        const m = anchor.getMonth();
+        const first = new Date(y, m, 1);
+        const last = new Date(y, m + 1, 0);
+        params.from = toISO(first);
+        params.to = toISO(last);
+      } else if (mode === 'year') {
+        const y = anchor.getFullYear();
+        params.from = `${y}-01-01`;
+        params.to = `${y}-12-31`;
+      }
+      const res = await axios.get(`${API_BASE}/api/users/me/stats`, { params });
       setStats(res.data);
     } catch(e:any){ /* silent */ }
     finally { setLoadingStats(false); }
   };
 
-  useEffect(()=> { loadStats(); }, []);
+  useEffect(()=> { loadStats(); }, [mode, anchor]);
 
   const handleSave = async () => {
     setSaving(true); setError(null);
@@ -127,6 +179,55 @@ export default function ProfileScreen(){
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Hiệu suất</Text>
+        {/* Mode chips */}
+        <View style={{ flexDirection:'row', marginBottom: 10 }}>
+          {([
+            { k:'month', label:'Tháng' },
+            { k:'year', label:'Năm' },
+            { k:'custom', label:'Tùy chọn' },
+          ] as Array<{k:'month'|'year'|'custom'; label:string}>).map(it => (
+            <Pressable key={it.k} onPress={()=> setMode(it.k)} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:999, borderWidth:1, borderColor: mode===it.k? '#2563eb':'#e5e7eb', backgroundColor: mode===it.k? '#eff6ff':'#fff', marginRight:8 }}>
+              <Text style={{ color:'#16425b', fontSize:12, fontWeight: mode===it.k? '700':'500' }}>{it.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {/* Period navigation for month/year */}
+        {mode!=='custom' && (
+          <View style={{ flexDirection:'row', alignItems:'center', gap:12, marginBottom:8 }}>
+            <Pressable onPress={()=> {
+              setAnchor(prev => {
+                const d = new Date(prev);
+                if (mode==='month') d.setMonth(d.getMonth()-1); else d.setFullYear(d.getFullYear()-1);
+                return d;
+              });
+            }} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:8, borderWidth:1, borderColor:'#e5e7eb', backgroundColor:'#fff' }}>
+              <Ionicons name='chevron-back-outline' size={18} color='#16425b' />
+            </Pressable>
+            <Text style={{ color:'#16425b', fontWeight:'600' }}>{mode==='month' ? `${anchor.getMonth()+1}/${anchor.getFullYear()}` : `${anchor.getFullYear()}`}</Text>
+            <Pressable onPress={()=> {
+              setAnchor(prev => {
+                const d = new Date(prev);
+                if (mode==='month') d.setMonth(d.getMonth()+1); else d.setFullYear(d.getFullYear()+1);
+                return d;
+              });
+            }} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:8, borderWidth:1, borderColor:'#e5e7eb', backgroundColor:'#fff' }}>
+              <Ionicons name='chevron-forward-outline' size={18} color='#16425b' />
+            </Pressable>
+          </View>
+        )}
+        {mode==='custom' && (
+          <View style={{ flexDirection:'row', alignItems:'center', gap:12, marginBottom:8 }}>
+            <Pressable onPress={()=> pickDate('from')} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:8, borderWidth:1, borderColor:'#e5e7eb' }}>
+              <Text style={{ color:'#16425b' }}>{from ? `Từ: ${from}` : 'Chọn Từ ngày'}</Text>
+            </Pressable>
+            <Pressable onPress={()=> pickDate('to')} style={{ paddingHorizontal:10, paddingVertical:6, borderRadius:8, borderWidth:1, borderColor:'#e5e7eb' }}>
+              <Text style={{ color:'#16425b' }}>{to ? `Đến: ${to}` : 'Chọn Đến ngày'}</Text>
+            </Pressable>
+            <Pressable onPress={loadStats} style={{ paddingHorizontal:12, paddingVertical:6, borderRadius:8, backgroundColor:'#2563eb' }}>
+              <Text style={{ color:'#fff' }}>Áp dụng</Text>
+            </Pressable>
+          </View>
+        )}
         {loadingStats && <ActivityIndicator color='#3a7ca5' style={{ marginTop:8 }} />}
         {!loadingStats && stats && (
           <View>
@@ -137,6 +238,18 @@ export default function ProfileScreen(){
             <View style={[styles.evaluationBox, stats.evaluation==='Trì hoãn' && styles.evalLate, stats.evaluation==='Đúng deadline' && styles.evalGood]}>
               <Text style={styles.evalText}>{stats.evaluation}</Text>
             </View>
+            {/* Breakdown list */}
+            {Array.isArray(stats.breakdown) && stats.breakdown.length > 0 && (
+              <View style={{ marginTop:16, borderTopWidth:1, borderColor:'#f1f5f9', paddingTop:12 }}>
+                <Text style={{ fontSize:15, fontWeight:'600', color:'#16425b', marginBottom:8 }}>Thống kê theo kỳ</Text>
+                {stats.breakdown.map((it, idx)=> (
+                  <View key={idx} style={{ flexDirection:'row', justifyContent:'space-between', paddingVertical:6, borderBottomWidth: idx===stats.breakdown!.length-1? 0: 1, borderColor:'#f1f5f9' }}>
+                    <Text style={{ color:'#16425b' }}>{it.period}</Text>
+                    <Text style={{ color:'#16425b' }}>Tổng: {it.total} | Đúng hạn: {it.onTime} | Trễ: {it.late} | Tỷ lệ: {Math.round((it.onTimeRate||0)*100)}%</Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
         )}
         <Pressable style={styles.logoutBtn} onPress={()=> {
@@ -149,6 +262,30 @@ export default function ProfileScreen(){
           <Text style={styles.logoutText}>Đăng xuất</Text>
         </Pressable>
       </View>
+      {/* iOS Date Picker Modal */}
+      <RNModal visible={iosPicker.visible} transparent animationType='fade' onRequestClose={()=> setIosPicker(s=> ({ ...s, visible:false }))}>
+        <Pressable style={styles.modalBackdrop} onPress={()=> setIosPicker(s=> ({ ...s, visible:false }))}>
+          <View style={styles.avatarSheet}>
+            <Text style={styles.sheetTitle}>Chọn ngày</Text>
+            <DateTimePicker
+              mode='date'
+              value={iosPicker.date}
+              display='spinner'
+              onChange={(_: any, date: Date | undefined) => {
+                if (!date) return;
+                setIosPicker(s=> ({ ...s, date }));
+              }}
+            />
+            <Pressable style={styles.closeSheetBtn} onPress={()=> {
+              const iso = toISO(iosPicker.date);
+              if (iosPicker.which === 'from') setFrom(iso); else if (iosPicker.which === 'to') setTo(iso);
+              setIosPicker({ visible:false, which:null, date: new Date() });
+            }}>
+              <Text style={styles.closeSheetText}>Xác nhận</Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </RNModal>
     </SafeAreaView>
   );
 }

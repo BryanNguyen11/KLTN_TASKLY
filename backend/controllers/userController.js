@@ -173,24 +173,90 @@ exports.updateAvatar = async (req, res) => {
 };
 
 // GET /api/users/me/stats
-// Calculates task performance metrics
+// Calculates task performance metrics with optional range and grouping
+// Query params:
+//   mode: 'month' | 'year' | 'custom' (default 'custom')
+//   from: ISO date YYYY-MM-DD (optional)
+//   to: ISO date YYYY-MM-DD (optional)
 exports.getStats = async (req, res) => {
   try {
     const userId = req.user.userId;
-    // Only completed tasks are relevant for on-time vs late
-    const tasks = await Task.find({ userId, status: 'completed' }).select('date endDate completedAt');
-    const totalCompleted = tasks.length;
+    const mode = (req.query.mode === 'month' || req.query.mode === 'year' || req.query.mode === 'custom') ? req.query.mode : 'custom';
+    const fromQ = typeof req.query.from === 'string' ? req.query.from : null;
+    const toQ = typeof req.query.to === 'string' ? req.query.to : null;
+
+    // Build date range
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth()+1).padStart(2,'0');
+    const firstDayThisMonth = `${yyyy}-${mm}-01`;
+    const firstDayThisYear = `${yyyy}-01-01`;
+    const range = { from: fromQ, to: toQ };
+    if (mode === 'month' && !fromQ && !toQ) {
+      range.from = firstDayThisMonth;
+      range.to = `${yyyy}-${mm}-31`; // safe upper bound; we will validate per task
+    } else if (mode === 'year' && !fromQ && !toQ) {
+      range.from = firstDayThisYear;
+      range.to = `${yyyy}-12-31`;
+    }
+
+    // Fetch only completed tasks; optionally filter by range using completedAt
+    const query = { userId, status: 'completed' };
+    const tasks = await Task.find(query).select('date endDate completedAt');
+
+    // Helper: parse deadline
+    const getDeadline = (t) => {
+      const deadlineDateStr = t.endDate || t.date;
+      if (!deadlineDateStr) return null;
+      return new Date(`${deadlineDateStr}T23:59:59`);
+    };
+    // Helper: within range
+    const inRange = (d) => {
+      if (!(d instanceof Date)) return false;
+      if (range.from) {
+        const f = new Date(`${range.from}T00:00:00`);
+        if (d < f) return false;
+      }
+      if (range.to) {
+        const t = new Date(`${range.to}T23:59:59`);
+        if (d > t) return false;
+      }
+      return true;
+    };
+
+    // Summary counters
+    let totalCompleted = 0;
     let onTime = 0;
     let late = 0;
 
+    // Grouping buckets
+    // For month mode: group by YYYY-MM
+    // For year mode: group by YYYY
+    // For custom: group by YYYY-MM-DD
+    const buckets = new Map(); // key -> { total, onTime, late }
+    const keyOf = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth()+1).padStart(2,'0');
+      const day = String(d.getDate()).padStart(2,'0');
+      if (mode === 'month') return `${y}-${m}`;
+      if (mode === 'year') return String(y);
+      return `${y}-${m}-${day}`; // custom/day
+    };
+
     tasks.forEach(t => {
-      if (!t.completedAt) return; // safety
-      // Determine deadline date (endDate if provided else date)
-      const deadlineDateStr = t.endDate || t.date; // both stored as YYYY-MM-DD
-      if (!deadlineDateStr) return; // skip if malformed
-      // Deadline considered end-of-day 23:59:59 local
-      const deadline = new Date(`${deadlineDateStr}T23:59:59`);
-      if (t.completedAt <= deadline) onTime++; else late++;
+      if (!t.completedAt) return;
+      const comp = new Date(t.completedAt);
+      if (!inRange(comp)) return;
+      const deadline = getDeadline(t);
+      if (!deadline) return;
+      totalCompleted++;
+      const isOnTime = comp <= deadline;
+      if (isOnTime) onTime++; else late++;
+      const k = keyOf(comp);
+      const cur = buckets.get(k) || { total: 0, onTime: 0, late: 0 };
+      cur.total += 1;
+      if (isOnTime) cur.onTime += 1; else cur.late += 1;
+      buckets.set(k, cur);
     });
 
     const onTimeRate = totalCompleted ? onTime / totalCompleted : 0;
@@ -200,12 +266,20 @@ exports.getStats = async (req, res) => {
     else if (onTimeRate >= 0.5) evaluation = 'Cần cải thiện';
     else evaluation = 'Trì hoãn';
 
+    // Build breakdown array sorted by key
+    const breakdown = Array.from(buckets.entries())
+      .sort((a,b)=> a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)
+      .map(([period, v]) => ({ period, total: v.total, onTime: v.onTime, late: v.late, onTimeRate: v.total ? v.onTime / v.total : 0 }));
+
     res.json({
+      mode,
+      range,
       totalCompleted,
       onTime,
       late,
       onTimeRate,
-      evaluation
+      evaluation,
+      breakdown
     });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi thống kê', error: err.message });
