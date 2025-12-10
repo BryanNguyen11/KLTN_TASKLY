@@ -6,6 +6,7 @@ import React, {
   ReactNode
 } from 'react';
 import axios from 'axios';
+// import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 
@@ -48,6 +49,12 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const applyToken = (tk: string) => {
     axios.defaults.headers.common['Authorization'] = `Bearer ${tk}`;
   };
+
+  // Optional: secure persistence for future features
+  // const SECURE_TOKEN_KEY = 'TASKLY_AUTH_TOKEN';
+  // const saveTokenSecurely = async (tk: string) => { try { await SecureStore.setItemAsync(SECURE_TOKEN_KEY, tk); } catch {} };
+  // const getSavedToken = async (): Promise<string | null> => { try { return await SecureStore.getItemAsync(SECURE_TOKEN_KEY); } catch { return null; } };
+  // const deleteSavedToken = async () => { try { await SecureStore.deleteItemAsync(SECURE_TOKEN_KEY); } catch {} };
 
   const registerPushToken = async () => {
     try {
@@ -124,6 +131,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       throw new Error(err.response?.data?.message || err.message || 'Đăng nhập thất bại');
     } finally { setLoading(false); }
   };
+
 
   const register = async (name: string, email: string, password: string) => {
     setLoading(true);

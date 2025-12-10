@@ -32,6 +32,14 @@ const userSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  // Password reset
+  resetPasswordToken: { type: String, default: '' },
+  resetPasswordExpires: { type: Date },
+  // Email OTP for reset verification
+  otpCode: { type: String, default: '' },
+  otpExpires: { type: Date },
+  // Push token maintenance
+  pushTokenLastUpdatedAt: { type: Date },
   // Push notifications
   expoPushTokens: { type: [String], default: [] },
   lastDailyPushDate: { type: String }, // YYYY-MM-DD (user-local) to avoid duplicate daily summaries

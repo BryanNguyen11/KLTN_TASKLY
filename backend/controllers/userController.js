@@ -20,21 +20,27 @@ exports.savePushToken = async (req, res) => {
 
     if (!token || typeof token !== 'string') return res.status(400).json({ message: 'Thiếu token' });
     u.expoPushTokens = Array.isArray(u.expoPushTokens) ? u.expoPushTokens : [];
-    if (replace === true) {
-      // Keep only the latest token to avoid duplicate deliveries from stale tokens
+    // Policy: within 10 minutes of a token change or when replace=true, keep only the latest token
+    const now = new Date();
+    const last = u.pushTokenLastUpdatedAt ? new Date(u.pushTokenLastUpdatedAt) : null;
+    const within10m = last ? (now.getTime() - last.getTime()) <= (10 * 60 * 1000) : false;
+    if (replace === true || within10m) {
       u.expoPushTokens = [token];
+      u.pushTokenLastUpdatedAt = now;
       await u.save();
-    } else if (!u.expoPushTokens.includes(token)) {
-      u.expoPushTokens.push(token);
-      // De-duplicate just in case
-      u.expoPushTokens = Array.from(new Set(u.expoPushTokens));
-      await u.save();
+    } else {
+      if (!u.expoPushTokens.includes(token)) {
+        u.expoPushTokens.push(token);
+        u.expoPushTokens = Array.from(new Set(u.expoPushTokens));
+        u.pushTokenLastUpdatedAt = now;
+        await u.save();
+      }
     }
     if (timezone && typeof timezone === 'string' && timezone.length <= 80) {
       u.timezone = timezone;
       await u.save();
     }
-    res.json({ ok: true, timezone: u.timezone || null });
+  res.json({ ok: true, timezone: u.timezone || null, latest: token, replaced: replace === true || within10m });
   } catch (err) {
     res.status(500).json({ message: 'Lỗi lưu token', error: err.message });
 

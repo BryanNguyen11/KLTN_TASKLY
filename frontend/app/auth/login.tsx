@@ -38,6 +38,7 @@ export default function LoginScreen() {
     }
   };
 
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: '#f1f5f9' }} edges={['top']}>
       <KeyboardAvoidingView style={{ flex:1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} keyboardVerticalOffset={insets.top}>
@@ -108,6 +109,12 @@ export default function LoginScreen() {
               <Text style={styles.buttonText}>Đăng nhập</Text>
             )}
           </Pressable>
+
+          <Text style={styles.footerText}>
+            <Text style={styles.link} onPress={() => router.push('/auth/forgot-password' as any)}>
+              Quên mật khẩu?
+            </Text>
+          </Text>
 
           <Text style={styles.footerText}>
             Chưa có tài khoản?{' '}
