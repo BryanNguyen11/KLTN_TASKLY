@@ -2085,112 +2085,112 @@ export default function DashboardScreen() {
             })()}
           </Animated.View>
         )}
-        ListFooterComponent={
+        ListFooterComponent={() => (
           <View style={{ marginTop: 16 }}>
-          {/* Completed tasks section (collapsible) */}
-          {tasks.some(t=>t.completed) && (
-            <View style={{ marginBottom:24 }}>
-              <Pressable style={styles.completedToggleRow} onPress={()=> setShowCompletedCollapse(s=>!s)}>
-                <Text style={styles.completedHeader}>Đã hoàn thành</Text>
-                <Ionicons name={showCompletedCollapse? 'chevron-up' : 'chevron-down'} size={20} color={'#16425b'} />
-              </Pressable>
-              {showCompletedCollapse && (
-                <View style={styles.completedScrollWrapper}>
-                  <ScrollView style={styles.completedScroll} nestedScrollEnabled>
-                    {tasks.filter(t=>t.completed).map(t => (
-                      <View key={t.id} style={styles.completedItem}>
-                        <View style={{ flex:1 }}>
-                          <Text style={styles.completedTitle}>{t.title}</Text>
-                          {t.completedAt && (
-                            <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit', year:'numeric' })}</Text>
-                          )}
+            {/* Completed tasks section (collapsible) */}
+            {tasks.some(t=>t.completed) && (
+              <View style={{ marginBottom:24 }}>
+                <Pressable style={styles.completedToggleRow} onPress={()=> setShowCompletedCollapse(s=>!s)}>
+                  <Text style={styles.completedHeader}>Đã hoàn thành</Text>
+                  <Ionicons name={showCompletedCollapse? 'chevron-up' : 'chevron-down'} size={20} color={'#16425b'} />
+                </Pressable>
+                {showCompletedCollapse && (
+                  <View style={styles.completedScrollWrapper}>
+                    <ScrollView style={styles.completedScroll} nestedScrollEnabled>
+                      {tasks.filter(t=>t.completed).map(t => (
+                        <View key={t.id} style={styles.completedItem}>
+                          <View style={{ flex:1 }}>
+                            <Text style={styles.completedTitle}>{t.title}</Text>
+                            {t.completedAt && (
+                              <Text style={styles.completedMeta}>Hoàn thành lúc {new Date(t.completedAt).toLocaleString('vi-VN', { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'2-digit', year:'numeric' })}</Text>
+                            )}
+                          </View>
+                          <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>
+                            <Text style={styles.undoText}>↺</Text>
+                          </Pressable>
                         </View>
-                        <Pressable onPress={()=>toggleTask(t.id)} style={styles.undoBtn}>
-                          <Text style={styles.undoText}>↺</Text>
-                        </Pressable>
-                      </View>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
-            </View>
-          )}
-          {/* Projects (show leader/admin projects) */}
-          {(() => {
-            const userId = (user as any)?._id || (user as any)?.id;
-            const managed = projects.filter(p => p.owner === userId || (p.members||[]).some((m:any)=> m.user === userId && m.role==='admin'));
-            if(!managed.length) return null;
-            return (
-              <View style={{ marginTop: 8 }}>
-                <View style={styles.projectsHeaderRow}>
-                  <View style={styles.headerLeftRow}>
-                    <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+                      ))}
+                    </ScrollView>
                   </View>
-                  <View style={styles.countPillSmall}><Text style={styles.countPillSmallText}>{managed.length}</Text></View>
-                </View>
-                {managed.map(p => {
-                  // Backend already includes owner in members as admin on creation
-                  const membersCount = (p.members?.length || 0);
-                  const myId = (user as any)?._id || (user as any)?.id;
-                  const myMember = (p.members||[]).find((m:any)=> String(m.user)===String(myId));
-                  const myRole = p.owner === myId ? 'owner' : (myMember?.role || 'member');
-                  return (
-                    <Pressable key={p._id} style={[styles.projectCard, styles.projectCardOwner]} onPress={()=> openProjectDirect(p)}>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                        <View style={{ flex:1, paddingRight:8 }}>
-                          <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
-                        </View>
-                        <Text style={myRole==='owner' ? styles.leaderBadge : styles.coLeaderBadge}>
-                          {myRole==='owner' ? 'Trưởng nhóm' : 'Phó nhóm'}
-                        </Text>
-                      </View>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
-                        <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
-                        <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
-                      </View>
-                    </Pressable>
-                  );
-                })}
+                )}
               </View>
-            );
-          })()}
-
-          {/* Projects (show participating but not admin) */}
-          {(() => {
-            const userId = (user as any)?._id || (user as any)?.id;
-            const participating = projects.filter(p => p.owner !== userId && (p.members||[]).some((m:any)=> m.user === userId && m.role !== 'admin'));
-            if(!participating.length) return null;
-            return (
-              <View style={{ marginTop: 16 }}>
-                <View style={styles.projectsHeaderRow}>
-                  <View style={styles.headerLeftRow}>
-                    <Text style={styles.projectsTitle}>Dự án tham gia</Text>
+            )}
+            {/* Projects (show leader/admin projects) */}
+            {(() => {
+              const userId = (user as any)?._id || (user as any)?.id;
+              const managed = projects.filter(p => p.owner === userId || (p.members||[]).some((m:any)=> m.user === userId && m.role==='admin'));
+              if(!managed.length) return null;
+              return (
+                <View style={{ marginTop: 8 }}>
+                  <View style={styles.projectsHeaderRow}>
+                    <View style={styles.headerLeftRow}>
+                      <Text style={styles.projectsTitle}>Dự án đang quản lý</Text>
+                    </View>
+                    <View style={styles.countPillSmall}><Text style={styles.countPillSmallText}>{managed.length}</Text></View>
                   </View>
-                  <View style={[styles.countPillSmall,{ backgroundColor:'rgba(47,102,144,0.12)' }]}><Text style={[styles.countPillSmallText,{ color:'#2f6690' }]}>{participating.length}</Text></View>
-                </View>
-                {participating.map(p => {
-                  const membersCount = (p.members?.length || 0);
-                  return (
-                    <Pressable key={p._id} style={[styles.projectCard, styles.projectCardMember]} onPress={()=> openProjectDirect(p)}>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                        <View style={{ flex:1, paddingRight:8 }}>
-                          <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
+                  {managed.map(p => {
+                    // Backend already includes owner in members as admin on creation
+                    const membersCount = (p.members?.length || 0);
+                    const myId = (user as any)?._id || (user as any)?.id;
+                    const myMember = (p.members||[]).find((m:any)=> String(m.user)===String(myId));
+                    const myRole = p.owner === myId ? 'owner' : (myMember?.role || 'member');
+                    return (
+                      <Pressable key={p._id} style={[styles.projectCard, styles.projectCardOwner]} onPress={()=> openProjectDirect(p)}>
+                        <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                          <View style={{ flex:1, paddingRight:8 }}>
+                            <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
+                          </View>
+                          <Text style={myRole==='owner' ? styles.leaderBadge : styles.coLeaderBadge}>
+                            {myRole==='owner' ? 'Trưởng nhóm' : 'Phó nhóm'}
+                          </Text>
                         </View>
-                        <Text style={styles.memberBadge}>Thành viên</Text>
-                      </View>
-                      <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
-                        <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
-                        <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            );
-          })()}
+                        <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                          <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
+                          <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              );
+            })()}
 
-        </View>
-      }
+            {/* Projects (show participating but not admin) */}
+            {(() => {
+              const userId = (user as any)?._id || (user as any)?.id;
+              const participating = projects.filter(p => p.owner !== userId && (p.members||[]).some((m:any)=> m.user === userId && m.role !== 'admin'));
+              if(!participating.length) return null;
+              return (
+                <View style={{ marginTop: 16 }}>
+                  <View style={styles.projectsHeaderRow}>
+                    <View style={styles.headerLeftRow}>
+                      <Text style={styles.projectsTitle}>Dự án tham gia</Text>
+                    </View>
+                    <View style={[styles.countPillSmall,{ backgroundColor:'rgba(47,102,144,0.12)' }]}><Text style={[styles.countPillSmallText,{ color:'#2f6690' }]}>{participating.length}</Text></View>
+                  </View>
+                  {participating.map(p => {
+                    const membersCount = (p.members?.length || 0);
+                    return (
+                      <Pressable key={p._id} style={[styles.projectCard, styles.projectCardMember]} onPress={()=> openProjectDirect(p)}>
+                        <View style={{ flexDirection:'row', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                          <View style={{ flex:1, paddingRight:8 }}>
+                            <Text style={styles.projectName} numberOfLines={1}>{p.name}</Text>
+                          </View>
+                          <Text style={styles.memberBadge}>Thành viên</Text>
+                        </View>
+                        <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
+                          <Text style={styles.projectMeta}>{membersCount} thành viên</Text>
+                          <Text style={styles.projectMeta}>{p.status==='archived' ? 'Đã lưu trữ' : 'Đang hoạt động'}</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              );
+            })()}
+
+          </View>
+        )}
     />
     {/* Floating Action Button with pulse */}
   <View style={styles.fabWrapper} pointerEvents="box-none">
